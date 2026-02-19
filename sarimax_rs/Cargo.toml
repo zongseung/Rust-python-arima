@@ -1,0 +1,50 @@
+[package]
+name = "sarimax-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "High-performance SARIMAX engine with PyO3 bindings"
+
+[lib]
+name = "sarimax_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Linear algebra (dynamic-size matrices)
+nalgebra = "0.34"
+
+# Optimization (L-BFGS, Nelder-Mead)
+argmin = "0.11"
+argmin-math = { version = "0.5", features = ["nalgebra_latest", "vec"] }
+
+# Numerical differentiation
+finitediff = "0.2"
+
+# Statistics
+statrs = "0.18"
+
+# Parallelism
+rayon = "1.10"
+
+# Python bindings
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+numpy = "0.28"
+
+# Error handling
+thiserror = "2"
+
+# Serialization (test fixtures)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+approx = "0.5"
+
+[[bench]]
+name = "bench_kalman"
+harness = false
+
+[[bench]]
+name = "bench_fit"
+harness = false

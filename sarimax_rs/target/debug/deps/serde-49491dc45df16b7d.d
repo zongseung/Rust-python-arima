@@ -1,0 +1,14 @@
+/Users/ijongseung/arima-type/sarimax_rs/target/debug/deps/serde-49491dc45df16b7d.d: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ijongseung/arima-type/sarimax_rs/target/debug/build/serde-313b916f980ad045/out/private.rs
+
+/Users/ijongseung/arima-type/sarimax_rs/target/debug/deps/libserde-49491dc45df16b7d.rlib: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ijongseung/arima-type/sarimax_rs/target/debug/build/serde-313b916f980ad045/out/private.rs
+
+/Users/ijongseung/arima-type/sarimax_rs/target/debug/deps/libserde-49491dc45df16b7d.rmeta: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/ijongseung/arima-type/sarimax_rs/target/debug/build/serde-313b916f980ad045/out/private.rs
+
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/ijongseung/arima-type/sarimax_rs/target/debug/build/serde-313b916f980ad045/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/ijongseung/arima-type/sarimax_rs/target/debug/build/serde-313b916f980ad045/out
