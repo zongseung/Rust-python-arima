@@ -29,3 +29,19 @@ def statsmodels_fixtures():
     path = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "statsmodels_reference.json"
     with open(path) as f:
         return json.load(f)
+
+
+@pytest.fixture
+def fit_fixtures():
+    """Load statsmodels fit reference fixtures (Phase 2)."""
+    path = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "statsmodels_fit_reference.json"
+    with open(path) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def forecast_fixtures():
+    """Load statsmodels forecast reference fixtures (Phase 3)."""
+    path = pathlib.Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "statsmodels_forecast_reference.json"
+    with open(path) as f:
+        return json.load(f)

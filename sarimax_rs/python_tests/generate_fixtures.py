@@ -95,6 +95,29 @@ def fit_and_extract(y, order, seasonal_order=(0, 0, 0, 0)):
     }
 
 
+def fit_and_extract_full(y, order, seasonal_order=(0, 0, 0, 0)):
+    """Fit SARIMAX model with enforcement and extract full fit reference values."""
+    model = sm.tsa.SARIMAX(
+        y,
+        order=order,
+        seasonal_order=seasonal_order,
+        trend="n",
+        enforce_stationarity=True,
+        enforce_invertibility=True,
+        concentrate_scale=True,
+    )
+    res = model.fit(disp=False)
+
+    return {
+        "params": res.params.tolist(),
+        "loglike": float(res.llf),
+        "scale": float(res.scale),
+        "aic": float(res.aic),
+        "bic": float(res.bic),
+        "nobs": int(res.nobs),
+    }
+
+
 def main():
     fixtures = {}
 
@@ -157,6 +180,63 @@ def main():
     print(f"  ARIMA(1,1,1) loglike: {fixtures['arima111']['loglike']:.6f}")
     print(f"  SARIMA(1,0,0)(1,0,0,4) loglike:   {fixtures['sarima_100_100_4']['loglike']:.6f}")
     print(f"  SARIMA(1,1,1)(1,1,1,12) loglike:   {fixtures['sarima_111_111_12']['loglike']:.6f}")
+
+    # --- Phase 3: Forecast reference values ---
+    forecast_fixtures = {}
+
+    for name, order, seasonal_order, data in [
+        ("ar1", (1, 0, 0), (0, 0, 0, 0), y_ar1),
+        ("arma11", (1, 0, 1), (0, 0, 0, 0), y_arma11),
+        ("arima111", (1, 1, 1), (0, 0, 0, 0), y_arima111),
+        ("sarima_100_100_4", (1, 0, 0), (1, 0, 0, 4), y_sar),
+    ]:
+        model = sm.tsa.SARIMAX(
+            data,
+            order=order,
+            seasonal_order=seasonal_order,
+            trend="n",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+            concentrate_scale=True,
+        )
+        res = model.fit(disp=False)
+        fcast = res.get_forecast(steps=10)
+        ci = fcast.conf_int(alpha=0.05)
+
+        # Standardized residuals
+        resid = res.filter_results.standardized_forecasts_error[0]
+
+        forecast_fixtures[name] = {
+            "params": res.params.tolist(),
+            "forecast_mean": fcast.predicted_mean.tolist(),
+            "forecast_ci_lower": ci[:, 0].tolist() if isinstance(ci, np.ndarray) else ci.iloc[:, 0].tolist(),
+            "forecast_ci_upper": ci[:, 1].tolist() if isinstance(ci, np.ndarray) else ci.iloc[:, 1].tolist(),
+            "standardized_residuals": resid.tolist(),
+        }
+
+    forecast_path = out_dir / "statsmodels_forecast_reference.json"
+    with open(forecast_path, "w") as f:
+        json.dump(forecast_fixtures, f, indent=2)
+
+    print(f"\nForecast fixtures written to {forecast_path}")
+    for name, vals in forecast_fixtures.items():
+        print(f"  {name}: forecast[0:3]={vals['forecast_mean'][:3]}")
+
+    # --- Phase 2: Fit reference values ---
+    fit_fixtures = {}
+
+    fit_fixtures["ar1"] = fit_and_extract_full(y_ar1, (1, 0, 0))
+    fit_fixtures["arma11"] = fit_and_extract_full(y_arma11, (1, 0, 1))
+    fit_fixtures["arima111"] = fit_and_extract_full(y_arima111, (1, 1, 1))
+    fit_fixtures["sarima_100_100_4"] = fit_and_extract_full(y_sar, (1, 0, 0), (1, 0, 0, 4))
+
+    fit_path = out_dir / "statsmodels_fit_reference.json"
+    with open(fit_path, "w") as f:
+        json.dump(fit_fixtures, f, indent=2)
+
+    print(f"\nFit fixtures written to {fit_path}")
+    for name, vals in fit_fixtures.items():
+        print(f"  {name}: params={vals['params']}, loglike={vals['loglike']:.6f}, aic={vals['aic']:.2f}, bic={vals['bic']:.2f}")
 
 
 if __name__ == "__main__":
