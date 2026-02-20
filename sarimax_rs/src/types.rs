@@ -108,6 +108,19 @@ pub struct FitResult {
     pub n_iter: u64,
     pub converged: bool,
     pub method: String,
+    pub aic: f64,
+    pub bic: f64,
+}
+
+impl FitResult {
+    /// Compute AIC and BIC from loglike, n_params, n_obs.
+    pub fn with_information_criteria(mut self) -> Self {
+        let k = self.n_params as f64;
+        let n = self.n_obs as f64;
+        self.aic = -2.0 * self.loglike + 2.0 * k;
+        self.bic = -2.0 * self.loglike + k * n.ln();
+        self
+    }
 }
 
 #[cfg(test)]
