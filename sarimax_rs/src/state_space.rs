@@ -42,6 +42,25 @@ impl StateSpace {
             ));
         }
 
+        if order.dd > 0 && order.s < 2 {
+            return Err(SarimaxError::StateSpaceError(format!(
+                "Seasonal differencing D={} requires seasonal period s >= 2, got s={}",
+                order.dd, order.s
+            )));
+        }
+
+        if config.simple_differencing {
+            return Err(SarimaxError::StateSpaceError(
+                "simple_differencing is not yet supported".into(),
+            ));
+        }
+
+        if config.measurement_error {
+            return Err(SarimaxError::StateSpaceError(
+                "measurement_error is not yet supported".into(),
+            ));
+        }
+
         let k_states = order.k_states();
         let k_states_diff = order.k_states_diff();
         let _k_order = order.k_order();
