@@ -184,8 +184,15 @@ pub fn constrain_variance(x: f64) -> f64 {
 }
 
 /// Unconstrain variance: positive → unconstrained (sqrt).
-pub fn unconstrain_variance(s: f64) -> f64 {
-    s.sqrt()
+/// Returns error if s <= 0.
+pub fn unconstrain_variance(s: f64) -> Result<f64> {
+    if s <= 0.0 {
+        return Err(SarimaxError::DataError(format!(
+            "variance sigma2 must be positive, got {}",
+            s
+        )));
+    }
+    Ok(s.sqrt())
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +341,7 @@ mod tests {
         let x = 2.5;
         let s = constrain_variance(x);
         assert!((s - 6.25).abs() < 1e-10);
-        let x2 = unconstrain_variance(s);
+        let x2 = unconstrain_variance(s).unwrap();
         assert!((x2 - x.abs()).abs() < 1e-10);
     }
 }
