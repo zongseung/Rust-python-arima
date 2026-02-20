@@ -1,4 +1,4 @@
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
@@ -111,8 +111,15 @@ pub fn kalman_loglike(
                 sum_log_f += f_t.ln();
                 sum_v2_f += v_t * v_t / f_t;
             }
+        } else if t >= burn {
+            // F_t <= 0 after burn-in indicates numerical collapse
+            return Err(SarimaxError::DataError(format!(
+                "innovation variance F_t <= 0 at t={} (F_t={}); \
+                 model parameters may be numerically unstable",
+                t, f_t
+            )));
         } else {
-            // F_t <= 0: skip update, predict from current state
+            // F_t <= 0 during burn-in: skip update, predict from current state
             a = t_mat * &a;
             p = t_mat * &p * t_mat.transpose() + &rqr;
             if ss.state_intercept.len() == n * k {
@@ -146,6 +153,168 @@ pub fn kalman_loglike(
         scale,
         innovations,
         n_obs_effective: n_eff,
+    })
+}
+
+/// Full Kalman filter output with final state information for forecasting.
+#[derive(Debug, Clone)]
+pub struct KalmanFilterOutput {
+    /// Log-likelihood value.
+    pub loglike: f64,
+    /// Estimated (concentrated) scale: sigma2_hat.
+    pub scale: f64,
+    /// Innovation sequence v_t.
+    pub innovations: Vec<f64>,
+    /// Innovation variances F_t (before scaling by sigma2).
+    pub innovation_vars: Vec<f64>,
+    /// Effective number of observations (n - burn).
+    pub n_obs_effective: usize,
+    /// Final filtered state a_{n|n}.
+    pub filtered_state: DVector<f64>,
+    /// Final filtered covariance P_{n|n}.
+    pub filtered_cov: DMatrix<f64>,
+    /// Final predicted state a_{n+1|n}.
+    pub predicted_state: DVector<f64>,
+    /// Final predicted covariance P_{n+1|n}.
+    pub predicted_cov: DMatrix<f64>,
+}
+
+/// Run the Kalman filter and return full output including final state.
+///
+/// Unlike `kalman_loglike()`, this function stores innovation variances and
+/// the final filtered/predicted state and covariance for use in forecasting
+/// and residual diagnostics.
+pub fn kalman_filter(
+    endog: &[f64],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    concentrate_scale: bool,
+) -> Result<KalmanFilterOutput> {
+    let n = endog.len();
+    let k = ss.k_states;
+    let burn = init.loglikelihood_burn;
+
+    if n <= burn {
+        return Err(SarimaxError::DataError(format!(
+            "Not enough observations: n={} <= burn={}",
+            n, burn
+        )));
+    }
+
+    let n_eff = n - burn;
+
+    let mut a = init.initial_state.clone();
+    let mut p = init.initial_state_cov.clone();
+
+    let t_mat = &ss.transition;
+    let z = &ss.design;
+    let r_mat = &ss.selection;
+    let q_mat = &ss.state_cov;
+
+    let rqr = r_mat * q_mat * r_mat.transpose();
+
+    let mut sum_log_f = 0.0;
+    let mut sum_v2_f = 0.0;
+    let mut innovations = Vec::with_capacity(n);
+    let mut innovation_vars = Vec::with_capacity(n);
+
+    let eye = DMatrix::<f64>::identity(k, k);
+
+    // Track the last filtered state/cov
+    let mut a_filtered = a.clone();
+    let mut p_filtered = p.clone();
+
+    for t in 0..n {
+        // --- Innovation ---
+        let d_t = if t < ss.obs_intercept.len() {
+            ss.obs_intercept[t]
+        } else {
+            0.0
+        };
+        let v_t = endog[t] - z.dot(&a) - d_t;
+        innovations.push(v_t);
+
+        // F_t = Z' * P_{t|t-1} * Z (scalar, univariate)
+        let p_z = &p * z;
+        let f_t: f64 = z.dot(&p_z);
+        innovation_vars.push(f_t);
+
+        // --- Update & Predict ---
+        if f_t > 0.0 {
+            let k_gain = &p_z / f_t;
+            let a_updated = &a + &k_gain * v_t;
+
+            // Joseph form covariance update
+            let k_z_t = &k_gain * z.transpose();
+            let i_kz = &eye - &k_z_t;
+            let p_updated = &i_kz * &p * i_kz.transpose();
+
+            // Store filtered state/cov
+            a_filtered = a_updated.clone();
+            p_filtered = p_updated.clone();
+
+            // Predict
+            a = t_mat * &a_updated;
+            p = t_mat * &p_updated * t_mat.transpose() + &rqr;
+
+            if ss.state_intercept.len() == n * k {
+                for i in 0..k {
+                    a[i] += ss.state_intercept[t * k + i];
+                }
+            }
+
+            if t >= burn {
+                sum_log_f += f_t.ln();
+                sum_v2_f += v_t * v_t / f_t;
+            }
+        } else if t >= burn {
+            // F_t <= 0 after burn-in indicates numerical collapse
+            return Err(SarimaxError::DataError(format!(
+                "innovation variance F_t <= 0 at t={} (F_t={}); \
+                 model parameters may be numerically unstable",
+                t, f_t
+            )));
+        } else {
+            // F_t <= 0 during burn-in: skip update, use current state as filtered
+            a_filtered = a.clone();
+            p_filtered = p.clone();
+
+            a = t_mat * &a;
+            p = t_mat * &p * t_mat.transpose() + &rqr;
+            if ss.state_intercept.len() == n * k {
+                for i in 0..k {
+                    a[i] += ss.state_intercept[t * k + i];
+                }
+            }
+        }
+    }
+
+    let (loglike, scale) = if concentrate_scale {
+        let sigma2_hat = sum_v2_f / n_eff as f64;
+        let sigma2_safe = sigma2_hat.max(1e-300);
+        let ll = -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
+            - 0.5 * (n_eff as f64) * sigma2_safe.ln()
+            - 0.5 * (n_eff as f64)
+            - 0.5 * sum_log_f;
+        (ll, sigma2_hat)
+    } else {
+        let ll = -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
+            - 0.5 * sum_log_f
+            - 0.5 * sum_v2_f;
+        let sigma2 = ss.state_cov[(0, 0)];
+        (ll, sigma2)
+    };
+
+    Ok(KalmanFilterOutput {
+        loglike,
+        scale,
+        innovations,
+        innovation_vars,
+        n_obs_effective: n_eff,
+        filtered_state: a_filtered,
+        filtered_cov: p_filtered,
+        predicted_state: a,
+        predicted_cov: p,
     })
 }
 
@@ -388,5 +557,76 @@ mod tests {
             1, 1, 1, 12,  // P, D, Q, s
             1e-6,
         );
+    }
+
+    // ---- kalman_filter tests ----
+
+    #[test]
+    fn test_kalman_filter_matches_loglike() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["ar1"];
+        let data: Vec<f64> = case["data"]
+            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+
+        let config = make_config(1, 0, 0);
+        let params = make_params(&[0.6527425084139002], &[]);
+        let ss = StateSpace::new(&config, &params, &data, None).unwrap();
+        let init = KalmanInit::approximate_diffuse(ss.k_states, 1e6);
+
+        let lo = kalman_loglike(&data, &ss, &init, true).unwrap();
+        let fo = kalman_filter(&data, &ss, &init, true).unwrap();
+
+        assert!((lo.loglike - fo.loglike).abs() < 1e-12,
+            "loglike mismatch: {} vs {}", lo.loglike, fo.loglike);
+        assert!((lo.scale - fo.scale).abs() < 1e-12);
+        assert_eq!(lo.innovations.len(), fo.innovations.len());
+        for (a, b) in lo.innovations.iter().zip(fo.innovations.iter()) {
+            assert!((a - b).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn test_kalman_filter_innovation_vars_positive() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+
+        let config = make_config(1, 0, 1);
+        let params_vec: Vec<f64> = case["params"]
+            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let params = make_params(&params_vec[..1], &params_vec[1..2]);
+        let ss = StateSpace::new(&config, &params, &data, None).unwrap();
+        let init = KalmanInit::approximate_diffuse(ss.k_states, 1e6);
+
+        let fo = kalman_filter(&data, &ss, &init, true).unwrap();
+        assert_eq!(fo.innovation_vars.len(), data.len());
+        // After burn-in, all F_t should be positive
+        for &f in &fo.innovation_vars[fo.n_obs_effective..] {
+            assert!(f >= 0.0, "F_t should be non-negative, got {}", f);
+        }
+    }
+
+    #[test]
+    fn test_kalman_filter_state_dimensions() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+
+        let config = make_config(1, 0, 1);
+        let params_vec: Vec<f64> = case["params"]
+            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let params = make_params(&params_vec[..1], &params_vec[1..2]);
+        let ss = StateSpace::new(&config, &params, &data, None).unwrap();
+        let init = KalmanInit::approximate_diffuse(ss.k_states, 1e6);
+
+        let fo = kalman_filter(&data, &ss, &init, true).unwrap();
+        assert_eq!(fo.filtered_state.len(), ss.k_states);
+        assert_eq!(fo.predicted_state.len(), ss.k_states);
+        assert_eq!(fo.filtered_cov.nrows(), ss.k_states);
+        assert_eq!(fo.filtered_cov.ncols(), ss.k_states);
+        assert_eq!(fo.predicted_cov.nrows(), ss.k_states);
+        assert_eq!(fo.predicted_cov.ncols(), ss.k_states);
     }
 }
