@@ -1,0 +1,9 @@
+*.cache
+*.claude
+planner
+__pycache__
+.venv
+planner
+/target_wheel
+**/target_wheel/
+Rust-python-arima/sarimax_rs/target/
