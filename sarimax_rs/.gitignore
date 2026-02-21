@@ -7,3 +7,4 @@ __pycache__
 /target_wheel
 **/target_wheel/
 Rust-python-arima/sarimax_rs/target/
+CLAUDE.md
