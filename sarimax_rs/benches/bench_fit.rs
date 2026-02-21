@@ -50,5 +50,27 @@ fn bench_fit_arima111(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_fit_ar1, bench_fit_arima111);
+fn bench_fit_sarima_111_111_12(c: &mut Criterion) {
+    // Cumulative sum of LCG noise to simulate integrated series
+    let mut data = generate_ar1_data(500, 0.0, 42);
+    for t in 1..data.len() {
+        data[t] += data[t - 1];
+    }
+    let config = SarimaxConfig {
+        order: SarimaxOrder::new(1, 1, 1, 1, 1, 1, 12),
+        n_exog: 0,
+        trend: Trend::None,
+        enforce_stationarity: false,
+        enforce_invertibility: false,
+        concentrate_scale: true,
+        simple_differencing: false,
+        measurement_error: false,
+    };
+
+    c.bench_function("fit_sarima111_111_12_n500", |b| {
+        b.iter(|| optimizer::fit(&data, &config, None, Some("lbfgsb"), None, None).unwrap())
+    });
+}
+
+criterion_group!(benches, bench_fit_ar1, bench_fit_arima111, bench_fit_sarima_111_111_12);
 criterion_main!(benches);

@@ -101,53 +101,60 @@ impl KalmanInit {
 
 /// Solve the discrete Lyapunov equation: P = T * P * T' + Q
 ///
-/// Uses the Kronecker product approach:
-///   vec(P) = (I - T ⊗ T)^{-1} * vec(Q)
+/// Uses iterative doubling (Smith's method):
+///   A_0 = T,  Q_0 = Q
+///   Q_{i+1} = Q_i + A_i * Q_i * A_i'
+///   A_{i+1} = A_i * A_i
 ///
-/// Returns None if the system is singular (T has eigenvalue on unit circle).
+/// Converges in O(log(k)) iterations, each O(k³), total O(k³ log k).
+/// Much faster than the Kronecker approach O(k⁶) for large k.
 fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     let k = t.nrows();
     if k == 0 {
         return Some(DMatrix::zeros(0, 0));
     }
 
-    let kk = k * k;
+    let mut a_i = t.clone();
+    let mut q_i = q.clone();
+    let mut temp_aq = DMatrix::<f64>::zeros(k, k);
+    let mut temp_aa = DMatrix::<f64>::zeros(k, k);
 
-    // Build I_{k²} - T ⊗ T
-    let mut lhs = DMatrix::<f64>::identity(kk, kk);
-    for i in 0..k {
-        for j in 0..k {
-            let t_ij = t[(i, j)];
-            for p in 0..k {
-                for q_idx in 0..k {
-                    // (T ⊗ T)[(i*k+p), (j*k+q)] = T[i,j] * T[p,q]
-                    lhs[(i * k + p, j * k + q_idx)] -= t_ij * t[(p, q_idx)];
-                }
+    for _ in 0..100 {
+        // temp_aq = A_i * Q_i
+        temp_aq.gemm(1.0, &a_i, &q_i, 0.0);
+
+        // q_next = Q_i + temp_aq * A_i'
+        let mut q_next = q_i.clone();
+        q_next.gemm(1.0, &temp_aq, &a_i.transpose(), 1.0);
+
+        // A_{i+1} = A_i * A_i
+        temp_aa.gemm(1.0, &a_i, &a_i, 0.0);
+
+        // Convergence check
+        let mut diff_sq = 0.0;
+        let mut norm_sq = 0.0;
+        for (new, old) in q_next.iter().zip(q_i.iter()) {
+            let d = new - old;
+            diff_sq += d * d;
+            norm_sq += old * old;
+        }
+        let norm = norm_sq.sqrt().max(1.0);
+
+        q_i = q_next;
+        a_i.copy_from(&temp_aa);
+
+        if diff_sq.sqrt() < 1e-14 * norm {
+            // Validate result
+            if q_i.iter().any(|v| !v.is_finite()) {
+                return None;
             }
+            if (0..k).any(|i| q_i[(i, i)] < -1e-10) {
+                return None;
+            }
+            return Some(q_i);
         }
     }
-
-    // Vectorize Q (column-major order for nalgebra)
-    let rhs = DVector::from_iterator(kk, q.iter().copied());
-
-    // Solve the linear system
-    let p_vec = lhs.lu().solve(&rhs)?;
-
-    // Unvectorize back to matrix (column-major)
-    let p = DMatrix::from_iterator(k, k, p_vec.iter().copied());
-
-    // Validate: P should be symmetric positive semi-definite
-    // Check for NaN/Inf
-    if p.iter().any(|v| !v.is_finite()) {
-        return None;
-    }
-
-    // Check diagonal is positive
-    if (0..k).any(|i| p[(i, i)] < -1e-10) {
-        return None;
-    }
-
-    Some(p)
+    None
 }
 
 #[cfg(test)]
