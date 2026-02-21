@@ -40,17 +40,24 @@ pub struct KalmanFilterOutput {
     pub predicted_cov: DMatrix<f64>,
 }
 
-/// Steady-state convergence tolerance for innovation variance F_t.
-/// We check F_t convergence (scalar) instead of P convergence (matrix)
-/// because P never converges for non-stationary models (d>0, D>0).
-/// 1e-9 is sufficient precision — parameters change more than this between
-/// optimizer iterations, so tighter tolerance adds overhead without benefit.
+/// Steady-state convergence tolerance for the gain vector pz = P*Z.
+///
+/// We check pz convergence (k-vector) because F_t = Z'*pz (scalar) can
+/// converge while pz changes in directions orthogonal to Z, leading to
+/// incorrect cached K_∞ = T*pz/F. Error analysis shows the loglike
+/// error from a converged-but-imprecise K_∞ is O(ε * n²) due to
+/// compounding through the state recursion (unit-root states integrate
+/// the error), so ε must be tight.
+///
+/// At 1e-9, loglike error stays below ~1e-5 for n=1000.
+/// For models where pz converges slowly, steady-state won't trigger
+/// and the sparse T·P·T' path provides the primary speedup instead.
 const STEADY_STATE_TOL: f64 = 1e-9;
 
 /// Minimum steps past burn-in before checking for convergence.
 const STEADY_STATE_MIN_STEPS: usize = 5;
 
-/// Number of consecutive converged F_t values required.
+/// Number of consecutive converged pz values required.
 const STEADY_STATE_CONSEC: usize = 3;
 
 // ---------------------------------------------------------------------------
@@ -148,12 +155,12 @@ fn kalman_core(
     let mut a_next = DVector::<f64>::zeros(k);
     let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
-    // Steady-state detection buffers (F_t-based, not P-based)
+    // Steady-state detection buffers (pz-vector based)
     let mut converged = false;
     let mut k_gain = DVector::<f64>::zeros(k);  // K_∞ = T * P_∞ * Z
     let mut f_steady = 0.0;
     let mut log_f_steady = 0.0;
-    let mut f_prev = 0.0_f64;
+    let mut pz_prev = DVector::<f64>::zeros(k);
     let mut consec_count = 0_usize;
 
     for t in 0..n {
@@ -302,16 +309,23 @@ fn kalman_core(
                     sum_v2_f += v_t * v_t * f_inv;
                 }
 
-                // --- Steady-state convergence check (F_t-based) ---
+                // --- Steady-state convergence check (pz-vector based) ---
+                // We check pz = P*Z convergence instead of scalar F_t = Z'*pz
+                // because F_t can converge while pz still changes in directions
+                // orthogonal to Z, causing incorrect cached K_∞.
                 if t >= burn + STEADY_STATE_MIN_STEPS {
-                    let f_diff = (f_t - f_prev).abs();
-                    let f_ref = f_prev.abs().max(1e-15);
-                    if f_diff / f_ref < STEADY_STATE_TOL {
+                    // Compute pz from the PREDICTED P (already updated above)
+                    pz.gemv(1.0, &p, z, 0.0);
+                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
+                        .map(|(a, b)| { let d = a - b; d * d })
+                        .sum();
+                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
                         consec_count += 1;
                         if consec_count >= STEADY_STATE_CONSEC {
                             converged = true;
-                            // Cache steady-state values from the PREDICTED P
-                            pz.gemv(1.0, &p, z, 0.0);
                             f_steady = z.dot(&pz);
                             log_f_steady = f_steady.ln();
                             // K_∞ = T * pz_∞
@@ -327,8 +341,8 @@ fn kalman_core(
                     } else {
                         consec_count = 0;
                     }
+                    pz_prev.copy_from(&pz);
                 }
-                f_prev = f_t;
             } else if t >= burn {
                 return Err(SarimaxError::DataError(format!(
                     "innovation variance F_t <= 0 at t={} (F_t={}); \
@@ -428,15 +442,19 @@ fn kalman_core(
                     sum_v2_f += v_t * v_t * f_inv;
                 }
 
-                // --- Steady-state convergence check (F_t-based) ---
+                // --- Steady-state convergence check (pz-vector based) ---
                 if t >= burn + STEADY_STATE_MIN_STEPS {
-                    let f_diff = (f_t - f_prev).abs();
-                    let f_ref = f_prev.abs().max(1e-15);
-                    if f_diff / f_ref < STEADY_STATE_TOL {
+                    pz.gemv(1.0, &p, z, 0.0);
+                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
+                        .map(|(a, b)| { let d = a - b; d * d })
+                        .sum();
+                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
                         consec_count += 1;
                         if consec_count >= STEADY_STATE_CONSEC {
                             converged = true;
-                            pz.gemv(1.0, &p, z, 0.0);
                             f_steady = z.dot(&pz);
                             log_f_steady = f_steady.ln();
                             k_gain.gemv(1.0, t_mat, &pz, 0.0);
@@ -444,8 +462,8 @@ fn kalman_core(
                     } else {
                         consec_count = 0;
                     }
+                    pz_prev.copy_from(&pz);
                 }
-                f_prev = f_t;
             } else if t >= burn {
                 return Err(SarimaxError::DataError(format!(
                     "innovation variance F_t <= 0 at t={} (F_t={}); \
