@@ -22,6 +22,9 @@ pub enum SarimaxError {
 
     #[error("data error: {0}")]
     DataError(String),
+
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 pub type Result<T> = std::result::Result<T, SarimaxError>;

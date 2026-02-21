@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::{kalman_filter, KalmanFilterOutput};
 use crate::params::SarimaxParams;
@@ -42,6 +42,13 @@ pub fn forecast(
     future_exog: Option<&[Vec<f64>]>,
     exog_coeffs: &[f64],
 ) -> Result<ForecastResult> {
+    // Validate: exog model requires future_exog for forecasting
+    if !exog_coeffs.is_empty() && future_exog.is_none() && steps > 0 {
+        return Err(SarimaxError::InvalidInput(
+            "model has exogenous variables but future_exog was not provided for forecast".into()
+        ));
+    }
+
     if steps == 0 {
         return Ok(ForecastResult {
             mean: vec![],
