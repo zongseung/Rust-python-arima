@@ -147,6 +147,7 @@ pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Vec<f6
 struct SarimaxObjective {
     endog: Vec<f64>,
     config: SarimaxConfig,
+    exog: Option<Vec<Vec<f64>>>,
 }
 
 impl SarimaxObjective {
@@ -163,7 +164,8 @@ impl SarimaxObjective {
         let sparams = SarimaxParams::from_flat(&constrained, &self.config)
             .map_err(|e| e.to_string())?;
 
-        let ss = StateSpace::new(&self.config, &sparams, &self.endog, None)
+        let ss = StateSpace::new(&self.config, &sparams, &self.endog,
+            self.exog.as_deref())
             .map_err(|e| e.to_string())?;
 
         let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
@@ -431,12 +433,14 @@ fn run_lbfgsb(
 /// * `start_params` — Optional initial parameter values (constrained space)
 /// * `method` — "lbfgsb" (default), "lbfgs", or "nelder-mead"
 /// * `maxiter` — Maximum iterations (default: 500)
+/// * `exog` — Optional exogenous variables, column-major: exog[j][t]
 pub fn fit(
     endog: &[f64],
     config: &SarimaxConfig,
     start_params: Option<&[f64]>,
     method: Option<&str>,
     maxiter: Option<u64>,
+    exog: Option<&[Vec<f64>]>,
 ) -> Result<FitResult> {
     let maxiter = maxiter.unwrap_or(500);
     let method = method.unwrap_or("lbfgsb");
@@ -460,7 +464,7 @@ pub fn fit(
             }
             sp.to_vec()
         }
-        None => compute_start_params(endog, config)?,
+        None => compute_start_params(endog, config, exog)?,
     };
 
     // 2. Transform to unconstrained space
@@ -469,6 +473,7 @@ pub fn fit(
     let objective = SarimaxObjective {
         endog: endog.to_vec(),
         config: config.clone(),
+        exog: exog.map(|e| e.to_vec()),
     };
 
     // Determine number of restarts based on model complexity
@@ -676,7 +681,7 @@ pub fn fit(
 
     // 5. Evaluate final log-likelihood
     let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
-    let ss = StateSpace::new(config, &final_params, endog, None)?;
+    let ss = StateSpace::new(config, &final_params, endog, exog)?;
     let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
 
@@ -769,6 +774,7 @@ mod tests {
         let obj = SarimaxObjective {
             endog: data,
             config,
+            exog: None,
         };
 
         let cost = obj.cost(&vec![0.5]).unwrap();
@@ -788,6 +794,7 @@ mod tests {
         let obj = SarimaxObjective {
             endog: data,
             config,
+            exog: None,
         };
 
         let grad = obj.gradient(&vec![0.5]).unwrap();
@@ -811,7 +818,7 @@ mod tests {
 
         // Fixture was generated with approximate_diffuse init, so use enforce=false
         let config = make_config(1, 0, 0, false, false);
-        let result = fit(&data, &config, None, Some("lbfgs"), Some(500)).unwrap();
+        let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         assert!(result.converged, "AR(1) fit should converge");
         let param_err = (result.params[0] - expected_params[0]).abs();
@@ -843,7 +850,7 @@ mod tests {
 
         // Fixture was generated with approximate_diffuse init
         let config = make_config(1, 0, 1, false, false);
-        let result = fit(&data, &config, None, Some("lbfgs"), Some(500)).unwrap();
+        let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         for (i, (got, exp)) in result.params.iter().zip(expected_params.iter()).enumerate() {
             let err = (got - exp).abs();
@@ -867,7 +874,7 @@ mod tests {
 
         // Fixture was generated with approximate_diffuse init
         let config = make_config(1, 1, 1, false, false);
-        let result = fit(&data, &config, None, Some("lbfgs"), Some(500)).unwrap();
+        let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         let ll_err = (result.loglike - expected_loglike).abs();
         assert!(
@@ -891,7 +898,7 @@ mod tests {
             .collect();
 
         let config = make_config(1, 0, 0, false, false);
-        let result = fit(&data, &config, None, Some("nelder-mead"), Some(1000)).unwrap();
+        let result = fit(&data, &config, None, Some("nelder-mead"), Some(1000), None).unwrap();
 
         let param_err = (result.params[0] - expected_params[0]).abs();
         assert!(
@@ -911,7 +918,7 @@ mod tests {
             .collect();
 
         let config = make_config(1, 0, 0, true, true);
-        let result = fit(&data, &config, None, Some("lbfgs"), Some(500)).unwrap();
+        let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         // AIC = -2*loglike + 2*k, BIC = -2*loglike + k*ln(n)
         let k = result.n_params as f64;
@@ -942,7 +949,7 @@ mod tests {
 
         let config = make_config(1, 0, 0, false, false);
         let start = vec![0.5];
-        let result = fit(&data, &config, Some(&start), Some("lbfgs"), Some(500)).unwrap();
+        let result = fit(&data, &config, Some(&start), Some("lbfgs"), Some(500), None).unwrap();
 
         assert!(result.loglike.is_finite());
         assert!(result.params[0].is_finite());

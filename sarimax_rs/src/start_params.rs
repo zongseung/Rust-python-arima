@@ -203,12 +203,37 @@ fn ar_residuals(y: &[f64], ar: &[f64]) -> Vec<f64> {
     resid
 }
 
+/// Estimate exogenous variable coefficients via simple regression.
+///
+/// For each exog variable j, computes β_j = cov(y, x_j) / var(x_j).
+fn estimate_exog_coeffs(endog: &[f64], exog: &[Vec<f64>]) -> Vec<f64> {
+    let n = endog.len();
+    if n == 0 {
+        return vec![0.0; exog.len()];
+    }
+    let y_mean: f64 = endog.iter().sum::<f64>() / n as f64;
+
+    exog.iter()
+        .map(|col| {
+            let x_mean: f64 = col.iter().sum::<f64>() / n as f64;
+            let mut cov = 0.0;
+            let mut var_x = 0.0;
+            for t in 0..n.min(col.len()) {
+                let dx = col[t] - x_mean;
+                cov += (endog[t] - y_mean) * dx;
+                var_x += dx * dx;
+            }
+            if var_x.abs() < 1e-15 { 0.0 } else { cov / var_x }
+        })
+        .collect()
+}
+
 /// Compute starting parameters for SARIMAX model.
 ///
 /// Returns a flat parameter vector in the layout expected by `SarimaxParams::from_flat`:
 /// `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q)]`
 /// (sigma2 omitted when `concentrate_scale=true`)
-pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<&[Vec<f64>]>) -> Result<Vec<f64>> {
     let order = &config.order;
     let p = order.p;
     let q = order.q;
@@ -231,7 +256,17 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec
 
     // Trend coefficients (zeros)
     let kt = config.trend.k_trend();
-    let mut params = vec![0.0; kt + config.n_exog];
+    let mut params = vec![0.0; kt];
+
+    // Exog coefficients: OLS estimates or zeros
+    if config.n_exog > 0 {
+        if let Some(exog_cols) = exog {
+            let exog_betas = estimate_exog_coeffs(&diffed, exog_cols);
+            params.extend_from_slice(&exog_betas);
+        } else {
+            params.extend(vec![0.0; config.n_exog]);
+        }
+    }
 
     // AR coefficients
     let ar = yule_walker(&diffed, p).unwrap_or_else(|| vec![0.0; p]);
@@ -341,7 +376,7 @@ mod tests {
     fn test_start_params_length_ar1() {
         let config = make_config(1, 0, 0, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 1); // ar(1)
     }
 
@@ -349,7 +384,7 @@ mod tests {
     fn test_start_params_length_arma11() {
         let config = make_config(1, 0, 1, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
     }
 
@@ -357,7 +392,7 @@ mod tests {
     fn test_start_params_length_sarima() {
         let config = make_config(1, 1, 1, 1, 1, 1, 12, true);
         let y: Vec<f64> = (0..300).map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 4); // ar(1) + ma(1) + sar(1) + sma(1)
     }
 
@@ -365,7 +400,7 @@ mod tests {
     fn test_start_params_with_sigma2() {
         let config = make_config(1, 0, 0, 0, 0, 0, 0, false);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + sigma2
         assert!(params[1] > 0.0); // sigma2 should be positive
     }
@@ -374,7 +409,7 @@ mod tests {
     fn test_fallback_short_series() {
         let config = make_config(1, 1, 1, 0, 0, 0, 0, true);
         let y = vec![1.0, 2.0]; // Too short after differencing
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
         assert!(params.iter().all(|&x| x == 0.0)); // Should be zeros
     }
@@ -383,7 +418,7 @@ mod tests {
     fn test_start_params_finite() {
         let config = make_config(2, 1, 1, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.05).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert!(params.iter().all(|x| x.is_finite()), "Non-finite start params: {:?}", params);
     }
 }

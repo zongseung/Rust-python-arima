@@ -14,7 +14,7 @@ pub mod batch;
 // pub mod selection;
 // pub mod diagnostics;
 
-use numpy::PyReadonlyArray1;
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -22,6 +22,17 @@ use crate::initialization::KalmanInit;
 use crate::params::SarimaxParams;
 use crate::state_space::StateSpace;
 use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
+
+/// Convert a 2D numpy array (n_obs × n_exog, row-major) to column-major Vec<Vec<f64>>.
+/// exog_cols[j][t] = observation t, variable j.
+fn numpy2d_to_cols(arr: &PyReadonlyArray2<f64>) -> Vec<Vec<f64>> {
+    let shape = arr.shape();
+    let (n_obs, n_exog) = (shape[0], shape[1]);
+    let data = arr.as_array();
+    (0..n_exog)
+        .map(|j| (0..n_obs).map(|t| data[[t, j]]).collect())
+        .collect()
+}
 
 /// Smoke-test function: returns the version string.
 #[pyfunction]
@@ -35,8 +46,8 @@ fn version() -> &'static str {
 /// * `y` - Endogenous (observed) time series
 /// * `order` - (p, d, q) ARIMA order
 /// * `seasonal` - (P, D, Q, s) seasonal order
-/// * `params` - Flat parameter vector [ar..., ma...]
-/// * `exog` - Optional exogenous variables (not yet implemented)
+/// * `params` - Flat parameter vector [exog(n_exog), ar(p), ma(q), sar(P), sma(Q)]
+/// * `exog` - Optional 2D exogenous array (n_obs × n_exog)
 /// * `concentrate_scale` - If true, concentrate sigma2 out of likelihood
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true,
@@ -47,28 +58,25 @@ fn sarimax_loglike<'py>(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     params: PyReadonlyArray1<'py, f64>,
-    exog: Option<PyReadonlyArray1<'py, f64>>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
     enforce_stationarity: bool,
     enforce_invertibility: bool,
 ) -> PyResult<f64> {
-    if exog.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "exog (exogenous variables) is not yet supported"
-        ));
-    }
-
     let endog = y.as_slice()?;
     let params_flat = params.as_slice()?;
 
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
+    let exog_cols = exog.as_ref().map(|e| numpy2d_to_cols(e));
+    let n_exog = exog_cols.as_ref().map_or(0, |c| c.len());
+
     let sarimax_order = SarimaxOrder::new(p, d, q, pp, dd, qq, s);
 
     let config = SarimaxConfig {
         order: sarimax_order,
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity,
         enforce_invertibility,
@@ -77,17 +85,18 @@ fn sarimax_loglike<'py>(
         measurement_error: false,
     };
 
-    // Validate params length before slicing
-    let expected_len = p + q + pp + qq;
+    // Validate params length: [exog(n_exog) + ar(p) + ma(q) + sar(P) + sma(Q)]
+    let expected_len = n_exog + p + q + pp + qq;
     if params_flat.len() != expected_len {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "params length mismatch: expected {} (p={} + q={} + P={} + Q={}), got {}",
-            expected_len, p, q, pp, qq, params_flat.len()
+            "params length mismatch: expected {} (n_exog={} + p={} + q={} + P={} + Q={}), got {}",
+            expected_len, n_exog, p, q, pp, qq, params_flat.len()
         )));
     }
 
-    // Split params: [ar(p), ma(q), sar(P), sma(Q)]
+    // Split params: [exog(n_exog), ar(p), ma(q), sar(P), sma(Q)]
     let mut i = 0;
+    let exog_coeffs = &params_flat[i..i + n_exog]; i += n_exog;
     let ar_coeffs = &params_flat[i..i + p]; i += p;
     let ma_coeffs = &params_flat[i..i + q]; i += q;
     let sar_coeffs = &params_flat[i..i + pp]; i += pp;
@@ -95,7 +104,7 @@ fn sarimax_loglike<'py>(
 
     let sarimax_params = SarimaxParams {
         trend_coeffs: vec![],
-        exog_coeffs: vec![],
+        exog_coeffs: exog_coeffs.to_vec(),
         ar_coeffs: ar_coeffs.to_vec(),
         ma_coeffs: ma_coeffs.to_vec(),
         sar_coeffs: sar_coeffs.to_vec(),
@@ -103,7 +112,7 @@ fn sarimax_loglike<'py>(
         sigma2: None,
     };
 
-    let ss = StateSpace::new(&config, &sarimax_params, endog, None)
+    let ss = StateSpace::new(&config, &sarimax_params, endog, exog_cols.as_deref())
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
@@ -127,29 +136,26 @@ fn sarimax_fit<'py>(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     start_params: Option<PyReadonlyArray1<'py, f64>>,
-    exog: Option<PyReadonlyArray1<'py, f64>>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
     enforce_stationarity: bool,
     enforce_invertibility: bool,
     method: Option<&str>,
     maxiter: Option<u64>,
 ) -> PyResult<Py<PyDict>> {
-    if exog.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "exog (exogenous variables) is not yet supported"
-        ));
-    }
-
     let endog = y.as_slice()?;
 
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
+    let exog_cols = exog.as_ref().map(|e| numpy2d_to_cols(e));
+    let n_exog = exog_cols.as_ref().map_or(0, |c| c.len());
+
     let sarimax_order = SarimaxOrder::new(p, d, q, pp, dd, qq, s);
 
     let config = SarimaxConfig {
         order: sarimax_order,
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity,
         enforce_invertibility,
@@ -163,7 +169,7 @@ fn sarimax_fit<'py>(
         .map(|a| a.as_slice())
         .transpose()?;
 
-    let result = optimizer::fit(endog, &config, sp, method, maxiter)
+    let result = optimizer::fit(endog, &config, sp, method, maxiter, exog_cols.as_deref())
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
@@ -187,7 +193,7 @@ fn sarimax_fit<'py>(
 /// Returns a dict with: mean, variance, ci_lower, ci_upper.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, steps=10, alpha=0.05,
-                    exog=None, concentrate_scale=true))]
+                    exog=None, exog_forecast=None, concentrate_scale=true))]
 fn sarimax_forecast<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -196,15 +202,10 @@ fn sarimax_forecast<'py>(
     params: PyReadonlyArray1<'py, f64>,
     steps: usize,
     alpha: f64,
-    exog: Option<PyReadonlyArray1<'py, f64>>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
+    exog_forecast: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
 ) -> PyResult<Py<PyDict>> {
-    if exog.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "exog (exogenous variables) is not yet supported"
-        ));
-    }
-
     if alpha <= 0.0 || alpha >= 1.0 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "alpha must be in (0, 1), got {}",
@@ -225,11 +226,15 @@ fn sarimax_forecast<'py>(
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
-    let expected_len = p + q + pp + qq;
+    let exog_cols = exog.as_ref().map(|e| numpy2d_to_cols(e));
+    let n_exog = exog_cols.as_ref().map_or(0, |c| c.len());
+    let future_exog_cols = exog_forecast.as_ref().map(|e| numpy2d_to_cols(e));
+
+    let expected_len = n_exog + p + q + pp + qq;
     if params_flat.len() != expected_len {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "params length mismatch: expected {} (p={} + q={} + P={} + Q={}), got {}",
-            expected_len, p, q, pp, qq, params_flat.len()
+            "params length mismatch: expected {} (n_exog={} + p={} + q={} + P={} + Q={}), got {}",
+            expected_len, n_exog, p, q, pp, qq, params_flat.len()
         )));
     }
 
@@ -237,7 +242,7 @@ fn sarimax_forecast<'py>(
 
     let config = SarimaxConfig {
         order: sarimax_order,
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity: false,
         enforce_invertibility: false,
@@ -247,6 +252,7 @@ fn sarimax_forecast<'py>(
     };
 
     let mut i = 0;
+    let exog_coeffs = &params_flat[i..i + n_exog]; i += n_exog;
     let ar_coeffs = &params_flat[i..i + p]; i += p;
     let ma_coeffs = &params_flat[i..i + q]; i += q;
     let sar_coeffs = &params_flat[i..i + pp]; i += pp;
@@ -254,7 +260,7 @@ fn sarimax_forecast<'py>(
 
     let sarimax_params = SarimaxParams {
         trend_coeffs: vec![],
-        exog_coeffs: vec![],
+        exog_coeffs: exog_coeffs.to_vec(),
         ar_coeffs: ar_coeffs.to_vec(),
         ma_coeffs: ma_coeffs.to_vec(),
         sar_coeffs: sar_coeffs.to_vec(),
@@ -262,7 +268,10 @@ fn sarimax_forecast<'py>(
         sigma2: None,
     };
 
-    let result = forecast::forecast_pipeline(endog, &config, &sarimax_params, steps, alpha)
+    let result = forecast::forecast_pipeline(
+        endog, &config, &sarimax_params, steps, alpha,
+        exog_cols.as_deref(), future_exog_cols.as_deref(),
+    )
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
@@ -285,26 +294,23 @@ fn sarimax_residuals<'py>(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     params: PyReadonlyArray1<'py, f64>,
-    exog: Option<PyReadonlyArray1<'py, f64>>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
 ) -> PyResult<Py<PyDict>> {
-    if exog.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "exog (exogenous variables) is not yet supported"
-        ));
-    }
-
     let endog = y.as_slice()?;
     let params_flat = params.as_slice()?;
 
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
-    let expected_len = p + q + pp + qq;
+    let exog_cols = exog.as_ref().map(|e| numpy2d_to_cols(e));
+    let n_exog = exog_cols.as_ref().map_or(0, |c| c.len());
+
+    let expected_len = n_exog + p + q + pp + qq;
     if params_flat.len() != expected_len {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "params length mismatch: expected {} (p={} + q={} + P={} + Q={}), got {}",
-            expected_len, p, q, pp, qq, params_flat.len()
+            "params length mismatch: expected {} (n_exog={} + p={} + q={} + P={} + Q={}), got {}",
+            expected_len, n_exog, p, q, pp, qq, params_flat.len()
         )));
     }
 
@@ -312,7 +318,7 @@ fn sarimax_residuals<'py>(
 
     let config = SarimaxConfig {
         order: sarimax_order,
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity: false,
         enforce_invertibility: false,
@@ -322,6 +328,7 @@ fn sarimax_residuals<'py>(
     };
 
     let mut i = 0;
+    let exog_coeffs = &params_flat[i..i + n_exog]; i += n_exog;
     let ar_coeffs = &params_flat[i..i + p]; i += p;
     let ma_coeffs = &params_flat[i..i + q]; i += q;
     let sar_coeffs = &params_flat[i..i + pp]; i += pp;
@@ -329,7 +336,7 @@ fn sarimax_residuals<'py>(
 
     let sarimax_params = SarimaxParams {
         trend_coeffs: vec![],
-        exog_coeffs: vec![],
+        exog_coeffs: exog_coeffs.to_vec(),
         ar_coeffs: ar_coeffs.to_vec(),
         ma_coeffs: ma_coeffs.to_vec(),
         sar_coeffs: sar_coeffs.to_vec(),
@@ -337,7 +344,7 @@ fn sarimax_residuals<'py>(
         sigma2: None,
     };
 
-    let result = forecast::residuals_pipeline(endog, &config, &sarimax_params)
+    let result = forecast::residuals_pipeline(endog, &config, &sarimax_params, exog_cols.as_deref())
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let dict = PyDict::new(py);
@@ -354,7 +361,8 @@ fn sarimax_residuals<'py>(
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal,
                     enforce_stationarity=true, enforce_invertibility=true,
-                    concentrate_scale=true, method=None, maxiter=None))]
+                    concentrate_scale=true, method=None, maxiter=None,
+                    exog_list=None))]
 fn sarimax_batch_fit<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -365,13 +373,20 @@ fn sarimax_batch_fit<'py>(
     concentrate_scale: bool,
     method: Option<&str>,
     maxiter: Option<u64>,
+    exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
 ) -> PyResult<Py<PyList>> {
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
+    // Determine n_exog from first exog array if provided
+    let exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_list.as_ref().map(|el| {
+        el.iter().map(|e| numpy2d_to_cols(e)).collect()
+    });
+    let n_exog = exog_vecs.as_ref().and_then(|v| v.first()).map_or(0, |c| c.len());
+
     let config = SarimaxConfig {
         order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity,
         enforce_invertibility,
@@ -387,7 +402,7 @@ fn sarimax_batch_fit<'py>(
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     // Run parallel computation (Rayon thread pool runs independently of GIL)
-    let results = batch::batch_fit(&series, &config, method, maxiter);
+    let results = batch::batch_fit(&series, &config, method, maxiter, exog_vecs.as_deref());
 
     // Convert results to Python dicts
     let py_results: Vec<Py<PyDict>> = results
@@ -426,7 +441,8 @@ fn sarimax_batch_fit<'py>(
 /// Returns a list of dicts (one per series).
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal, params_list,
-                    steps=10, alpha=0.05, concentrate_scale=true))]
+                    steps=10, alpha=0.05, concentrate_scale=true,
+                    exog_list=None, exog_forecast_list=None))]
 fn sarimax_batch_forecast<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -436,6 +452,8 @@ fn sarimax_batch_forecast<'py>(
     steps: usize,
     alpha: f64,
     concentrate_scale: bool,
+    exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    exog_forecast_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
 ) -> PyResult<Py<PyList>> {
     if series_list.len() != params_list.len() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -448,9 +466,17 @@ fn sarimax_batch_forecast<'py>(
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
+    let exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_list.as_ref().map(|el| {
+        el.iter().map(|e| numpy2d_to_cols(e)).collect()
+    });
+    let future_exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_forecast_list.as_ref().map(|el| {
+        el.iter().map(|e| numpy2d_to_cols(e)).collect()
+    });
+    let n_exog = exog_vecs.as_ref().and_then(|v| v.first()).map_or(0, |c| c.len());
+
     let config = SarimaxConfig {
         order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
-        n_exog: 0,
+        n_exog,
         trend: Trend::None,
         enforce_stationarity: false,
         enforce_invertibility: false,
@@ -469,7 +495,10 @@ fn sarimax_batch_forecast<'py>(
         .map(|a| a.as_slice().map(|s| s.to_vec()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let results = batch::batch_forecast(&series, &config, &params_vecs, steps, alpha);
+    let results = batch::batch_forecast(
+        &series, &config, &params_vecs, steps, alpha,
+        exog_vecs.as_deref(), future_exog_vecs.as_deref(),
+    );
 
     let py_results: Vec<Py<PyDict>> = results
         .into_iter()

@@ -28,7 +28,7 @@ fn bench_fit_ar1(c: &mut Criterion) {
     };
 
     c.bench_function("fit_ar1_n500", |b| {
-        b.iter(|| optimizer::fit(&data, &config, None, Some("lbfgs"), None).unwrap())
+        b.iter(|| optimizer::fit(&data, &config, None, Some("lbfgs"), None, None).unwrap())
     });
 }
 
@@ -46,7 +46,7 @@ fn bench_fit_arima111(c: &mut Criterion) {
     };
 
     c.bench_function("fit_arima111_n500", |b| {
-        b.iter(|| optimizer::fit(&data, &config, None, Some("lbfgs"), None).unwrap())
+        b.iter(|| optimizer::fit(&data, &config, None, Some("lbfgs"), None, None).unwrap())
     });
 }
 

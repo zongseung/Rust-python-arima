@@ -39,6 +39,8 @@ pub fn forecast(
     filter_output: &KalmanFilterOutput,
     steps: usize,
     alpha: f64,
+    future_exog: Option<&[Vec<f64>]>,
+    exog_coeffs: &[f64],
 ) -> Result<ForecastResult> {
     if steps == 0 {
         return Ok(ForecastResult {
@@ -69,9 +71,18 @@ pub fn forecast(
     let mut ci_lower = Vec::with_capacity(steps);
     let mut ci_upper = Vec::with_capacity(steps);
 
-    for _ in 0..steps {
+    for h in 0..steps {
         // Forecast mean: y_hat = Z' * a
         let y_hat = z.dot(&a);
+
+        // Add exogenous contribution: d_h = Σ(x_j[h] * β_j)
+        let d_h = match future_exog {
+            Some(cols) => cols.iter()
+                .zip(exog_coeffs.iter())
+                .map(|(col, &b)| if h < col.len() { col[h] * b } else { 0.0 })
+                .sum::<f64>(),
+            None => 0.0,
+        };
 
         // Forecast variance: F = Z' * P * Z * scale
         let p_z = &p * z;
@@ -79,10 +90,10 @@ pub fn forecast(
         let f_safe = f_h.max(0.0);
 
         let se = f_safe.sqrt();
-        mean.push(y_hat);
+        mean.push(y_hat + d_h);
         variance.push(f_safe);
-        ci_lower.push(y_hat - z_alpha * se);
-        ci_upper.push(y_hat + z_alpha * se);
+        ci_lower.push(y_hat + d_h - z_alpha * se);
+        ci_upper.push(y_hat + d_h + z_alpha * se);
 
         // Propagate state: a_{h+1} = T * a_h
         a = t_mat * &a;
@@ -129,11 +140,13 @@ pub fn forecast_pipeline(
     params: &SarimaxParams,
     steps: usize,
     alpha: f64,
+    exog: Option<&[Vec<f64>]>,
+    future_exog: Option<&[Vec<f64>]>,
 ) -> Result<ForecastResult> {
-    let ss = StateSpace::new(config, params, endog, None)?;
+    let ss = StateSpace::new(config, params, endog, exog)?;
     let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
-    forecast(&ss, &fo, steps, alpha)
+    forecast(&ss, &fo, steps, alpha, future_exog, &params.exog_coeffs)
 }
 
 /// Run residuals pipeline: build state space → filter → residuals.
@@ -141,8 +154,9 @@ pub fn residuals_pipeline(
     endog: &[f64],
     config: &SarimaxConfig,
     params: &SarimaxParams,
+    exog: Option<&[Vec<f64>]>,
 ) -> Result<ResidualOutput> {
-    let ss = StateSpace::new(config, params, endog, None)?;
+    let ss = StateSpace::new(config, params, endog, exog)?;
     let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
     Ok(compute_residuals(&fo))
@@ -245,7 +259,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[phi], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 5, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 5, 0.05, None, None).unwrap();
         assert_eq!(result.mean.len(), 5);
 
         // Forecast variance should be increasing
@@ -266,7 +280,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 5, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 5, 0.05, None, None).unwrap();
         for i in 0..5 {
             let lower_dist = (result.mean[i] - result.ci_lower[i]).abs();
             let upper_dist = (result.ci_upper[i] - result.mean[i]).abs();
@@ -286,7 +300,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 0, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 0, 0.05, None, None).unwrap();
         assert!(result.mean.is_empty());
     }
 
@@ -300,7 +314,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = residuals_pipeline(&data, &config, &params).unwrap();
+        let result = residuals_pipeline(&data, &config, &params, None).unwrap();
         assert_eq!(result.residuals.len(), data.len());
         assert_eq!(result.standardized_residuals.len(), data.len());
     }
@@ -317,7 +331,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&params_vec[..1], &[]);
 
-        let result = residuals_pipeline(&data, &config, &params).unwrap();
+        let result = residuals_pipeline(&data, &config, &params, None).unwrap();
 
         // After burn-in, standardized residuals should have variance ~ 1
         let burn = config.order.k_states();

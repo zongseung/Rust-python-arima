@@ -41,26 +41,32 @@ def test_rejects_invalid_seasonal_d_s_combination():
         )
 
 
-def test_exog_not_implemented_explicit_error():
+def test_exog_basic_acceptance():
+    """Verify that exog (2D array) is accepted and produces valid results."""
     y = _sample_series()
-    exog = np.ones_like(y)
+    n = len(y)
+    # Create a 2D exog array: (n_obs, 1)
+    exog = np.ones((n, 1), dtype=np.float64)
 
-    with pytest.raises(NotImplementedError, match="not yet supported"):
-        sarimax_rs.sarimax_loglike(
-            y,
-            (1, 0, 0),
-            (0, 0, 0, 0),
-            np.array([0.1], dtype=np.float64),
-            exog=exog,
-        )
+    # loglike with exog: params = [exog_coeff(1), ar(1)] = 2 params
+    ll = sarimax_rs.sarimax_loglike(
+        y,
+        (1, 0, 0),
+        (0, 0, 0, 0),
+        np.array([0.0, 0.1], dtype=np.float64),  # [exog_beta, ar_phi]
+        exog=exog,
+    )
+    assert np.isfinite(ll), f"loglike with exog should be finite, got {ll}"
 
-    with pytest.raises(NotImplementedError, match="not yet supported"):
-        sarimax_rs.sarimax_fit(
-            y,
-            (1, 0, 0),
-            (0, 0, 0, 0),
-            exog=exog,
-        )
+    # fit with exog
+    result = sarimax_rs.sarimax_fit(
+        y,
+        (1, 0, 0),
+        (0, 0, 0, 0),
+        exog=exog,
+    )
+    assert result["converged"], "fit with exog should converge"
+    assert len(result["params"]) == 2, "should have exog_coeff + ar_coeff"
 
 
 def test_fit_rejects_non_positive_sigma2_when_not_concentrated():
