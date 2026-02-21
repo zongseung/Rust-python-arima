@@ -131,7 +131,7 @@ pub fn forecast_pipeline(
     alpha: f64,
 ) -> Result<ForecastResult> {
     let ss = StateSpace::new(config, params, endog, None)?;
-    let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
     forecast(&ss, &fo, steps, alpha)
 }
@@ -143,7 +143,7 @@ pub fn residuals_pipeline(
     params: &SarimaxParams,
 ) -> Result<ResidualOutput> {
     let ss = StateSpace::new(config, params, endog, None)?;
-    let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
     Ok(compute_residuals(&fo))
 }

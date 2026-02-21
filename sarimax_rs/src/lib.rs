@@ -39,7 +39,8 @@ fn version() -> &'static str {
 /// * `exog` - Optional exogenous variables (not yet implemented)
 /// * `concentrate_scale` - If true, concentrate sigma2 out of likelihood
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true,
+                    enforce_stationarity=false, enforce_invertibility=false))]
 fn sarimax_loglike<'py>(
     _py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -48,6 +49,8 @@ fn sarimax_loglike<'py>(
     params: PyReadonlyArray1<'py, f64>,
     exog: Option<PyReadonlyArray1<'py, f64>>,
     concentrate_scale: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<f64> {
     if exog.is_some() {
         return Err(pyo3::exceptions::PyNotImplementedError::new_err(
@@ -67,8 +70,8 @@ fn sarimax_loglike<'py>(
         order: sarimax_order,
         n_exog: 0,
         trend: Trend::None,
-        enforce_stationarity: false,
-        enforce_invertibility: false,
+        enforce_stationarity,
+        enforce_invertibility,
         concentrate_scale,
         simple_differencing: false,
         measurement_error: false,
@@ -103,10 +106,7 @@ fn sarimax_loglike<'py>(
     let ss = StateSpace::new(&config, &sarimax_params, endog, None)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
-    let init = KalmanInit::approximate_diffuse(
-        ss.k_states,
-        KalmanInit::default_kappa(),
-    );
+    let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
 
     let output = kalman::kalman_loglike(endog, &ss, &init, concentrate_scale)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;

@@ -136,7 +136,52 @@ fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
 
     // Extract MA(q) coefficients from theta[m][0..q]
     (0..q)
-        .map(|k| theta[m][k].clamp(-0.95, 0.95))
+        .map(|k| theta[m][k].clamp(-0.99, 0.99))
+        .collect()
+}
+
+/// Estimate seasonal MA coefficients from autocovariances at seasonal lags.
+///
+/// Instead of subsampling every s-th observation (which discards most data),
+/// computes autocovariances at lags 0, s, 2s, ..., Q*s from the full series
+/// and applies the innovation algorithm on these seasonal autocovariances.
+fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
+    if qq == 0 || s == 0 || residuals.len() <= qq * s {
+        return vec![0.0; qq];
+    }
+
+    // Compute autocovariances at seasonal lags: γ(0), γ(s), γ(2s), ..., γ(Q*s)
+    let gamma: Vec<f64> = (0..=qq)
+        .map(|k| autocovariance(residuals, k * s))
+        .collect();
+
+    if gamma[0].abs() < 1e-15 {
+        return vec![0.0; qq];
+    }
+
+    // Innovation algorithm treating seasonal lags as consecutive
+    let m = qq;
+    let mut theta = vec![vec![0.0; m]; m + 1];
+    let mut v = vec![0.0; m + 1];
+    v[0] = gamma[0];
+
+    for i in 1..=m {
+        for k in 0..i {
+            let mut sum = gamma[i - k];
+            for j in 0..k {
+                sum -= theta[k][k - 1 - j] * theta[i][i - 1 - j] * v[j];
+            }
+            theta[i][i - 1 - k] = if v[k].abs() > 1e-15 { sum / v[k] } else { 0.0 };
+        }
+        v[i] = gamma[0];
+        for j in 0..i {
+            v[i] -= theta[i][i - 1 - j].powi(2) * v[j];
+        }
+        v[i] = v[i].max(1e-15);
+    }
+
+    (0..qq)
+        .map(|k| theta[m][k].clamp(-0.99, 0.99))
         .collect()
 }
 
@@ -213,15 +258,9 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec
 
     // Seasonal MA coefficients
     if qq > 0 && s > 0 {
-        let sar_coeffs = if pp > 0 && s > 0 {
-            let seasonal_data: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-            yule_walker(&seasonal_data, pp).unwrap_or_else(|| vec![0.0; pp])
-        } else {
-            vec![]
-        };
-        let seasonal_resid: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-        let seasonal_resid = ar_residuals(&seasonal_resid, &sar_coeffs);
-        let sma = estimate_ma_from_residuals(&seasonal_resid, qq);
+        // Use full residuals with seasonal-lag autocovariances
+        // (much more accurate than subsampling every s-th observation)
+        let sma = estimate_seasonal_ma(&residuals, qq, s);
         params.extend_from_slice(&sma);
     } else {
         params.extend(vec![0.0; qq]);

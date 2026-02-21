@@ -26,8 +26,7 @@ pub fn batch_loglike(
         .par_iter()
         .map(|endog| {
             let ss = StateSpace::new(config, params, endog, None)?;
-            let init =
-                KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
+            let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
             let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
             Ok(output.loglike)
         })
@@ -250,7 +249,7 @@ mod tests {
     fn test_batch_error_handling() {
         let config = make_config(1, 0, 0, true, true);
         let good_data = get_ar1_data();
-        let bad_data = vec![1.0]; // Too short for AR(1)
+        let bad_data = vec![]; // Empty series always fails
 
         let series = vec![good_data, bad_data];
         let results = batch_fit(&series, &config, Some("lbfgs"), Some(500));
