@@ -185,7 +185,7 @@ fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Compute AR residuals given coefficients.
+/// Compute AR residuals given coefficients (lag-1 recursion).
 fn ar_residuals(y: &[f64], ar: &[f64]) -> Vec<f64> {
     let p = ar.len();
     if p == 0 {
@@ -197,6 +197,30 @@ fn ar_residuals(y: &[f64], ar: &[f64]) -> Vec<f64> {
         let mut pred = 0.0;
         for j in 0..p {
             pred += ar[j] * y[t - 1 - j];
+        }
+        resid.push(y[t] - pred);
+    }
+    resid
+}
+
+/// Compute seasonal AR residuals at seasonal lags (lag s, 2s, ..., P*s).
+///
+/// y[t] - sar[0]*y[t-s] - sar[1]*y[t-2s] - ... - sar[P-1]*y[t-P*s]
+fn seasonal_ar_residuals(y: &[f64], sar: &[f64], s: usize) -> Vec<f64> {
+    let pp = sar.len();
+    if pp == 0 || s == 0 {
+        return y.to_vec();
+    }
+    let n = y.len();
+    let start = pp * s;
+    if n <= start {
+        return vec![];
+    }
+    let mut resid = Vec::with_capacity(n - start);
+    for t in start..n {
+        let mut pred = 0.0;
+        for j in 0..pp {
+            pred += sar[j] * y[t - (j + 1) * s];
         }
         resid.push(y[t] - pred);
     }
@@ -293,9 +317,13 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
 
     // Seasonal MA coefficients
     if qq > 0 && s > 0 {
-        // Use full residuals with seasonal-lag autocovariances
-        // (much more accurate than subsampling every s-th observation)
-        let sma = estimate_seasonal_ma(&residuals, qq, s);
+        // Filter through seasonal AR at lags s, 2s, ..., P*s to get proper residuals
+        let sar_resid = if pp > 0 {
+            seasonal_ar_residuals(&diffed, &params[kt + config.n_exog + p + q..kt + config.n_exog + p + q + pp], s)
+        } else {
+            residuals.clone()
+        };
+        let sma = estimate_seasonal_ma(&sar_resid, qq, s);
         params.extend_from_slice(&sma);
     } else {
         params.extend(vec![0.0; qq]);
