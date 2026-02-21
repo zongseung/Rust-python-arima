@@ -161,6 +161,7 @@ fn kalman_core(
     let mut f_steady = 0.0;
     let mut log_f_steady = 0.0;
     let mut pz_prev = DVector::<f64>::zeros(k);
+    let mut pz_inf = DVector::<f64>::zeros(k);  // cached pz_∞ = P_∞ * Z at convergence
     let mut consec_count = 0_usize;
 
     for t in 0..n {
@@ -201,10 +202,14 @@ fn kalman_core(
             }
 
             if store_full {
-                // Filtered state: a_filt = a + (v_t / F_∞) * pz_∞
-                // We can approximate from the prediction since P is converged
+                // Filtered state: a_{t|t} = a_{t|t-1} + (v_t / F_∞) * pz_∞
                 a_filtered.copy_from(&a);
-                // pz_∞ was the last computed pz; P is steady too
+                let scale_v = v_t / f_steady;
+                let af_s = a_filtered.as_mut_slice();
+                let pz_s = pz_inf.as_slice();
+                for i in 0..k {
+                    af_s[i] += scale_v * pz_s[i];
+                }
             }
 
             std::mem::swap(&mut a, &mut a_next);
@@ -328,6 +333,7 @@ fn kalman_core(
                             converged = true;
                             f_steady = z.dot(&pz);
                             log_f_steady = f_steady.ln();
+                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
                             // K_∞ = T * pz_∞
                             {
                                 let pz_s = pz.as_slice();
@@ -457,6 +463,7 @@ fn kalman_core(
                             converged = true;
                             f_steady = z.dot(&pz);
                             log_f_steady = f_steady.ln();
+                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
                             k_gain.gemv(1.0, t_mat, &pz, 0.0);
                         }
                     } else {

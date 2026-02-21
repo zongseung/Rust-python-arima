@@ -94,6 +94,46 @@ fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
     Some(phi)
 }
 
+/// Solve Yule-Walker equations from a pre-computed autocovariance sequence.
+///
+/// `gammas` should contain gamma(0), gamma(1), ..., gamma(p) where these may
+/// be at seasonal lags (i.e. gamma[k] = autocovariance at lag k*s).
+/// Returns AR coefficients [phi_1, ..., phi_p].
+fn yule_walker_from_acov(gammas: &[f64], p: usize) -> Option<Vec<f64>> {
+    if p == 0 || gammas.len() <= p {
+        return Some(vec![]);
+    }
+
+    if gammas[0].abs() < 1e-15 {
+        return None;
+    }
+
+    // Levinson-Durbin recursion for efficient Toeplitz solve
+    let mut phi = vec![0.0; p];
+    let mut phi_prev = vec![0.0; p];
+    let mut var = gammas[0];
+
+    for k in 0..p {
+        let mut num = gammas[k + 1];
+        for j in 0..k {
+            num -= phi[j] * gammas[k - j];
+        }
+        if var.abs() < 1e-15 {
+            return None;
+        }
+        let lambda = num / var;
+
+        phi_prev[..p].copy_from_slice(&phi[..p]);
+        phi[k] = lambda;
+        for j in 0..k {
+            phi[j] = phi_prev[j] - lambda * phi_prev[k - 1 - j];
+        }
+        var *= 1.0 - lambda * lambda;
+    }
+
+    Some(phi)
+}
+
 /// Estimate MA coefficients via the innovation algorithm (Brockwell & Davis).
 ///
 /// More accurate than raw autocorrelation because the innovation algorithm
@@ -301,15 +341,16 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
     let ma = estimate_ma_from_residuals(&residuals, q);
     params.extend_from_slice(&ma);
 
-    // Seasonal AR coefficients
-    if pp > 0 && s > 0 {
-        // Subsample at seasonal lag
-        let seasonal_data: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-        let sar = if seasonal_data.len() > pp {
-            yule_walker(&seasonal_data, pp).unwrap_or_else(|| vec![0.0; pp])
-        } else {
-            vec![0.0; pp]
-        };
+    // Seasonal AR coefficients via Yule-Walker on seasonal autocovariances.
+    // Instead of subsampling every s-th observation (which discards most data),
+    // compute autocovariances at lags 0, s, 2s, ..., P*s from ALL observations
+    // and solve Yule-Walker equations on those.
+    if pp > 0 && s > 0 && diffed.len() > pp * s {
+        let seasonal_gammas: Vec<f64> = (0..=pp)
+            .map(|k| autocovariance(&diffed, k * s))
+            .collect();
+        let sar = yule_walker_from_acov(&seasonal_gammas, pp)
+            .unwrap_or_else(|| vec![0.0; pp]);
         params.extend_from_slice(&sar);
     } else {
         params.extend(vec![0.0; pp]);

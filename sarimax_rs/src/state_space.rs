@@ -67,6 +67,18 @@ impl StateSpace {
         let k_posdef = 1;
         let n = endog.len();
 
+        // V-3: Validate exog column lengths match number of observations
+        if let Some(ref x) = exog {
+            for (j, col) in x.iter().enumerate() {
+                if col.len() != n {
+                    return Err(SarimaxError::DataError(format!(
+                        "exog column {} has {} rows but y has {} observations",
+                        j, col.len(), n
+                    )));
+                }
+            }
+        }
+
         // Build matrices
         let transition = Self::build_transition(config, params)?;
         let design = Self::build_design(config);

@@ -351,9 +351,10 @@ fn compute_bounds(config: &SarimaxConfig) -> Vec<(Option<f64>, Option<f64>)> {
         bounds.push((Some(-ma_bound), Some(ma_bound)));
     }
 
-    // sigma2 (unconstrained space: √ transform means value itself can be any real)
+    // sigma2 (unconstrained space: exp/log transform, so any real maps to positive σ²)
+    // Lower bound -50.0 maps to σ² ≈ 1.9e-22, preventing extreme values
     if !config.concentrate_scale {
-        bounds.push((Some(1e-10), None));
+        bounds.push((Some(-50.0), None));
     }
 
     bounds

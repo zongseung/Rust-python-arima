@@ -178,13 +178,14 @@ pub fn unconstrain_invertible(constrained: &[f64]) -> Vec<f64> {
     unconstrain_stationary(&negated)
 }
 
-/// Constrain variance: unconstrained → positive (x^2).
+/// Constrain variance: unconstrained → positive (exp).
+/// Maps R → R+ with non-zero gradient everywhere (statsmodels convention).
 pub fn constrain_variance(x: f64) -> f64 {
-    x * x
+    x.exp()
 }
 
-/// Unconstrain variance: positive → unconstrained (sqrt).
-/// Returns error if s <= 0.
+/// Unconstrain variance: positive → unconstrained (ln).
+/// Maps R+ → R. Returns error if s <= 0.
 pub fn unconstrain_variance(s: f64) -> Result<f64> {
     if s <= 0.0 {
         return Err(SarimaxError::DataError(format!(
@@ -192,7 +193,7 @@ pub fn unconstrain_variance(s: f64) -> Result<f64> {
             s
         )));
     }
-    Ok(s.sqrt())
+    Ok(s.ln())
 }
 
 // ---------------------------------------------------------------------------
@@ -340,8 +341,8 @@ mod tests {
     fn test_variance_roundtrip() {
         let x = 2.5;
         let s = constrain_variance(x);
-        assert!((s - 6.25).abs() < 1e-10);
+        assert!((s - x.exp()).abs() < 1e-10);
         let x2 = unconstrain_variance(s).unwrap();
-        assert!((x2 - x.abs()).abs() < 1e-10);
+        assert!((x2 - x).abs() < 1e-10);
     }
 }
