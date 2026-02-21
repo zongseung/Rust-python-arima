@@ -5,11 +5,13 @@ Validates:
 2. batch_forecast results match sequential forecast loop
 3. Error handling for mixed success/failure series
 4. Return type correctness
+5. Input validation (alpha, steps) parity with single API
 """
 
 import time
 
 import numpy as np
+import pytest
 import sarimax_rs
 
 
@@ -136,3 +138,58 @@ def test_batch_empty_input():
         [], (1, 0, 0), (0, 0, 0, 0)
     )
     assert results == [] or len(results) == 0
+
+
+# ---- Failure case tests (Issue #3, #4) ----
+
+
+def _fit_single_series():
+    """Helper: fit a single AR(1) series, return (series, params)."""
+    y = generate_ar1_series(seed=42)
+    r = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    return y, np.array(r["params"])
+
+
+def test_batch_forecast_rejects_alpha_too_high():
+    """batch_forecast should reject alpha >= 1."""
+    y, params = _fit_single_series()
+    with pytest.raises(ValueError, match="alpha must be in"):
+        sarimax_rs.sarimax_batch_forecast(
+            [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=5, alpha=1.5
+        )
+
+
+def test_batch_forecast_rejects_alpha_too_low():
+    """batch_forecast should reject alpha <= 0."""
+    y, params = _fit_single_series()
+    with pytest.raises(ValueError, match="alpha must be in"):
+        sarimax_rs.sarimax_batch_forecast(
+            [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=5, alpha=0.0
+        )
+
+
+def test_batch_forecast_rejects_alpha_negative():
+    """batch_forecast should reject negative alpha."""
+    y, params = _fit_single_series()
+    with pytest.raises(ValueError, match="alpha must be in"):
+        sarimax_rs.sarimax_batch_forecast(
+            [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=5, alpha=-0.1
+        )
+
+
+def test_batch_forecast_rejects_steps_too_large():
+    """batch_forecast should reject steps > 10000."""
+    y, params = _fit_single_series()
+    with pytest.raises(ValueError, match="steps must be <= 10000"):
+        sarimax_rs.sarimax_batch_forecast(
+            [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=10001
+        )
+
+
+def test_batch_forecast_series_params_length_mismatch():
+    """batch_forecast should reject mismatched series_list/params_list lengths."""
+    y, params = _fit_single_series()
+    with pytest.raises(ValueError, match="same length"):
+        sarimax_rs.sarimax_batch_forecast(
+            [y, y], (1, 0, 0), (0, 0, 0, 0), [params], steps=5
+        )

@@ -23,6 +23,23 @@ use crate::params::SarimaxParams;
 use crate::state_space::StateSpace;
 use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
 
+/// Validate forecast inputs common to both single and batch APIs.
+fn validate_forecast_inputs(alpha: f64, steps: usize) -> PyResult<()> {
+    if alpha <= 0.0 || alpha >= 1.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "alpha must be in (0, 1), got {}",
+            alpha
+        )));
+    }
+    if steps > 10_000 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "steps must be <= 10000, got {}",
+            steps
+        )));
+    }
+    Ok(())
+}
+
 /// Smoke-test function: returns the version string.
 #[pyfunction]
 fn version() -> &'static str {
@@ -205,19 +222,7 @@ fn sarimax_forecast<'py>(
         ));
     }
 
-    if alpha <= 0.0 || alpha >= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "alpha must be in (0, 1), got {}",
-            alpha
-        )));
-    }
-
-    if steps > 10_000 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "steps must be <= 10000, got {}",
-            steps
-        )));
-    }
+    validate_forecast_inputs(alpha, steps)?;
 
     let endog = y.as_slice()?;
     let params_flat = params.as_slice()?;
@@ -392,29 +397,29 @@ fn sarimax_batch_fit<'py>(
     // Convert results to Python dicts
     let py_results: Vec<Py<PyDict>> = results
         .into_iter()
-        .map(|r: crate::error::Result<crate::types::FitResult>| {
+        .map(|r: crate::error::Result<crate::types::FitResult>| -> PyResult<Py<PyDict>> {
             let dict = PyDict::new(py);
             match r {
                 Ok(result) => {
-                    dict.set_item("params", result.params).unwrap();
-                    dict.set_item("loglike", result.loglike).unwrap();
-                    dict.set_item("scale", result.scale).unwrap();
-                    dict.set_item("aic", result.aic).unwrap();
-                    dict.set_item("bic", result.bic).unwrap();
-                    dict.set_item("n_obs", result.n_obs).unwrap();
-                    dict.set_item("n_params", result.n_params).unwrap();
-                    dict.set_item("n_iter", result.n_iter).unwrap();
-                    dict.set_item("converged", result.converged).unwrap();
-                    dict.set_item("method", result.method).unwrap();
+                    dict.set_item("params", result.params)?;
+                    dict.set_item("loglike", result.loglike)?;
+                    dict.set_item("scale", result.scale)?;
+                    dict.set_item("aic", result.aic)?;
+                    dict.set_item("bic", result.bic)?;
+                    dict.set_item("n_obs", result.n_obs)?;
+                    dict.set_item("n_params", result.n_params)?;
+                    dict.set_item("n_iter", result.n_iter)?;
+                    dict.set_item("converged", result.converged)?;
+                    dict.set_item("method", result.method)?;
                 }
                 Err(e) => {
-                    dict.set_item("error", e.to_string()).unwrap();
-                    dict.set_item("converged", false).unwrap();
+                    dict.set_item("error", e.to_string())?;
+                    dict.set_item("converged", false)?;
                 }
             }
-            dict.into()
+            Ok(dict.into())
         })
-        .collect();
+        .collect::<PyResult<Vec<_>>>()?;
 
     let list = PyList::new(py, &py_results)?;
     Ok(list.into())
@@ -445,6 +450,8 @@ fn sarimax_batch_forecast<'py>(
         )));
     }
 
+    validate_forecast_inputs(alpha, steps)?;
+
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
 
@@ -473,22 +480,22 @@ fn sarimax_batch_forecast<'py>(
 
     let py_results: Vec<Py<PyDict>> = results
         .into_iter()
-        .map(|r: crate::error::Result<crate::forecast::ForecastResult>| {
+        .map(|r: crate::error::Result<crate::forecast::ForecastResult>| -> PyResult<Py<PyDict>> {
             let dict = PyDict::new(py);
             match r {
                 Ok(result) => {
-                    dict.set_item("mean", result.mean).unwrap();
-                    dict.set_item("variance", result.variance).unwrap();
-                    dict.set_item("ci_lower", result.ci_lower).unwrap();
-                    dict.set_item("ci_upper", result.ci_upper).unwrap();
+                    dict.set_item("mean", result.mean)?;
+                    dict.set_item("variance", result.variance)?;
+                    dict.set_item("ci_lower", result.ci_lower)?;
+                    dict.set_item("ci_upper", result.ci_upper)?;
                 }
                 Err(e) => {
-                    dict.set_item("error", e.to_string()).unwrap();
+                    dict.set_item("error", e.to_string())?;
                 }
             }
-            dict.into()
+            Ok(dict.into())
         })
-        .collect();
+        .collect::<PyResult<Vec<_>>>()?;
 
     let list = PyList::new(py, &py_results)?;
     Ok(list.into())

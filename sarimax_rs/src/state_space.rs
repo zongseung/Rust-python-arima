@@ -74,7 +74,7 @@ impl StateSpace {
         let state_cov = Self::build_state_cov(config, params);
 
         // Observation intercept: d_t = exog * beta
-        let obs_intercept = Self::build_obs_intercept(n, params, exog);
+        let obs_intercept = Self::build_obs_intercept(n, params, exog)?;
 
         // State intercept: c_t (trend contribution)
         let state_intercept = Self::build_state_intercept(n, k_states, k_states_diff, config, params);
@@ -254,19 +254,28 @@ impl StateSpace {
         n: usize,
         params: &SarimaxParams,
         exog: Option<&[Vec<f64>]>,
-    ) -> Vec<f64> {
+    ) -> Result<Vec<f64>> {
         match exog {
             Some(x) if !params.exog_coeffs.is_empty() => {
-                (0..n)
+                // Validate exog column lengths match endog length
+                for (j, col) in x.iter().enumerate() {
+                    if col.len() < n {
+                        return Err(SarimaxError::StateSpaceError(format!(
+                            "exog column {} has {} rows, but endog has {} observations",
+                            j, col.len(), n
+                        )));
+                    }
+                }
+                Ok((0..n)
                     .map(|t| {
                         x.iter()
                             .zip(params.exog_coeffs.iter())
                             .map(|(col, &b)| col[t] * b)
                             .sum()
                     })
-                    .collect()
+                    .collect())
             }
-            _ => vec![0.0; n],
+            _ => Ok(vec![0.0; n]),
         }
     }
 
