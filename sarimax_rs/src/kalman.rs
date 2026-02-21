@@ -56,19 +56,22 @@ pub fn kalman_loglike(
     let r_mat = &ss.selection;
     let q_mat = &ss.state_cov;
 
-    // Precompute R*Q*R' (time-invariant)
+    // Precompute time-invariant matrices
     let rqr = r_mat * q_mat * r_mat.transpose();
+    let t_mat_t = t_mat.transpose();
+    let has_state_intercept = ss.state_intercept.len() == n * k;
 
     let mut sum_log_f = 0.0;
     let mut sum_v2_f = 0.0;
     let mut innovations = Vec::with_capacity(n);
 
-    let eye = DMatrix::<f64>::identity(k, k);
+    // Pre-allocate work buffers (zero heap allocation in the loop)
+    let mut pz = DVector::<f64>::zeros(k);
+    let mut a_next = DVector::<f64>::zeros(k);
+    let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
     for t in 0..n {
         // --- Innovation ---
-        // a is a_{t|t-1} (predicted state for time t)
-        // v_t = y_t - Z' * a_{t|t-1} - d_t
         let d_t = if t < ss.obs_intercept.len() {
             ss.obs_intercept[t]
         } else {
@@ -77,42 +80,40 @@ pub fn kalman_loglike(
         let v_t = endog[t] - z.dot(&a) - d_t;
         innovations.push(v_t);
 
-        // F_t = Z' * P_{t|t-1} * Z (scalar, univariate)
-        let p_z = &p * z;
-        let f_t: f64 = z.dot(&p_z);
+        // pz = P * z (in-place)
+        pz.gemv(1.0, &p, z, 0.0);
+        let f_t: f64 = z.dot(&pz);
 
         // --- Update & Predict ---
         if f_t > 0.0 {
-            // Kalman gain: K = P_{t|t-1} * Z / F_t
-            let k_gain = &p_z / f_t;
+            let f_inv = 1.0 / f_t;
 
-            // Update: a_{t|t} = a_{t|t-1} + K * v_t
-            let a_updated = &a + &k_gain * v_t;
+            // State update: a = a + (v_t / F_t) * pz
+            a.axpy(v_t * f_inv, &pz, 1.0);
 
-            // Joseph form: P_{t|t} = (I - K*Z') * P_{t|t-1} * (I - K*Z')'
-            let k_z_t = &k_gain * z.transpose();
-            let i_kz = &eye - &k_z_t;
-            let p_updated = &i_kz * &p * i_kz.transpose();
+            // Covariance update: P = P - (1/F_t) * pz * pz' (rank-1 downdate)
+            p.ger(-f_inv, &pz, &pz, 1.0);
 
-            // Predict: a_{t+1|t} = T * a_{t|t} + c_t
-            a = t_mat * &a_updated;
-            // P_{t+1|t} = T * P_{t|t} * T' + R * Q * R'
-            p = t_mat * &p_updated * t_mat.transpose() + &rqr;
-
-            // Add state intercept c_t to predicted state
-            if ss.state_intercept.len() == n * k {
+            // Predict state: a_next = T * a_updated
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
                 for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+                    a_next[i] += ss.state_intercept[t * k + i];
                 }
             }
 
-            // Accumulate log-likelihood terms for t >= burn
+            // Predict covariance: P = T * P_updated * T' + RQR'
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+
+            std::mem::swap(&mut a, &mut a_next);
+
             if t >= burn {
                 sum_log_f += f_t.ln();
-                sum_v2_f += v_t * v_t / f_t;
+                sum_v2_f += v_t * v_t * f_inv;
             }
         } else if t >= burn {
-            // F_t <= 0 after burn-in indicates numerical collapse
             return Err(SarimaxError::DataError(format!(
                 "innovation variance F_t <= 0 at t={} (F_t={}); \
                  model parameters may be numerically unstable",
@@ -120,13 +121,16 @@ pub fn kalman_loglike(
             )));
         } else {
             // F_t <= 0 during burn-in: skip update, predict from current state
-            a = t_mat * &a;
-            p = t_mat * &p * t_mat.transpose() + &rqr;
-            if ss.state_intercept.len() == n * k {
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
                 for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+                    a_next[i] += ss.state_intercept[t * k + i];
                 }
             }
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+            std::mem::swap(&mut a, &mut a_next);
         }
     }
 
@@ -140,7 +144,6 @@ pub fn kalman_loglike(
             - 0.5 * sum_log_f;
         (ll, sigma2_hat)
     } else {
-        // Non-concentrated: sigma2 is in Q already
         let ll = -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
             - 0.5 * sum_log_f
             - 0.5 * sum_v2_f;
@@ -211,18 +214,24 @@ pub fn kalman_filter(
     let r_mat = &ss.selection;
     let q_mat = &ss.state_cov;
 
+    // Precompute time-invariant matrices
     let rqr = r_mat * q_mat * r_mat.transpose();
+    let t_mat_t = t_mat.transpose();
+    let has_state_intercept = ss.state_intercept.len() == n * k;
 
     let mut sum_log_f = 0.0;
     let mut sum_v2_f = 0.0;
     let mut innovations = Vec::with_capacity(n);
     let mut innovation_vars = Vec::with_capacity(n);
 
-    let eye = DMatrix::<f64>::identity(k, k);
-
     // Track the last filtered state/cov
-    let mut a_filtered = a.clone();
-    let mut p_filtered = p.clone();
+    let mut a_filtered = DVector::<f64>::zeros(k);
+    let mut p_filtered = DMatrix::<f64>::zeros(k, k);
+
+    // Pre-allocate work buffers
+    let mut pz = DVector::<f64>::zeros(k);
+    let mut a_next = DVector::<f64>::zeros(k);
+    let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
     for t in 0..n {
         // --- Innovation ---
@@ -234,41 +243,45 @@ pub fn kalman_filter(
         let v_t = endog[t] - z.dot(&a) - d_t;
         innovations.push(v_t);
 
-        // F_t = Z' * P_{t|t-1} * Z (scalar, univariate)
-        let p_z = &p * z;
-        let f_t: f64 = z.dot(&p_z);
+        // pz = P * z (in-place)
+        pz.gemv(1.0, &p, z, 0.0);
+        let f_t: f64 = z.dot(&pz);
         innovation_vars.push(f_t);
 
         // --- Update & Predict ---
         if f_t > 0.0 {
-            let k_gain = &p_z / f_t;
-            let a_updated = &a + &k_gain * v_t;
+            let f_inv = 1.0 / f_t;
 
-            // Joseph form covariance update
-            let k_z_t = &k_gain * z.transpose();
-            let i_kz = &eye - &k_z_t;
-            let p_updated = &i_kz * &p * i_kz.transpose();
+            // State update: a = a + (v_t / F_t) * pz
+            a.axpy(v_t * f_inv, &pz, 1.0);
 
-            // Store filtered state/cov
-            a_filtered = a_updated.clone();
-            p_filtered = p_updated.clone();
+            // Covariance update: P = P - (1/F_t) * pz * pz' (rank-1 downdate)
+            p.ger(-f_inv, &pz, &pz, 1.0);
 
-            // Predict
-            a = t_mat * &a_updated;
-            p = t_mat * &p_updated * t_mat.transpose() + &rqr;
+            // Store filtered state/cov (reuse allocations)
+            a_filtered.copy_from(&a);
+            p_filtered.copy_from(&p);
 
-            if ss.state_intercept.len() == n * k {
+            // Predict state: a_next = T * a_updated
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
                 for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+                    a_next[i] += ss.state_intercept[t * k + i];
                 }
             }
 
+            // Predict covariance: P = T * P_updated * T' + RQR'
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+
+            std::mem::swap(&mut a, &mut a_next);
+
             if t >= burn {
                 sum_log_f += f_t.ln();
-                sum_v2_f += v_t * v_t / f_t;
+                sum_v2_f += v_t * v_t * f_inv;
             }
         } else if t >= burn {
-            // F_t <= 0 after burn-in indicates numerical collapse
             return Err(SarimaxError::DataError(format!(
                 "innovation variance F_t <= 0 at t={} (F_t={}); \
                  model parameters may be numerically unstable",
@@ -276,16 +289,19 @@ pub fn kalman_filter(
             )));
         } else {
             // F_t <= 0 during burn-in: skip update, use current state as filtered
-            a_filtered = a.clone();
-            p_filtered = p.clone();
+            a_filtered.copy_from(&a);
+            p_filtered.copy_from(&p);
 
-            a = t_mat * &a;
-            p = t_mat * &p * t_mat.transpose() + &rqr;
-            if ss.state_intercept.len() == n * k {
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
                 for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+                    a_next[i] += ss.state_intercept[t * k + i];
                 }
             }
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+            std::mem::swap(&mut a, &mut a_next);
         }
     }
 

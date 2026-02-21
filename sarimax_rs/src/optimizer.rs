@@ -192,24 +192,28 @@ impl Gradient for SarimaxObjective {
     fn gradient(&self, param: &Vec<f64>) -> std::result::Result<Vec<f64>, argmin::core::Error> {
         let n = param.len();
         let mut grad = vec![0.0; n];
-        let eps = 1e-7;
+        let eps = f64::EPSILON.sqrt(); // ~1.49e-8, optimal for forward-diff
 
+        // Forward-diff: n+1 evaluations (vs center-diff 2n+1)
         let f0 = self.cost(param)?;
+        let mut p_work = param.clone(); // single work buffer
 
         for i in 0..n {
-            let mut p_plus = param.clone();
-            p_plus[i] += eps;
-            let f_plus = self.cost(&p_plus)?;
+            let orig = p_work[i];
+            p_work[i] = orig + eps;
+            let f_plus = self.cost(&p_work)?;
+            p_work[i] = orig; // restore
 
-            let mut p_minus = param.clone();
-            p_minus[i] -= eps;
-            let f_minus = self.cost(&p_minus)?;
+            grad[i] = (f_plus - f0) / eps;
 
-            grad[i] = (f_plus - f_minus) / (2.0 * eps);
-
-            // Guard against non-finite gradients
+            // Fallback to center-diff if forward-diff yields NaN/Inf
             if !grad[i].is_finite() {
-                grad[i] = (f_plus - f0) / eps;
+                p_work[i] = orig + eps;
+                let fp = self.cost(&p_work)?;
+                p_work[i] = orig - eps;
+                let fm = self.cost(&p_work)?;
+                p_work[i] = orig;
+                grad[i] = (fp - fm) / (2.0 * eps);
                 if !grad[i].is_finite() {
                     grad[i] = 0.0;
                 }
@@ -231,9 +235,9 @@ fn run_lbfgs(
 ) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
     let linesearch = MoreThuenteLineSearch::new();
     let solver = LBFGS::new(linesearch, 7)
-        .with_tolerance_grad(1e-8)
+        .with_tolerance_grad(1e-5)
         .map_err(|e| e.to_string())?
-        .with_tolerance_cost(1e-12)
+        .with_tolerance_cost(1e-9)
         .map_err(|e| e.to_string())?;
 
     let result = Executor::new(objective, solver)
@@ -279,7 +283,7 @@ fn run_nelder_mead(
     }
 
     let solver = NelderMead::new(simplex)
-        .with_sd_tolerance(1e-10)
+        .with_sd_tolerance(1e-6)
         .map_err(|e| e.to_string())?;
 
     let result = Executor::new(objective, solver)
@@ -319,7 +323,7 @@ pub fn fit(
     method: Option<&str>,
     maxiter: Option<u64>,
 ) -> Result<FitResult> {
-    let maxiter = maxiter.unwrap_or(500);
+    let maxiter = maxiter.unwrap_or(200);
     let method = method.unwrap_or("lbfgs");
 
     // 1. Get starting parameters

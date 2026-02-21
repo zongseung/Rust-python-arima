@@ -94,26 +94,50 @@ fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
     Some(phi)
 }
 
-/// Estimate MA coefficients from AR residuals using innovation algorithm.
+/// Estimate MA coefficients via the innovation algorithm (Brockwell & Davis).
+///
+/// More accurate than raw autocorrelation because the innovation algorithm
+/// recovers the MA structure from the autocovariance sequence directly.
 fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
     if q == 0 || residuals.len() <= q {
         return vec![0.0; q];
     }
 
-    let gamma0 = autocovariance(residuals, 0);
-    if gamma0.abs() < 1e-15 {
+    // Compute autocovariances gamma(0..q)
+    let gamma: Vec<f64> = (0..=q).map(|k| autocovariance(residuals, k)).collect();
+
+    if gamma[0].abs() < 1e-15 {
         return vec![0.0; q];
     }
 
-    // Simple method: use autocorrelations of residuals as MA coefficients
-    // This is a rough estimate but sufficient for starting values
-    let mut ma = Vec::with_capacity(q);
-    for k in 1..=q {
-        let rho = autocovariance(residuals, k) / gamma0;
-        // Clamp to prevent extreme values
-        ma.push(rho.clamp(-0.9, 0.9));
+    // Innovation algorithm (Brockwell & Davis, Sec 5.2)
+    // Computes theta[i][j] and v[i] iteratively
+    let m = q;
+    let mut theta = vec![vec![0.0; m]; m + 1]; // theta[i][j], 0-indexed
+    let mut v = vec![0.0; m + 1];
+    v[0] = gamma[0];
+
+    for i in 1..=m {
+        // Compute theta[i][i-1-k] for k = 0..i
+        for k in 0..i {
+            let mut sum = gamma[i - k];
+            for j in 0..k {
+                sum -= theta[k][k - 1 - j] * theta[i][i - 1 - j] * v[j];
+            }
+            theta[i][i - 1 - k] = if v[k].abs() > 1e-15 { sum / v[k] } else { 0.0 };
+        }
+        // Update v[i]
+        v[i] = gamma[0];
+        for j in 0..i {
+            v[i] -= theta[i][i - 1 - j].powi(2) * v[j];
+        }
+        v[i] = v[i].max(1e-15);
     }
-    ma
+
+    // Extract MA(q) coefficients from theta[m][0..q]
+    (0..q)
+        .map(|k| theta[m][k].clamp(-0.95, 0.95))
+        .collect()
 }
 
 /// Compute AR residuals given coefficients.
