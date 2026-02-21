@@ -8,6 +8,7 @@ pub mod kalman;
 pub mod start_params;
 pub mod optimizer;
 pub mod forecast;
+pub mod score;
 pub mod batch;
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};

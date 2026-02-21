@@ -16,6 +16,7 @@ use crate::kalman::kalman_loglike;
 use crate::params::{
     self, SarimaxParams,
 };
+use crate::score;
 use crate::start_params::compute_start_params;
 use crate::state_space::StateSpace;
 use crate::types::{FitResult, SarimaxConfig};
@@ -181,6 +182,63 @@ impl SarimaxObjective {
     }
 }
 
+impl SarimaxObjective {
+    /// Compute analytical gradient of negative log-likelihood in unconstrained space.
+    ///
+    /// Uses score() (tangent linear KF) in constrained space, then applies
+    /// the chain rule via the Jacobian of transform_params.
+    fn analytical_gradient_negloglike(&self, unconstrained: &[f64]) -> std::result::Result<Vec<f64>, String> {
+        let constrained = transform_params(unconstrained, &self.config);
+
+        let sparams = SarimaxParams::from_flat(&constrained, &self.config)
+            .map_err(|e| e.to_string())?;
+
+        let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
+            .map_err(|e| e.to_string())?;
+
+        let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
+
+        // Score in constrained space: ∂ll/∂θ_constrained
+        let score_constrained = score::score(
+            &self.endog, &ss, &init, &self.config, &sparams,
+            self.config.concentrate_scale, self.exog.as_deref(),
+        ).map_err(|e| e.to_string())?;
+
+        // Chain rule: ∂(-ll)/∂u = -J' · ∂ll/∂θ
+        // where J[j,i] = ∂θ_j / ∂u_i (Jacobian of transform_params)
+        let grad = apply_transform_jacobian(&score_constrained, unconstrained, &self.config);
+
+        // Return negative gradient (minimizing -loglike)
+        Ok(grad.iter().map(|&g| -g).collect())
+    }
+}
+
+/// Apply the chain rule: grad_unconstrained = J' · grad_constrained.
+///
+/// Uses numerical Jacobian of transform_params (cheap: only n_params transform evaluations).
+fn apply_transform_jacobian(
+    score_constrained: &[f64],
+    unconstrained: &[f64],
+    config: &SarimaxConfig,
+) -> Vec<f64> {
+    let n = unconstrained.len();
+    let eps = 1e-7;
+    let c_base = transform_params(unconstrained, config);
+    let mut grad = vec![0.0; n];
+
+    for i in 0..n {
+        let mut u_pert = unconstrained.to_vec();
+        u_pert[i] += eps;
+        let c_pert = transform_params(&u_pert, config);
+
+        // grad[i] = Σ_j score[j] * ∂c_j/∂u_i
+        for j in 0..n {
+            grad[i] += score_constrained[j] * (c_pert[j] - c_base[j]) / eps;
+        }
+    }
+    grad
+}
+
 impl CostFunction for SarimaxObjective {
     type Param = Vec<f64>;
     type Output = f64;
@@ -198,23 +256,29 @@ impl Gradient for SarimaxObjective {
     type Gradient = Vec<f64>;
 
     fn gradient(&self, param: &Vec<f64>) -> std::result::Result<Vec<f64>, argmin::core::Error> {
+        // Try analytical gradient first (1 KF pass + tangent linear)
+        if let Ok(grad) = self.analytical_gradient_negloglike(param) {
+            if grad.iter().all(|g| g.is_finite()) {
+                return Ok(grad);
+            }
+        }
+
+        // Fallback: numerical forward-diff (n+1 KF evaluations)
         let n = param.len();
         let mut grad = vec![0.0; n];
-        let eps = f64::EPSILON.sqrt(); // ~1.49e-8, optimal for forward-diff
+        let eps = f64::EPSILON.sqrt();
 
-        // Forward-diff: n+1 evaluations (vs center-diff 2n+1)
         let f0 = self.cost(param)?;
-        let mut p_work = param.clone(); // single work buffer
+        let mut p_work = param.clone();
 
         for i in 0..n {
             let orig = p_work[i];
             p_work[i] = orig + eps;
             let f_plus = self.cost(&p_work)?;
-            p_work[i] = orig; // restore
+            p_work[i] = orig;
 
             grad[i] = (f_plus - f0) / eps;
 
-            // Fallback to center-diff if forward-diff yields NaN/Inf
             if !grad[i].is_finite() {
                 p_work[i] = orig + eps;
                 let fp = self.cost(&p_work)?;
@@ -383,20 +447,31 @@ fn run_lbfgsb(
             }
         };
 
-        // Forward-diff gradient (same as Gradient impl)
-        let eps = f64::EPSILON.sqrt();
-        let mut x_work = x.to_vec();
-        for i in 0..n {
-            let orig = x_work[i];
-            x_work[i] = orig + eps;
-            let f_plus = match obj.eval_negloglike(&x_work) {
-                Ok(c) if c.is_finite() => c,
-                _ => cost, // fallback: zero gradient for this component
-            };
-            x_work[i] = orig;
-            g[i] = (f_plus - cost) / eps;
-            if !g[i].is_finite() {
-                g[i] = 0.0;
+        // Try analytical gradient first (1 tangent linear KF pass)
+        let mut used_analytical = false;
+        if let Ok(ag) = obj.analytical_gradient_negloglike(x) {
+            if ag.iter().all(|v| v.is_finite()) {
+                g[..n].copy_from_slice(&ag);
+                used_analytical = true;
+            }
+        }
+
+        // Fallback: numerical forward-diff
+        if !used_analytical {
+            let eps = f64::EPSILON.sqrt();
+            let mut x_work = x.to_vec();
+            for i in 0..n {
+                let orig = x_work[i];
+                x_work[i] = orig + eps;
+                let f_plus = match obj.eval_negloglike(&x_work) {
+                    Ok(c) if c.is_finite() => c,
+                    _ => cost,
+                };
+                x_work[i] = orig;
+                g[i] = (f_plus - cost) / eps;
+                if !g[i].is_finite() {
+                    g[i] = 0.0;
+                }
             }
         }
         Ok(cost)
