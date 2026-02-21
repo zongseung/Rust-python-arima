@@ -114,7 +114,7 @@ fn sarimax_loglike<'py>(
     Ok(output.loglike)
 }
 
-/// Fit a SARIMAX model via MLE (L-BFGS with Nelder-Mead fallback).
+/// Fit a SARIMAX model via MLE (L-BFGS-B default, with Nelder-Mead fallback).
 ///
 /// Returns a dict with: params, loglike, scale, aic, bic, n_obs, n_iter, converged, method.
 #[pyfunction]

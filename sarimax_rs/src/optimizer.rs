@@ -150,6 +150,12 @@ struct SarimaxObjective {
 }
 
 impl SarimaxObjective {
+    /// Evaluate negative log-likelihood for given unconstrained parameters.
+    /// Used by L-BFGS-B which minimizes directly.
+    fn eval_negloglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
+        self.eval_loglike(unconstrained).map(|ll| -ll)
+    }
+
     /// Evaluate log-likelihood for given unconstrained parameters.
     fn eval_loglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
         let constrained = transform_params(unconstrained, &self.config);
@@ -305,6 +311,115 @@ fn run_nelder_mead(
 }
 
 // ---------------------------------------------------------------------------
+// L-BFGS-B optimization (box-constrained)
+// ---------------------------------------------------------------------------
+
+/// Compute box bounds for each parameter based on config.
+///
+/// Layout: `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`
+fn compute_bounds(config: &SarimaxConfig) -> Vec<(Option<f64>, Option<f64>)> {
+    let kt = config.trend.k_trend();
+    let n_exog = config.n_exog;
+    let mut bounds = Vec::new();
+
+    // trend + exog: unbounded
+    for _ in 0..(kt + n_exog) {
+        bounds.push((None, None));
+    }
+
+    // AR coefficients
+    let ar_bound = if config.enforce_stationarity { 20.0 } else { 0.999 };
+    for _ in 0..config.order.p {
+        bounds.push((Some(-ar_bound), Some(ar_bound)));
+    }
+
+    // MA coefficients
+    let ma_bound = if config.enforce_invertibility { 20.0 } else { 0.999 };
+    for _ in 0..config.order.q {
+        bounds.push((Some(-ma_bound), Some(ma_bound)));
+    }
+
+    // Seasonal AR
+    for _ in 0..config.order.pp {
+        bounds.push((Some(-ar_bound), Some(ar_bound)));
+    }
+
+    // Seasonal MA
+    for _ in 0..config.order.qq {
+        bounds.push((Some(-ma_bound), Some(ma_bound)));
+    }
+
+    // sigma2 (unconstrained space: √ transform means value itself can be any real)
+    if !config.concentrate_scale {
+        bounds.push((Some(1e-10), None));
+    }
+
+    bounds
+}
+
+fn run_lbfgsb(
+    objective: &SarimaxObjective,
+    init_params: Vec<f64>,
+    bounds_vec: Vec<(Option<f64>, Option<f64>)>,
+    _maxiter: u64,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+    let n = init_params.len();
+    let obj = objective.clone();
+    let eval_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let eval_count_inner = eval_count.clone();
+
+    let evaluate = move |x: &[f64], g: &mut [f64]| -> anyhow::Result<f64> {
+        eval_count_inner.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cost = match obj.eval_negloglike(x) {
+            Ok(c) if c.is_finite() => c,
+            _ => {
+                for g_i in g.iter_mut() {
+                    *g_i = 0.0;
+                }
+                return Ok(f64::MAX / 2.0);
+            }
+        };
+
+        // Forward-diff gradient (same as Gradient impl)
+        let eps = f64::EPSILON.sqrt();
+        let mut x_work = x.to_vec();
+        for i in 0..n {
+            let orig = x_work[i];
+            x_work[i] = orig + eps;
+            let f_plus = match obj.eval_negloglike(&x_work) {
+                Ok(c) if c.is_finite() => c,
+                _ => cost, // fallback: zero gradient for this component
+            };
+            x_work[i] = orig;
+            g[i] = (f_plus - cost) / eps;
+            if !g[i].is_finite() {
+                g[i] = 0.0;
+            }
+        }
+        Ok(cost)
+    };
+
+    let param = lbfgsb::LbfgsbParameter {
+        m: 7,
+        factr: 1e7,  // cost tolerance: factr * eps_mach ≈ 1e-9
+        pgtol: 1e-7, // projected gradient tolerance
+        iprint: -1,  // silent
+    };
+
+    let mut problem = lbfgsb::LbfgsbProblem::build(init_params, evaluate);
+    problem.set_bounds(bounds_vec);
+
+    let mut state = lbfgsb::LbfgsbState::new(problem, param);
+    state.minimize().map_err(|e| format!("L-BFGS-B failed: {}", e))?;
+
+    let x = state.x().to_vec();
+    let cost = state.fx();
+    let n_eval = eval_count.load(std::sync::atomic::Ordering::Relaxed);
+
+    Ok((x, cost, n_eval, true))
+}
+
+// ---------------------------------------------------------------------------
 // Public fit() entry point
 // ---------------------------------------------------------------------------
 
@@ -314,7 +429,7 @@ fn run_nelder_mead(
 /// * `endog` — Observed time series
 /// * `config` — Model configuration (order, stationarity enforcement, etc.)
 /// * `start_params` — Optional initial parameter values (constrained space)
-/// * `method` — "lbfgs" (default), "nelder-mead", or "lbfgs+nm" (fallback)
+/// * `method` — "lbfgsb" (default), "lbfgs", or "nelder-mead"
 /// * `maxiter` — Maximum iterations (default: 500)
 pub fn fit(
     endog: &[f64],
@@ -324,7 +439,7 @@ pub fn fit(
     maxiter: Option<u64>,
 ) -> Result<FitResult> {
     let maxiter = maxiter.unwrap_or(500);
-    let method = method.unwrap_or("lbfgs");
+    let method = method.unwrap_or("lbfgsb");
 
     // 1. Get starting parameters
     let constrained_start = match start_params {
@@ -370,6 +485,94 @@ pub fn fit(
             let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
                 .map_err(|e| SarimaxError::OptimizationFailed(e))?;
             (p, c, n, conv, "nelder-mead".to_string())
+        }
+        "lbfgsb" => {
+            let bounds = compute_bounds(config);
+
+            // Initial L-BFGS-B run
+            let initial_result = match run_lbfgsb(&objective, unconstrained_start.clone(), bounds.clone(), maxiter) {
+                Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgsb".to_string())),
+                Err(_) => None,
+            };
+
+            let mut best = initial_result;
+
+            let mut try_update = |p: Vec<f64>, c: f64, n: u64, conv: bool, method_name: &str| {
+                match &best {
+                    Some((_, best_cost, _, _, _)) if c < *best_cost => {
+                        best = Some((p, c, n, conv, method_name.to_string()));
+                    }
+                    None => {
+                        best = Some((p, c, n, conv, method_name.to_string()));
+                    }
+                    _ => {}
+                }
+            };
+
+            if n_restarts > 0 {
+                // 1. Zero-start
+                let zeros = vec![0.0; n_params_total];
+                if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, zeros, bounds.clone(), maxiter) {
+                    try_update(p, c, n, conv, "lbfgsb");
+                }
+
+                // 2. Seasonal MA grid (NM, gradient-free for boundary avoidance)
+                if config.enforce_invertibility && config.order.qq > 0 {
+                    let kt = config.trend.k_trend();
+                    let n_exog = config.n_exog;
+                    let ma_start = kt + n_exog + config.order.p;
+                    let sma_start = ma_start + config.order.q + config.order.pp;
+
+                    let grid_vals = [-0.3, -0.6, -0.9];
+                    for &ma_val in &grid_vals {
+                        let mut grid_constrained = vec![0.0; n_params_total];
+                        for i in 0..config.order.q {
+                            grid_constrained[ma_start + i] = ma_val;
+                        }
+                        for i in 0..config.order.qq {
+                            grid_constrained[sma_start + i] = ma_val;
+                        }
+                        if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
+                            if let Ok((p, c, n, conv)) = run_nelder_mead(objective.clone(), grid_uncons, maxiter) {
+                                try_update(p, c, n, conv, "lbfgsb+nm");
+                            }
+                        }
+                    }
+                }
+
+                // 3. LCG perturbations
+                let mut rng_state: u64 = 12345;
+                for _ in 0..n_restarts {
+                    let mut perturbed = unconstrained_start.clone();
+                    for v in perturbed.iter_mut() {
+                        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
+                        let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
+                        *v += u * scale;
+                    }
+                    if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, perturbed, bounds.clone(), maxiter) {
+                        try_update(p, c, n, conv, "lbfgsb");
+                    }
+                }
+            }
+
+            match best {
+                Some((best_p, best_c, best_n, _best_conv, method_name)) => {
+                    // NM refinement
+                    match run_nelder_mead(objective.clone(), best_p.clone(), maxiter / 2) {
+                        Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
+                            (nm_p, nm_c, best_n + nm_n, nm_conv, format!("{}+nm", method_name))
+                        }
+                        _ => (best_p, best_c, best_n, true, method_name),
+                    }
+                }
+                None => {
+                    // All L-BFGS-B failed, fallback to NM
+                    let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                        .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    (p, c, n, conv, "nelder-mead (fallback)".to_string())
+                }
+            }
         }
         "lbfgs" => {
             // Initial L-BFGS run
@@ -462,7 +665,7 @@ pub fn fit(
         }
         _ => {
             return Err(SarimaxError::OptimizationFailed(format!(
-                "unknown method: '{}'. Use 'lbfgs' or 'nelder-mead'",
+                "unknown method: '{}'. Use 'lbfgsb', 'lbfgs', or 'nelder-mead'",
                 method
             )));
         }
