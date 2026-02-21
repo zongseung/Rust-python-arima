@@ -671,23 +671,37 @@ CSS(Conditional Sum of Squares) 기반으로 최적화 초기값을 추정한다
 
 statsmodels의 SARIMAX 결과를 기준(ground truth)으로 사용하여 검증한다.
 
-### 로그우도 / 파라미터
+### 최근 재검증 (2026-02-21)
 
-| 모델 | 로그우도 오차 | 파라미터 오차 | 스케일 오차 |
-|------|:----------:|:-----------:|:----------:|
-| AR(1) | < 1e-6 | < 1e-4 | < 1e-6 |
-| ARMA(1,1) | < 1e-6 | < 1e-3 | < 1e-6 |
-| ARIMA(1,1,1) | < 1e-6 | < 1e-2 | < 1e-6 |
-| SARIMA(1,0,0)(1,0,0,4) | < 1e-6 | < 1e-3 | < 1e-6 |
-| SARIMA(1,1,1)(1,1,1,12) | < 1e-6 | < 1e-2 | < 1e-6 |
+검증 환경: macOS arm64, Python 3.14.3, `sarimax_rs 0.1.0`
 
-### 예측
+실행 명령:
 
-| 모델 | 예측 평균 오차 | CI 오차 | 잔차 상관계수 |
-|------|:----------:|:------:|:-----------:|
-| AR(1) | < 1e-4 | < 0.05 | > 0.99 |
-| ARMA(1,1) | < 1e-4 | < 0.05 | > 0.99 |
-| ARIMA(1,1,1) | < 0.01 | < 0.05 | > 0.99 |
+```bash
+uv run python -m pytest python_tests/test_multi_order_accuracy.py -q
+uv run python -m pytest python_tests/test_multi_order_accuracy.py::test_comprehensive_accuracy_report -s -q
+uv run python python_tests/bench_comparison.py
+```
+
+유사도(정확도) 요약:
+
+- `test_multi_order_accuracy.py`: `20 passed`
+- 19개 모델 리포트 기준 1개 예외(ARMA(2,2), 과모수/다중해 가능성)
+- ARMA(2,2) 제외 시 최대 오차:
+  - `max_param_err <= 0.001800`
+  - `loglike_err <= 0.0029`
+  - `aic_err <= 0.0058`
+
+속도 요약(`bench_comparison.py`, best-of-repeat):
+
+| 시나리오 | Rust (ms) | statsmodels (ms) | 속도비 |
+|------|:----------:|:----------------:|:------:|
+| AR(1) single fit (n=200) | 0.6 | 3.3 | 5.5x 빠름 |
+| ARIMA(1,1,1) single fit (n=300) | 12.5 | 11.2 | 0.9x |
+| SARIMA(1,1,1)(1,1,1,12) single fit (n=300) | 3496.6 | 343.1 | 0.1x |
+| AR(1) batch fit (100 x n=200) | 6.3 | 314.3 | 50.1x 빠름 |
+
+참고: 단일 모델 속도는 차수/데이터/제약조건/하드웨어에 따라 크게 달라질 수 있으며, 배치 처리에서는 Rust 병렬화 이점이 크게 나타난다.
 
 ---
 
