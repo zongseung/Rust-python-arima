@@ -13,12 +13,11 @@ crate-type = ["cdylib", "rlib"]
 # Linear algebra (dynamic-size matrices)
 nalgebra = "0.34"
 
-# Optimization (L-BFGS, Nelder-Mead)
+# Optimization (L-BFGS, Nelder-Mead, L-BFGS-B)
 argmin = "0.11"
 argmin-math = { version = "0.5", features = ["nalgebra_latest", "vec"] }
-
-# Numerical differentiation
-finitediff = "0.2"
+lbfgsb = "0.1"
+anyhow = "1"
 
 # Statistics
 statrs = "0.18"

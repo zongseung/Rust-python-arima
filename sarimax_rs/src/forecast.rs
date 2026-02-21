@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::{kalman_filter, KalmanFilterOutput};
 use crate::params::SarimaxParams;
@@ -39,7 +39,16 @@ pub fn forecast(
     filter_output: &KalmanFilterOutput,
     steps: usize,
     alpha: f64,
+    future_exog: Option<&[Vec<f64>]>,
+    exog_coeffs: &[f64],
 ) -> Result<ForecastResult> {
+    // Validate: exog model requires future_exog for forecasting
+    if !exog_coeffs.is_empty() && future_exog.is_none() && steps > 0 {
+        return Err(SarimaxError::InvalidInput(
+            "model has exogenous variables but future_exog was not provided for forecast".into()
+        ));
+    }
+
     if steps == 0 {
         return Ok(ForecastResult {
             mean: vec![],
@@ -69,9 +78,18 @@ pub fn forecast(
     let mut ci_lower = Vec::with_capacity(steps);
     let mut ci_upper = Vec::with_capacity(steps);
 
-    for _ in 0..steps {
+    for h in 0..steps {
         // Forecast mean: y_hat = Z' * a
         let y_hat = z.dot(&a);
+
+        // Add exogenous contribution: d_h = Σ(x_j[h] * β_j)
+        let d_h = match future_exog {
+            Some(cols) => cols.iter()
+                .zip(exog_coeffs.iter())
+                .map(|(col, &b)| if h < col.len() { col[h] * b } else { 0.0 })
+                .sum::<f64>(),
+            None => 0.0,
+        };
 
         // Forecast variance: F = Z' * P * Z * scale
         let p_z = &p * z;
@@ -79,10 +97,10 @@ pub fn forecast(
         let f_safe = f_h.max(0.0);
 
         let se = f_safe.sqrt();
-        mean.push(y_hat);
+        mean.push(y_hat + d_h);
         variance.push(f_safe);
-        ci_lower.push(y_hat - z_alpha * se);
-        ci_upper.push(y_hat + z_alpha * se);
+        ci_lower.push(y_hat + d_h - z_alpha * se);
+        ci_upper.push(y_hat + d_h + z_alpha * se);
 
         // Propagate state: a_{h+1} = T * a_h
         a = t_mat * &a;
@@ -129,11 +147,13 @@ pub fn forecast_pipeline(
     params: &SarimaxParams,
     steps: usize,
     alpha: f64,
+    exog: Option<&[Vec<f64>]>,
+    future_exog: Option<&[Vec<f64>]>,
 ) -> Result<ForecastResult> {
-    let ss = StateSpace::new(config, params, endog, None)?;
-    let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
+    let ss = StateSpace::new(config, params, endog, exog)?;
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
-    forecast(&ss, &fo, steps, alpha)
+    forecast(&ss, &fo, steps, alpha, future_exog, &params.exog_coeffs)
 }
 
 /// Run residuals pipeline: build state space → filter → residuals.
@@ -141,14 +161,17 @@ pub fn residuals_pipeline(
     endog: &[f64],
     config: &SarimaxConfig,
     params: &SarimaxParams,
+    exog: Option<&[Vec<f64>]>,
 ) -> Result<ResidualOutput> {
-    let ss = StateSpace::new(config, params, endog, None)?;
-    let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
+    let ss = StateSpace::new(config, params, endog, exog)?;
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
     Ok(compute_residuals(&fo))
 }
 
-/// Approximate inverse normal CDF using rational approximation (Abramowitz & Stegun 26.2.23).
+/// Inverse normal CDF using the Beasley-Springer-Moro algorithm.
+/// Error < 1e-9 across the full range, much better than the Abramowitz & Stegun
+/// approximation (26.2.23) which has max error ~4.5e-4.
 fn z_score(p: f64) -> f64 {
     if p <= 0.0 {
         return f64::NEG_INFINITY;
@@ -160,30 +183,47 @@ fn z_score(p: f64) -> f64 {
         return 0.0;
     }
 
-    let sign;
-    let q;
-    if p < 0.5 {
-        sign = -1.0;
-        q = p;
+    // Rational approximation coefficients (Moro / Beasley-Springer-Moro)
+    let a = [
+        -3.969683028665376e+01,  2.209460984245205e+02,
+        -2.759285104469687e+02,  1.383577518672690e+02,
+        -3.066479806614716e+01,  2.506628277459239e+00,
+    ];
+    let b = [
+        -5.447609879822406e+01,  1.615858368580409e+02,
+        -1.556989798598866e+02,  6.680131188771972e+01,
+        -1.328068155288572e+01,
+    ];
+    let c = [
+        -7.784894002430293e-03, -3.223964580411365e-01,
+        -2.400758277161838e+00, -2.549732539343734e+00,
+         4.374664141464968e+00,  2.938163982698783e+00,
+    ];
+    let d = [
+         7.784695709041462e-03,  3.224671290700398e-01,
+         2.445134137142996e+00,  3.754408661907416e+00,
+    ];
+
+    let p_low = 0.02425;
+    let p_high = 1.0 - p_low;
+
+    if p < p_low {
+        // Rational approximation for lower region
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+        ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    } else if p <= p_high {
+        // Rational approximation for central region
+        let q = p - 0.5;
+        let r = q * q;
+        (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q /
+        (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
     } else {
-        sign = 1.0;
-        q = 1.0 - p;
-    };
-
-    let t = (-2.0 * q.ln()).sqrt();
-
-    // Rational approximation coefficients
-    let c0 = 2.515517;
-    let c1 = 0.802853;
-    let c2 = 0.010328;
-    let d1 = 1.432788;
-    let d2 = 0.189269;
-    let d3 = 0.001308;
-
-    let x = t - (c0 + c1 * t + c2 * t * t)
-        / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
-
-    sign * x
+        // Rational approximation for upper region
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) /
+        ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    }
 }
 
 #[cfg(test)]
@@ -228,9 +268,13 @@ mod tests {
 
     #[test]
     fn test_z_score_standard() {
-        assert!((z_score(0.975) - 1.96).abs() < 0.01);
+        // With Beasley-Springer-Moro, error should be < 1e-9
+        // z(0.975) = 1.959963984540054...
+        assert!((z_score(0.975) - 1.959963984540054).abs() < 1e-8,
+            "z(0.975) = {}, expected ~1.959964", z_score(0.975));
         assert!((z_score(0.5)).abs() < 1e-10);
-        assert!((z_score(0.025) + 1.96).abs() < 0.01);
+        assert!((z_score(0.025) + 1.959963984540054).abs() < 1e-8,
+            "z(0.025) = {}, expected ~-1.959964", z_score(0.025));
     }
 
     #[test]
@@ -245,7 +289,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[phi], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 5, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 5, 0.05, None, None).unwrap();
         assert_eq!(result.mean.len(), 5);
 
         // Forecast variance should be increasing
@@ -266,7 +310,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 5, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 5, 0.05, None, None).unwrap();
         for i in 0..5 {
             let lower_dist = (result.mean[i] - result.ci_lower[i]).abs();
             let upper_dist = (result.ci_upper[i] - result.mean[i]).abs();
@@ -286,7 +330,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = forecast_pipeline(&data, &config, &params, 0, 0.05).unwrap();
+        let result = forecast_pipeline(&data, &config, &params, 0, 0.05, None, None).unwrap();
         assert!(result.mean.is_empty());
     }
 
@@ -300,7 +344,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
 
-        let result = residuals_pipeline(&data, &config, &params).unwrap();
+        let result = residuals_pipeline(&data, &config, &params, None).unwrap();
         assert_eq!(result.residuals.len(), data.len());
         assert_eq!(result.standardized_residuals.len(), data.len());
     }
@@ -317,7 +361,7 @@ mod tests {
         let config = make_config(1, 0, 0);
         let params = make_params(&params_vec[..1], &[]);
 
-        let result = residuals_pipeline(&data, &config, &params).unwrap();
+        let result = residuals_pipeline(&data, &config, &params, None).unwrap();
 
         // After burn-in, standardized residuals should have variance ~ 1
         let burn = config.order.k_states();

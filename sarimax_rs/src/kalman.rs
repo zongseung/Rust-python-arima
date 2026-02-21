@@ -17,145 +17,6 @@ pub struct KalmanOutput {
     pub n_obs_effective: usize,
 }
 
-/// Compute the (optionally concentrated) log-likelihood via the Kalman filter.
-///
-/// Uses the standard Harvey-form Kalman filter:
-///   - a_{t|t-1}, P_{t|t-1} are the predicted state/cov at time t
-///   - Innovation: v_t = y_t - Z' * a_{t|t-1}
-///   - Update: a_{t|t} = a_{t|t-1} + K * v_t
-///   - Predict: a_{t+1|t} = T * a_{t|t} + c_t
-///
-/// For concentrated scale:
-///   sigma2_hat = (1/n_eff) * sum(v_t^2 / F_t)
-///   loglike = -n_eff/2 * ln(2pi) - n_eff/2 * ln(sigma2_hat) - n_eff/2 - 0.5 * sum(ln F_t)
-pub fn kalman_loglike(
-    endog: &[f64],
-    ss: &StateSpace,
-    init: &KalmanInit,
-    concentrate_scale: bool,
-) -> Result<KalmanOutput> {
-    let n = endog.len();
-    let k = ss.k_states;
-    let burn = init.loglikelihood_burn;
-
-    if n <= burn {
-        return Err(SarimaxError::DataError(format!(
-            "Not enough observations: n={} <= burn={}",
-            n, burn
-        )));
-    }
-
-    let n_eff = n - burn;
-
-    // Initialize: a = a_{0|-1}, P = P_{0|-1}
-    let mut a = init.initial_state.clone();
-    let mut p = init.initial_state_cov.clone();
-
-    let t_mat = &ss.transition;
-    let z = &ss.design;
-    let r_mat = &ss.selection;
-    let q_mat = &ss.state_cov;
-
-    // Precompute R*Q*R' (time-invariant)
-    let rqr = r_mat * q_mat * r_mat.transpose();
-
-    let mut sum_log_f = 0.0;
-    let mut sum_v2_f = 0.0;
-    let mut innovations = Vec::with_capacity(n);
-
-    let eye = DMatrix::<f64>::identity(k, k);
-
-    for t in 0..n {
-        // --- Innovation ---
-        // a is a_{t|t-1} (predicted state for time t)
-        // v_t = y_t - Z' * a_{t|t-1} - d_t
-        let d_t = if t < ss.obs_intercept.len() {
-            ss.obs_intercept[t]
-        } else {
-            0.0
-        };
-        let v_t = endog[t] - z.dot(&a) - d_t;
-        innovations.push(v_t);
-
-        // F_t = Z' * P_{t|t-1} * Z (scalar, univariate)
-        let p_z = &p * z;
-        let f_t: f64 = z.dot(&p_z);
-
-        // --- Update & Predict ---
-        if f_t > 0.0 {
-            // Kalman gain: K = P_{t|t-1} * Z / F_t
-            let k_gain = &p_z / f_t;
-
-            // Update: a_{t|t} = a_{t|t-1} + K * v_t
-            let a_updated = &a + &k_gain * v_t;
-
-            // Joseph form: P_{t|t} = (I - K*Z') * P_{t|t-1} * (I - K*Z')'
-            let k_z_t = &k_gain * z.transpose();
-            let i_kz = &eye - &k_z_t;
-            let p_updated = &i_kz * &p * i_kz.transpose();
-
-            // Predict: a_{t+1|t} = T * a_{t|t} + c_t
-            a = t_mat * &a_updated;
-            // P_{t+1|t} = T * P_{t|t} * T' + R * Q * R'
-            p = t_mat * &p_updated * t_mat.transpose() + &rqr;
-
-            // Add state intercept c_t to predicted state
-            if ss.state_intercept.len() == n * k {
-                for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
-                }
-            }
-
-            // Accumulate log-likelihood terms for t >= burn
-            if t >= burn {
-                sum_log_f += f_t.ln();
-                sum_v2_f += v_t * v_t / f_t;
-            }
-        } else if t >= burn {
-            // F_t <= 0 after burn-in indicates numerical collapse
-            return Err(SarimaxError::DataError(format!(
-                "innovation variance F_t <= 0 at t={} (F_t={}); \
-                 model parameters may be numerically unstable",
-                t, f_t
-            )));
-        } else {
-            // F_t <= 0 during burn-in: skip update, predict from current state
-            a = t_mat * &a;
-            p = t_mat * &p * t_mat.transpose() + &rqr;
-            if ss.state_intercept.len() == n * k {
-                for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
-                }
-            }
-        }
-    }
-
-    // Compute log-likelihood
-    let (loglike, scale) = if concentrate_scale {
-        let sigma2_hat = sum_v2_f / n_eff as f64;
-        let sigma2_safe = sigma2_hat.max(1e-300);
-        let ll = -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
-            - 0.5 * (n_eff as f64) * sigma2_safe.ln()
-            - 0.5 * (n_eff as f64)
-            - 0.5 * sum_log_f;
-        (ll, sigma2_hat)
-    } else {
-        // Non-concentrated: sigma2 is in Q already
-        let ll = -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
-            - 0.5 * sum_log_f
-            - 0.5 * sum_v2_f;
-        let sigma2 = ss.state_cov[(0, 0)];
-        (ll, sigma2)
-    };
-
-    Ok(KalmanOutput {
-        loglike,
-        scale,
-        innovations,
-        n_obs_effective: n_eff,
-    })
-}
-
 /// Full Kalman filter output with final state information for forecasting.
 #[derive(Debug, Clone)]
 pub struct KalmanFilterOutput {
@@ -179,16 +40,46 @@ pub struct KalmanFilterOutput {
     pub predicted_cov: DMatrix<f64>,
 }
 
-/// Run the Kalman filter and return full output including final state.
+/// Steady-state convergence tolerance for the gain vector pz = P*Z.
 ///
-/// Unlike `kalman_loglike()`, this function stores innovation variances and
-/// the final filtered/predicted state and covariance for use in forecasting
-/// and residual diagnostics.
-pub fn kalman_filter(
+/// We check pz convergence (k-vector) because F_t = Z'*pz (scalar) can
+/// converge while pz changes in directions orthogonal to Z, leading to
+/// incorrect cached K_∞ = T*pz/F. Error analysis shows the loglike
+/// error from a converged-but-imprecise K_∞ is O(ε * n²) due to
+/// compounding through the state recursion (unit-root states integrate
+/// the error), so ε must be tight.
+///
+/// At 1e-9, loglike error stays below ~1e-5 for n=1000.
+/// For models where pz converges slowly, steady-state won't trigger
+/// and the sparse T·P·T' path provides the primary speedup instead.
+const STEADY_STATE_TOL: f64 = 1e-9;
+
+/// Minimum steps past burn-in before checking for convergence.
+const STEADY_STATE_MIN_STEPS: usize = 5;
+
+/// Number of consecutive converged pz values required.
+const STEADY_STATE_CONSEC: usize = 3;
+
+// ---------------------------------------------------------------------------
+// Core Kalman filter with steady-state acceleration
+// ---------------------------------------------------------------------------
+
+/// Unified Kalman filter core with optional steady-state detection.
+///
+/// When `store_full=false`, skips storing innovation_vars and filtered state
+/// (used by `kalman_loglike`). When `store_full=true`, stores everything
+/// needed for forecasting and diagnostics (used by `kalman_filter`).
+///
+/// **Steady-state optimization**: For time-invariant systems, the predicted
+/// covariance P_{t+1|t} converges to a steady-state P_∞. Once detected,
+/// the Kalman gain K_∞ is cached and the expensive O(k³) covariance
+/// prediction step is skipped for all remaining time steps.
+fn kalman_core(
     endog: &[f64],
     ss: &StateSpace,
     init: &KalmanInit,
     concentrate_scale: bool,
+    store_full: bool,
 ) -> Result<KalmanFilterOutput> {
     let n = endog.len();
     let k = ss.k_states;
@@ -211,18 +102,67 @@ pub fn kalman_filter(
     let r_mat = &ss.selection;
     let q_mat = &ss.state_cov;
 
+    // Precompute time-invariant matrices
     let rqr = r_mat * q_mat * r_mat.transpose();
+    let t_mat_t = t_mat.transpose();
+    let has_state_intercept = ss.state_intercept.len() == n * k;
+
+    // Sparse representation of T for O(nnz) operations.
+    // SARIMA companion matrices are very sparse (e.g. 31/729 = 4% for k=27).
+    // This enables sparse T·a (O(nnz)), T·P (O(nnz×k)), and T·P·T' (O(nnz×k)).
+    let sparse_t: Vec<(usize, usize, f64)> = {
+        let mut entries = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                let v = t_mat[(i, j)];
+                if v != 0.0 {
+                    entries.push((i, j, v));
+                }
+            }
+        }
+        entries
+    };
+    // Use sparse path when T is significantly sparse (< 50% density).
+    let use_sparse = sparse_t.len() < k * k / 2;
+
+    // Sparse Z for O(nnz_z) dot product (e.g. 3 non-zeros for SARIMA k=27).
+    let sparse_z: Vec<(usize, f64)> = {
+        let mut entries = Vec::new();
+        for i in 0..k {
+            let v = z[i];
+            if v != 0.0 {
+                entries.push((i, v));
+            }
+        }
+        entries
+    };
 
     let mut sum_log_f = 0.0;
     let mut sum_v2_f = 0.0;
     let mut innovations = Vec::with_capacity(n);
-    let mut innovation_vars = Vec::with_capacity(n);
+    let mut innovation_vars = if store_full {
+        Vec::with_capacity(n)
+    } else {
+        Vec::new()
+    };
 
-    let eye = DMatrix::<f64>::identity(k, k);
+    // Filtered state tracking (only for store_full)
+    let mut a_filtered = DVector::<f64>::zeros(k);
+    let mut p_filtered = DMatrix::<f64>::zeros(k, k);
 
-    // Track the last filtered state/cov
-    let mut a_filtered = a.clone();
-    let mut p_filtered = p.clone();
+    // Pre-allocate work buffers
+    let mut pz = DVector::<f64>::zeros(k);
+    let mut a_next = DVector::<f64>::zeros(k);
+    let mut temp_kk = DMatrix::<f64>::zeros(k, k);
+
+    // Steady-state detection buffers (pz-vector based)
+    let mut converged = false;
+    let mut k_gain = DVector::<f64>::zeros(k);  // K_∞ = T * P_∞ * Z
+    let mut f_steady = 0.0;
+    let mut log_f_steady = 0.0;
+    let mut pz_prev = DVector::<f64>::zeros(k);
+    let mut pz_inf = DVector::<f64>::zeros(k);  // cached pz_∞ = P_∞ * Z at convergence
+    let mut consec_count = 0_usize;
 
     for t in 0..n {
         // --- Innovation ---
@@ -231,64 +171,334 @@ pub fn kalman_filter(
         } else {
             0.0
         };
-        let v_t = endog[t] - z.dot(&a) - d_t;
-        innovations.push(v_t);
 
-        // F_t = Z' * P_{t|t-1} * Z (scalar, univariate)
-        let p_z = &p * z;
-        let f_t: f64 = z.dot(&p_z);
-        innovation_vars.push(f_t);
+        if converged {
+            // ---- Steady-state path: O(nnz) per step ----
+            let a_slice = a.as_slice();
+            let za: f64 = sparse_z.iter().map(|&(i, v)| v * a_slice[i]).sum();
+            let v_t = endog[t] - za - d_t;
+            innovations.push(v_t);
+            if store_full {
+                innovation_vars.push(f_steady);
+            }
 
-        // --- Update & Predict ---
-        if f_t > 0.0 {
-            let k_gain = &p_z / f_t;
-            let a_updated = &a + &k_gain * v_t;
-
-            // Joseph form covariance update
-            let k_z_t = &k_gain * z.transpose();
-            let i_kz = &eye - &k_z_t;
-            let p_updated = &i_kz * &p * i_kz.transpose();
-
-            // Store filtered state/cov
-            a_filtered = a_updated.clone();
-            p_filtered = p_updated.clone();
-
-            // Predict
-            a = t_mat * &a_updated;
-            p = t_mat * &p_updated * t_mat.transpose() + &rqr;
-
-            if ss.state_intercept.len() == n * k {
+            // Predict state: a_next = T_sparse * a + K_∞ * (v_t / F_∞)
+            // Using sparse T: O(nnz) instead of dense gemv O(k²)
+            let a_slice = a.as_slice();
+            let a_next_slice = a_next.as_mut_slice();
+            for v in a_next_slice.iter_mut() { *v = 0.0; }
+            for &(i, j, val) in &sparse_t {
+                a_next_slice[i] += val * a_slice[j];
+            }
+            let scale_v = v_t / f_steady;
+            let k_slice = k_gain.as_slice();
+            for i in 0..k {
+                a_next_slice[i] += scale_v * k_slice[i];
+            }
+            if has_state_intercept {
                 for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+                    a_next[i] += ss.state_intercept[t * k + i];
                 }
             }
+
+            if store_full {
+                // Filtered state: a_{t|t} = a_{t|t-1} + (v_t / F_∞) * pz_∞
+                a_filtered.copy_from(&a);
+                let scale_v = v_t / f_steady;
+                let af_s = a_filtered.as_mut_slice();
+                let pz_s = pz_inf.as_slice();
+                for i in 0..k {
+                    af_s[i] += scale_v * pz_s[i];
+                }
+            }
+
+            std::mem::swap(&mut a, &mut a_next);
 
             if t >= burn {
-                sum_log_f += f_t.ln();
-                sum_v2_f += v_t * v_t / f_t;
+                sum_log_f += log_f_steady;
+                sum_v2_f += v_t * v_t / f_steady;
             }
-        } else if t >= burn {
-            // F_t <= 0 after burn-in indicates numerical collapse
-            return Err(SarimaxError::DataError(format!(
-                "innovation variance F_t <= 0 at t={} (F_t={}); \
-                 model parameters may be numerically unstable",
-                t, f_t
-            )));
-        } else {
-            // F_t <= 0 during burn-in: skip update, use current state as filtered
-            a_filtered = a.clone();
-            p_filtered = p.clone();
+        } else if use_sparse {
+            // ---- Sparse Kalman path: O(nnz×k) per step ----
+            // For SARIMA companion matrices with ~4% density, this is ~23× faster.
+            let v_t = endog[t] - z.dot(&a) - d_t;
+            innovations.push(v_t);
 
-            a = t_mat * &a;
-            p = t_mat * &p * t_mat.transpose() + &rqr;
-            if ss.state_intercept.len() == n * k {
-                for i in 0..k {
-                    a[i] += ss.state_intercept[t * k + i];
+            // pz = P * z (sparse Z: O(nnz_z × k) instead of O(k²))
+            {
+                let pz_s = pz.as_mut_slice();
+                let p_data = p.as_slice(); // column-major
+                for v in pz_s.iter_mut() { *v = 0.0; }
+                for &(zi, zv) in &sparse_z {
+                    // P[:, zi] * zv → accumulate into pz
+                    let col_start = zi * k;
+                    for r in 0..k {
+                        pz_s[r] += zv * p_data[col_start + r];
+                    }
                 }
+            }
+            let f_t: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
+            if store_full {
+                innovation_vars.push(f_t);
+            }
+
+            if f_t > 0.0 {
+                let f_inv = 1.0 / f_t;
+
+                // State update: a = a + (v_t / F_t) * pz
+                a.axpy(v_t * f_inv, &pz, 1.0);
+
+                // Covariance update: P = P - (1/F_t) * pz * pz'
+                p.ger(-f_inv, &pz, &pz, 1.0);
+
+                if store_full {
+                    a_filtered.copy_from(&a);
+                    p_filtered.copy_from(&p);
+                }
+
+                // Predict state: a_next = T_sparse * a (O(nnz))
+                {
+                    let a_s = a.as_slice();
+                    let an_s = a_next.as_mut_slice();
+                    for v in an_s.iter_mut() { *v = 0.0; }
+                    for &(i, j, val) in &sparse_t {
+                        an_s[i] += val * a_s[j];
+                    }
+                }
+                if has_state_intercept {
+                    let an_s = a_next.as_mut_slice();
+                    let base = t * k;
+                    for i in 0..k {
+                        an_s[i] += ss.state_intercept[base + i];
+                    }
+                }
+
+                // Predict covariance: P = T_sparse * P * T_sparse' + RQR'
+                // Step 1: temp_kk = T_sparse * P  — O(nnz × k)
+                {
+                    let p_data = p.as_slice(); // column-major
+                    let tmp = temp_kk.as_mut_slice();
+                    for v in tmp.iter_mut() { *v = 0.0; }
+                    // temp_kk[i, j] += T[i,l] * P[l,j]
+                    // In column-major: temp_kk[i + j*k] += val * p_data[l + j*k]
+                    for &(i, l, val) in &sparse_t {
+                        for j in 0..k {
+                            tmp[i + j * k] += val * p_data[l + j * k];
+                        }
+                    }
+                }
+                // Step 2: P = temp_kk * T' + RQR'  — O(nnz × k)
+                // P[i,j] = sum_l temp_kk[i,l] * T[j,l]  (since T'[l,j] = T[j,l])
+                {
+                    let tmp = temp_kk.as_slice();
+                    let p_data = p.as_mut_slice();
+                    let rqr_data = rqr.as_slice();
+                    // Start with RQR'
+                    p_data.copy_from_slice(rqr_data);
+                    // Accumulate: P[i,j] += temp_kk[i,l] * T[j,l]
+                    // Iterate over sparse T entries as (j, l, val)
+                    for &(j, l, val) in &sparse_t {
+                        // Add val * temp_kk[:, l] to P[:, j]
+                        let col_l = l * k;
+                        let col_j = j * k;
+                        for i in 0..k {
+                            p_data[col_j + i] += val * tmp[col_l + i];
+                        }
+                    }
+                }
+
+                std::mem::swap(&mut a, &mut a_next);
+
+                if t >= burn {
+                    sum_log_f += f_t.ln();
+                    sum_v2_f += v_t * v_t * f_inv;
+                }
+
+                // --- Steady-state convergence check (pz-vector based) ---
+                // We check pz = P*Z convergence instead of scalar F_t = Z'*pz
+                // because F_t can converge while pz still changes in directions
+                // orthogonal to Z, causing incorrect cached K_∞.
+                if t >= burn + STEADY_STATE_MIN_STEPS {
+                    // Compute pz from the PREDICTED P (already updated above)
+                    pz.gemv(1.0, &p, z, 0.0);
+                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
+                        .map(|(a, b)| { let d = a - b; d * d })
+                        .sum();
+                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
+                        consec_count += 1;
+                        if consec_count >= STEADY_STATE_CONSEC {
+                            converged = true;
+                            f_steady = z.dot(&pz);
+                            log_f_steady = f_steady.ln();
+                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
+                            // K_∞ = T * pz_∞
+                            {
+                                let pz_s = pz.as_slice();
+                                let kg_s = k_gain.as_mut_slice();
+                                for v in kg_s.iter_mut() { *v = 0.0; }
+                                for &(i, j, val) in &sparse_t {
+                                    kg_s[i] += val * pz_s[j];
+                                }
+                            }
+                        }
+                    } else {
+                        consec_count = 0;
+                    }
+                    pz_prev.copy_from(&pz);
+                }
+            } else if t >= burn {
+                return Err(SarimaxError::DataError(format!(
+                    "innovation variance F_t <= 0 at t={} (F_t={}); \
+                     model parameters may be numerically unstable",
+                    t, f_t
+                )));
+            } else {
+                // F_t <= 0 during burn-in: skip update, predict from current state
+                if store_full {
+                    a_filtered.copy_from(&a);
+                    p_filtered.copy_from(&p);
+                }
+
+                {
+                    let a_s = a.as_slice();
+                    let an_s = a_next.as_mut_slice();
+                    for v in an_s.iter_mut() { *v = 0.0; }
+                    for &(i, j, val) in &sparse_t {
+                        an_s[i] += val * a_s[j];
+                    }
+                }
+                if has_state_intercept {
+                    let an_s = a_next.as_mut_slice();
+                    let base = t * k;
+                    for i in 0..k {
+                        an_s[i] += ss.state_intercept[base + i];
+                    }
+                }
+                {
+                    let p_data = p.as_slice();
+                    let tmp = temp_kk.as_mut_slice();
+                    for v in tmp.iter_mut() { *v = 0.0; }
+                    for &(i, l, val) in &sparse_t {
+                        for j in 0..k {
+                            tmp[i + j * k] += val * p_data[l + j * k];
+                        }
+                    }
+                }
+                {
+                    let tmp = temp_kk.as_slice();
+                    let p_data = p.as_mut_slice();
+                    let rqr_data = rqr.as_slice();
+                    p_data.copy_from_slice(rqr_data);
+                    for &(j, l, val) in &sparse_t {
+                        let col_l = l * k;
+                        let col_j = j * k;
+                        for i in 0..k {
+                            p_data[col_j + i] += val * tmp[col_l + i];
+                        }
+                    }
+                }
+                std::mem::swap(&mut a, &mut a_next);
+            }
+        } else {
+            // ---- Dense Kalman path: O(k³) per step (for small/dense T) ----
+            let v_t = endog[t] - z.dot(&a) - d_t;
+            innovations.push(v_t);
+
+            // pz = P * z
+            pz.gemv(1.0, &p, z, 0.0);
+            let f_t: f64 = z.dot(&pz);
+            if store_full {
+                innovation_vars.push(f_t);
+            }
+
+            if f_t > 0.0 {
+                let f_inv = 1.0 / f_t;
+
+                // State update: a = a + (v_t / F_t) * pz
+                a.axpy(v_t * f_inv, &pz, 1.0);
+
+                // Covariance update: P = P - (1/F_t) * pz * pz'
+                p.ger(-f_inv, &pz, &pz, 1.0);
+
+                if store_full {
+                    a_filtered.copy_from(&a);
+                    p_filtered.copy_from(&p);
+                }
+
+                // Predict state: a_next = T * a_updated
+                a_next.gemv(1.0, t_mat, &a, 0.0);
+                if has_state_intercept {
+                    for i in 0..k {
+                        a_next[i] += ss.state_intercept[t * k + i];
+                    }
+                }
+
+                // Predict covariance: P = T * P_updated * T' + RQR'
+                temp_kk.gemm(1.0, t_mat, &p, 0.0);
+                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+                p += &rqr;
+
+                std::mem::swap(&mut a, &mut a_next);
+
+                if t >= burn {
+                    sum_log_f += f_t.ln();
+                    sum_v2_f += v_t * v_t * f_inv;
+                }
+
+                // --- Steady-state convergence check (pz-vector based) ---
+                if t >= burn + STEADY_STATE_MIN_STEPS {
+                    pz.gemv(1.0, &p, z, 0.0);
+                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
+                        .map(|(a, b)| { let d = a - b; d * d })
+                        .sum();
+                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
+                        consec_count += 1;
+                        if consec_count >= STEADY_STATE_CONSEC {
+                            converged = true;
+                            f_steady = z.dot(&pz);
+                            log_f_steady = f_steady.ln();
+                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
+                            k_gain.gemv(1.0, t_mat, &pz, 0.0);
+                        }
+                    } else {
+                        consec_count = 0;
+                    }
+                    pz_prev.copy_from(&pz);
+                }
+            } else if t >= burn {
+                return Err(SarimaxError::DataError(format!(
+                    "innovation variance F_t <= 0 at t={} (F_t={}); \
+                     model parameters may be numerically unstable",
+                    t, f_t
+                )));
+            } else {
+                // F_t <= 0 during burn-in: skip update, predict from current state
+                if store_full {
+                    a_filtered.copy_from(&a);
+                    p_filtered.copy_from(&p);
+                }
+
+                a_next.gemv(1.0, t_mat, &a, 0.0);
+                if has_state_intercept {
+                    for i in 0..k {
+                        a_next[i] += ss.state_intercept[t * k + i];
+                    }
+                }
+                temp_kk.gemm(1.0, t_mat, &p, 0.0);
+                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+                p += &rqr;
+                std::mem::swap(&mut a, &mut a_next);
             }
         }
     }
 
+    // Compute log-likelihood
     let (loglike, scale) = if concentrate_scale {
         let sigma2_hat = sum_v2_f / n_eff as f64;
         let sigma2_safe = sigma2_hat.max(1e-300);
@@ -316,6 +526,42 @@ pub fn kalman_filter(
         predicted_state: a,
         predicted_cov: p,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Public API (unchanged signatures)
+// ---------------------------------------------------------------------------
+
+/// Compute the (optionally concentrated) log-likelihood via the Kalman filter.
+///
+/// Uses steady-state acceleration: once the predicted covariance P converges,
+/// the Kalman gain is cached and O(k³) covariance updates are skipped.
+pub fn kalman_loglike(
+    endog: &[f64],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    concentrate_scale: bool,
+) -> Result<KalmanOutput> {
+    let fo = kalman_core(endog, ss, init, concentrate_scale, false)?;
+    Ok(KalmanOutput {
+        loglike: fo.loglike,
+        scale: fo.scale,
+        innovations: fo.innovations,
+        n_obs_effective: fo.n_obs_effective,
+    })
+}
+
+/// Run the Kalman filter and return full output including final state.
+///
+/// Uses steady-state acceleration for performance. Returns innovation
+/// variances and final filtered/predicted state for forecasting.
+pub fn kalman_filter(
+    endog: &[f64],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    concentrate_scale: bool,
+) -> Result<KalmanFilterOutput> {
+    kalman_core(endog, ss, init, concentrate_scale, true)
 }
 
 #[cfg(test)]
@@ -493,7 +739,6 @@ mod tests {
             measurement_error: false,
         };
 
-        // Parse params: [ar(p), ma(q), sar(P), sma(Q)]
         let mut i = 0;
         let ar = &params_vec[i..i + p]; i += p;
         let ma = &params_vec[i..i + q]; i += q;
@@ -543,8 +788,8 @@ mod tests {
     fn test_sarima_100_100_4_loglike() {
         run_seasonal_kalman_test(
             "sarima_100_100_4",
-            1, 0, 0,  // p, d, q
-            1, 0, 0, 4,  // P, D, Q, s
+            1, 0, 0,
+            1, 0, 0, 4,
             1e-6,
         );
     }
@@ -553,8 +798,8 @@ mod tests {
     fn test_sarima_111_111_12_loglike() {
         run_seasonal_kalman_test(
             "sarima_111_111_12",
-            1, 1, 1,  // p, d, q
-            1, 1, 1, 12,  // P, D, Q, s
+            1, 1, 1,
+            1, 1, 1, 12,
             1e-6,
         );
     }
@@ -601,7 +846,6 @@ mod tests {
 
         let fo = kalman_filter(&data, &ss, &init, true).unwrap();
         assert_eq!(fo.innovation_vars.len(), data.len());
-        // After burn-in, all F_t should be positive
         for &f in &fo.innovation_vars[fo.n_obs_effective..] {
             assert!(f >= 0.0, "F_t should be non-negative, got {}", f);
         }

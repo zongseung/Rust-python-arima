@@ -94,29 +94,138 @@ fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
     Some(phi)
 }
 
-/// Estimate MA coefficients from AR residuals using innovation algorithm.
+/// Solve Yule-Walker equations from a pre-computed autocovariance sequence.
+///
+/// `gammas` should contain gamma(0), gamma(1), ..., gamma(p) where these may
+/// be at seasonal lags (i.e. gamma[k] = autocovariance at lag k*s).
+/// Returns AR coefficients [phi_1, ..., phi_p].
+fn yule_walker_from_acov(gammas: &[f64], p: usize) -> Option<Vec<f64>> {
+    if p == 0 || gammas.len() <= p {
+        return Some(vec![]);
+    }
+
+    if gammas[0].abs() < 1e-15 {
+        return None;
+    }
+
+    // Levinson-Durbin recursion for efficient Toeplitz solve
+    let mut phi = vec![0.0; p];
+    let mut phi_prev = vec![0.0; p];
+    let mut var = gammas[0];
+
+    for k in 0..p {
+        let mut num = gammas[k + 1];
+        for j in 0..k {
+            num -= phi[j] * gammas[k - j];
+        }
+        if var.abs() < 1e-15 {
+            return None;
+        }
+        let lambda = num / var;
+
+        phi_prev[..p].copy_from_slice(&phi[..p]);
+        phi[k] = lambda;
+        for j in 0..k {
+            phi[j] = phi_prev[j] - lambda * phi_prev[k - 1 - j];
+        }
+        var *= 1.0 - lambda * lambda;
+    }
+
+    Some(phi)
+}
+
+/// Estimate MA coefficients via the innovation algorithm (Brockwell & Davis).
+///
+/// More accurate than raw autocorrelation because the innovation algorithm
+/// recovers the MA structure from the autocovariance sequence directly.
 fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
     if q == 0 || residuals.len() <= q {
         return vec![0.0; q];
     }
 
-    let gamma0 = autocovariance(residuals, 0);
-    if gamma0.abs() < 1e-15 {
+    // Compute autocovariances gamma(0..q)
+    let gamma: Vec<f64> = (0..=q).map(|k| autocovariance(residuals, k)).collect();
+
+    if gamma[0].abs() < 1e-15 {
         return vec![0.0; q];
     }
 
-    // Simple method: use autocorrelations of residuals as MA coefficients
-    // This is a rough estimate but sufficient for starting values
-    let mut ma = Vec::with_capacity(q);
-    for k in 1..=q {
-        let rho = autocovariance(residuals, k) / gamma0;
-        // Clamp to prevent extreme values
-        ma.push(rho.clamp(-0.9, 0.9));
+    // Innovation algorithm (Brockwell & Davis, Sec 5.2)
+    // Computes theta[i][j] and v[i] iteratively
+    let m = q;
+    let mut theta = vec![vec![0.0; m]; m + 1]; // theta[i][j], 0-indexed
+    let mut v = vec![0.0; m + 1];
+    v[0] = gamma[0];
+
+    for i in 1..=m {
+        // Compute theta[i][i-1-k] for k = 0..i
+        for k in 0..i {
+            let mut sum = gamma[i - k];
+            for j in 0..k {
+                sum -= theta[k][k - 1 - j] * theta[i][i - 1 - j] * v[j];
+            }
+            theta[i][i - 1 - k] = if v[k].abs() > 1e-15 { sum / v[k] } else { 0.0 };
+        }
+        // Update v[i]
+        v[i] = gamma[0];
+        for j in 0..i {
+            v[i] -= theta[i][i - 1 - j].powi(2) * v[j];
+        }
+        v[i] = v[i].max(1e-15);
     }
-    ma
+
+    // Extract MA(q) coefficients from theta[m][0..q]
+    (0..q)
+        .map(|k| theta[m][k].clamp(-0.99, 0.99))
+        .collect()
 }
 
-/// Compute AR residuals given coefficients.
+/// Estimate seasonal MA coefficients from autocovariances at seasonal lags.
+///
+/// Instead of subsampling every s-th observation (which discards most data),
+/// computes autocovariances at lags 0, s, 2s, ..., Q*s from the full series
+/// and applies the innovation algorithm on these seasonal autocovariances.
+fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
+    if qq == 0 || s == 0 || residuals.len() <= qq * s {
+        return vec![0.0; qq];
+    }
+
+    // Compute autocovariances at seasonal lags: γ(0), γ(s), γ(2s), ..., γ(Q*s)
+    let gamma: Vec<f64> = (0..=qq)
+        .map(|k| autocovariance(residuals, k * s))
+        .collect();
+
+    if gamma[0].abs() < 1e-15 {
+        return vec![0.0; qq];
+    }
+
+    // Innovation algorithm treating seasonal lags as consecutive
+    let m = qq;
+    let mut theta = vec![vec![0.0; m]; m + 1];
+    let mut v = vec![0.0; m + 1];
+    v[0] = gamma[0];
+
+    for i in 1..=m {
+        for k in 0..i {
+            let mut sum = gamma[i - k];
+            for j in 0..k {
+                sum -= theta[k][k - 1 - j] * theta[i][i - 1 - j] * v[j];
+            }
+            theta[i][i - 1 - k] = if v[k].abs() > 1e-15 { sum / v[k] } else { 0.0 };
+        }
+        v[i] = gamma[0];
+        for j in 0..i {
+            v[i] -= theta[i][i - 1 - j].powi(2) * v[j];
+        }
+        v[i] = v[i].max(1e-15);
+    }
+
+    (0..qq)
+        .map(|k| theta[m][k].clamp(-0.99, 0.99))
+        .collect()
+}
+
+/// Compute AR residuals given coefficients (lag-1 recursion).
 fn ar_residuals(y: &[f64], ar: &[f64]) -> Vec<f64> {
     let p = ar.len();
     if p == 0 {
@@ -134,12 +243,61 @@ fn ar_residuals(y: &[f64], ar: &[f64]) -> Vec<f64> {
     resid
 }
 
+/// Compute seasonal AR residuals at seasonal lags (lag s, 2s, ..., P*s).
+///
+/// y[t] - sar[0]*y[t-s] - sar[1]*y[t-2s] - ... - sar[P-1]*y[t-P*s]
+fn seasonal_ar_residuals(y: &[f64], sar: &[f64], s: usize) -> Vec<f64> {
+    let pp = sar.len();
+    if pp == 0 || s == 0 {
+        return y.to_vec();
+    }
+    let n = y.len();
+    let start = pp * s;
+    if n <= start {
+        return vec![];
+    }
+    let mut resid = Vec::with_capacity(n - start);
+    for t in start..n {
+        let mut pred = 0.0;
+        for j in 0..pp {
+            pred += sar[j] * y[t - (j + 1) * s];
+        }
+        resid.push(y[t] - pred);
+    }
+    resid
+}
+
+/// Estimate exogenous variable coefficients via simple regression.
+///
+/// For each exog variable j, computes β_j = cov(y, x_j) / var(x_j).
+fn estimate_exog_coeffs(endog: &[f64], exog: &[Vec<f64>]) -> Vec<f64> {
+    let n = endog.len();
+    if n == 0 {
+        return vec![0.0; exog.len()];
+    }
+    let y_mean: f64 = endog.iter().sum::<f64>() / n as f64;
+
+    exog.iter()
+        .map(|col| {
+            let x_mean: f64 = col.iter().sum::<f64>() / n as f64;
+            let mut cov = 0.0;
+            let mut var_x = 0.0;
+            for t in 0..n.min(col.len()) {
+                let dx = col[t] - x_mean;
+                cov += (endog[t] - y_mean) * dx;
+                var_x += dx * dx;
+            }
+            if var_x.abs() < 1e-15 { 0.0 } else { cov / var_x }
+        })
+        .collect()
+}
+
 /// Compute starting parameters for SARIMAX model.
 ///
 /// Returns a flat parameter vector in the layout expected by `SarimaxParams::from_flat`:
 /// `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q)]`
 /// (sigma2 omitted when `concentrate_scale=true`)
-pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<&[Vec<f64>]>) -> Result<Vec<f64>> {
     let order = &config.order;
     let p = order.p;
     let q = order.q;
@@ -162,7 +320,17 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec
 
     // Trend coefficients (zeros)
     let kt = config.trend.k_trend();
-    let mut params = vec![0.0; kt + config.n_exog];
+    let mut params = vec![0.0; kt];
+
+    // Exog coefficients: OLS estimates or zeros
+    if config.n_exog > 0 {
+        if let Some(exog_cols) = exog {
+            let exog_betas = estimate_exog_coeffs(&diffed, exog_cols);
+            params.extend_from_slice(&exog_betas);
+        } else {
+            params.extend(vec![0.0; config.n_exog]);
+        }
+    }
 
     // AR coefficients
     let ar = yule_walker(&diffed, p).unwrap_or_else(|| vec![0.0; p]);
@@ -173,15 +341,16 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec
     let ma = estimate_ma_from_residuals(&residuals, q);
     params.extend_from_slice(&ma);
 
-    // Seasonal AR coefficients
-    if pp > 0 && s > 0 {
-        // Subsample at seasonal lag
-        let seasonal_data: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-        let sar = if seasonal_data.len() > pp {
-            yule_walker(&seasonal_data, pp).unwrap_or_else(|| vec![0.0; pp])
-        } else {
-            vec![0.0; pp]
-        };
+    // Seasonal AR coefficients via Yule-Walker on seasonal autocovariances.
+    // Instead of subsampling every s-th observation (which discards most data),
+    // compute autocovariances at lags 0, s, 2s, ..., P*s from ALL observations
+    // and solve Yule-Walker equations on those.
+    if pp > 0 && s > 0 && diffed.len() > pp * s {
+        let seasonal_gammas: Vec<f64> = (0..=pp)
+            .map(|k| autocovariance(&diffed, k * s))
+            .collect();
+        let sar = yule_walker_from_acov(&seasonal_gammas, pp)
+            .unwrap_or_else(|| vec![0.0; pp]);
         params.extend_from_slice(&sar);
     } else {
         params.extend(vec![0.0; pp]);
@@ -189,15 +358,13 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig) -> Result<Vec
 
     // Seasonal MA coefficients
     if qq > 0 && s > 0 {
-        let sar_coeffs = if pp > 0 && s > 0 {
-            let seasonal_data: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-            yule_walker(&seasonal_data, pp).unwrap_or_else(|| vec![0.0; pp])
+        // Filter through seasonal AR at lags s, 2s, ..., P*s to get proper residuals
+        let sar_resid = if pp > 0 {
+            seasonal_ar_residuals(&diffed, &params[kt + config.n_exog + p + q..kt + config.n_exog + p + q + pp], s)
         } else {
-            vec![]
+            residuals.clone()
         };
-        let seasonal_resid: Vec<f64> = diffed.iter().step_by(s).copied().collect();
-        let seasonal_resid = ar_residuals(&seasonal_resid, &sar_coeffs);
-        let sma = estimate_ma_from_residuals(&seasonal_resid, qq);
+        let sma = estimate_seasonal_ma(&sar_resid, qq, s);
         params.extend_from_slice(&sma);
     } else {
         params.extend(vec![0.0; qq]);
@@ -278,7 +445,7 @@ mod tests {
     fn test_start_params_length_ar1() {
         let config = make_config(1, 0, 0, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 1); // ar(1)
     }
 
@@ -286,7 +453,7 @@ mod tests {
     fn test_start_params_length_arma11() {
         let config = make_config(1, 0, 1, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
     }
 
@@ -294,7 +461,7 @@ mod tests {
     fn test_start_params_length_sarima() {
         let config = make_config(1, 1, 1, 1, 1, 1, 12, true);
         let y: Vec<f64> = (0..300).map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 4); // ar(1) + ma(1) + sar(1) + sma(1)
     }
 
@@ -302,7 +469,7 @@ mod tests {
     fn test_start_params_with_sigma2() {
         let config = make_config(1, 0, 0, 0, 0, 0, 0, false);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + sigma2
         assert!(params[1] > 0.0); // sigma2 should be positive
     }
@@ -311,7 +478,7 @@ mod tests {
     fn test_fallback_short_series() {
         let config = make_config(1, 1, 1, 0, 0, 0, 0, true);
         let y = vec![1.0, 2.0]; // Too short after differencing
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
         assert!(params.iter().all(|&x| x == 0.0)); // Should be zeros
     }
@@ -320,7 +487,7 @@ mod tests {
     fn test_start_params_finite() {
         let config = make_config(2, 1, 1, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.05).sin()).collect();
-        let params = compute_start_params(&y, &config).unwrap();
+        let params = compute_start_params(&y, &config, None).unwrap();
         assert!(params.iter().all(|x| x.is_finite()), "Non-finite start params: {:?}", params);
     }
 }
