@@ -6,7 +6,7 @@
 //! 3. Estimating MA coefficients from AR residuals
 //! 4. Falling back to zeros on failure
 
-use crate::error::Result;
+use crate::error::{Result, SarimaxError};
 use crate::types::SarimaxConfig;
 
 /// Apply regular differencing d times.
@@ -54,8 +54,11 @@ fn autocovariance(y: &[f64], k: usize) -> f64 {
 /// Solves the Yule-Walker system: R * phi = r
 /// where R[i,j] = gamma(|i-j|) and r[i] = gamma(i+1).
 fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
-    if p == 0 || y.len() <= p {
+    if p == 0 {
         return Some(vec![]);
+    }
+    if y.len() <= p {
+        return None;
     }
 
     let gamma0 = autocovariance(y, 0);
@@ -175,9 +178,7 @@ fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
     }
 
     // Extract MA(q) coefficients from theta[m][0..q]
-    (0..q)
-        .map(|k| theta[m][k].clamp(-0.99, 0.99))
-        .collect()
+    (0..q).map(|k| theta[m][k].clamp(-0.99, 0.99)).collect()
 }
 
 /// Estimate seasonal MA coefficients from autocovariances at seasonal lags.
@@ -191,9 +192,7 @@ fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
     }
 
     // Compute autocovariances at seasonal lags: γ(0), γ(s), γ(2s), ..., γ(Q*s)
-    let gamma: Vec<f64> = (0..=qq)
-        .map(|k| autocovariance(residuals, k * s))
-        .collect();
+    let gamma: Vec<f64> = (0..=qq).map(|k| autocovariance(residuals, k * s)).collect();
 
     if gamma[0].abs() < 1e-15 {
         return vec![0.0; qq];
@@ -220,9 +219,7 @@ fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
         v[i] = v[i].max(1e-15);
     }
 
-    (0..qq)
-        .map(|k| theta[m][k].clamp(-0.99, 0.99))
-        .collect()
+    (0..qq).map(|k| theta[m][k].clamp(-0.99, 0.99)).collect()
 }
 
 /// Compute AR residuals given coefficients (lag-1 recursion).
@@ -287,7 +284,11 @@ fn estimate_exog_coeffs(endog: &[f64], exog: &[Vec<f64>]) -> Vec<f64> {
                 cov += (endog[t] - y_mean) * dx;
                 var_x += dx * dx;
             }
-            if var_x.abs() < 1e-15 { 0.0 } else { cov / var_x }
+            if var_x.abs() < 1e-15 {
+                0.0
+            } else {
+                cov / var_x
+            }
         })
         .collect()
 }
@@ -297,7 +298,11 @@ fn estimate_exog_coeffs(endog: &[f64], exog: &[Vec<f64>]) -> Vec<f64> {
 /// Returns a flat parameter vector in the layout expected by `SarimaxParams::from_flat`:
 /// `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q)]`
 /// (sigma2 omitted when `concentrate_scale=true`)
-pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<&[Vec<f64>]>) -> Result<Vec<f64>> {
+pub fn compute_start_params(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    exog: Option<&[Vec<f64>]>,
+) -> Result<Vec<f64>> {
     let order = &config.order;
     let p = order.p;
     let q = order.q;
@@ -307,7 +312,10 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
 
     let n_params = config.trend.k_trend()
         + config.n_exog
-        + p + q + pp + qq
+        + p
+        + q
+        + pp
+        + qq
         + if config.concentrate_scale { 0 } else { 1 };
 
     // Apply differencing
@@ -346,11 +354,8 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
     // compute autocovariances at lags 0, s, 2s, ..., P*s from ALL observations
     // and solve Yule-Walker equations on those.
     if pp > 0 && s > 0 && diffed.len() > pp * s {
-        let seasonal_gammas: Vec<f64> = (0..=pp)
-            .map(|k| autocovariance(&diffed, k * s))
-            .collect();
-        let sar = yule_walker_from_acov(&seasonal_gammas, pp)
-            .unwrap_or_else(|| vec![0.0; pp]);
+        let seasonal_gammas: Vec<f64> = (0..=pp).map(|k| autocovariance(&diffed, k * s)).collect();
+        let sar = yule_walker_from_acov(&seasonal_gammas, pp).unwrap_or_else(|| vec![0.0; pp]);
         params.extend_from_slice(&sar);
     } else {
         params.extend(vec![0.0; pp]);
@@ -360,7 +365,11 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
     if qq > 0 && s > 0 {
         // Filter through seasonal AR at lags s, 2s, ..., P*s to get proper residuals
         let sar_resid = if pp > 0 {
-            seasonal_ar_residuals(&diffed, &params[kt + config.n_exog + p + q..kt + config.n_exog + p + q + pp], s)
+            seasonal_ar_residuals(
+                &diffed,
+                &params[kt + config.n_exog + p + q..kt + config.n_exog + p + q + pp],
+                s,
+            )
         } else {
             residuals.clone()
         };
@@ -376,7 +385,13 @@ pub fn compute_start_params(endog: &[f64], config: &SarimaxConfig, exog: Option<
         params.push(var);
     }
 
-    assert_eq!(params.len(), n_params);
+    if params.len() != n_params {
+        return Err(SarimaxError::DataError(format!(
+            "failed to build start params: expected length {}, got {}",
+            n_params,
+            params.len()
+        )));
+    }
     Ok(params)
 }
 
@@ -386,8 +401,13 @@ mod tests {
     use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
 
     fn make_config(
-        p: usize, d: usize, q: usize,
-        pp: usize, dd: usize, qq: usize, s: usize,
+        p: usize,
+        d: usize,
+        q: usize,
+        pp: usize,
+        dd: usize,
+        qq: usize,
+        s: usize,
         concentrate: bool,
     ) -> SarimaxConfig {
         SarimaxConfig {
@@ -438,7 +458,11 @@ mod tests {
         let ar = yule_walker(&y, 1).unwrap();
         assert_eq!(ar.len(), 1);
         // Should be roughly near 0.7 (not exact due to finite sample)
-        assert!((ar[0] - 0.7).abs() < 0.15, "AR(1) estimate too far: {}", ar[0]);
+        assert!(
+            (ar[0] - 0.7).abs() < 0.15,
+            "AR(1) estimate too far: {}",
+            ar[0]
+        );
     }
 
     #[test]
@@ -460,7 +484,9 @@ mod tests {
     #[test]
     fn test_start_params_length_sarima() {
         let config = make_config(1, 1, 1, 1, 1, 1, 12, true);
-        let y: Vec<f64> = (0..300).map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos()).collect();
+        let y: Vec<f64> = (0..300)
+            .map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos())
+            .collect();
         let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 4); // ar(1) + ma(1) + sar(1) + sma(1)
     }
@@ -488,6 +514,10 @@ mod tests {
         let config = make_config(2, 1, 1, 0, 0, 0, 0, true);
         let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.05).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
-        assert!(params.iter().all(|x| x.is_finite()), "Non-finite start params: {:?}", params);
+        assert!(
+            params.iter().all(|x| x.is_finite()),
+            "Non-finite start params: {:?}",
+            params
+        );
     }
 }

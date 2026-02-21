@@ -7,15 +7,13 @@
 
 use argmin::core::{CostFunction, Executor, Gradient, State};
 use argmin::solver::linesearch::MoreThuenteLineSearch;
-use argmin::solver::quasinewton::LBFGS;
 use argmin::solver::neldermead::NelderMead;
+use argmin::solver::quasinewton::LBFGS;
 
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::kalman_loglike;
-use crate::params::{
-    self, SarimaxParams,
-};
+use crate::params::{self, SarimaxParams};
 use crate::score;
 use crate::start_params::compute_start_params;
 use crate::state_space::StateSpace;
@@ -28,7 +26,28 @@ use crate::types::{FitResult, SarimaxConfig};
 /// Transform constrained parameters to unconstrained space for optimization.
 ///
 /// Layout: `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`
+fn expected_param_len(config: &SarimaxConfig) -> usize {
+    config.trend.k_trend()
+        + config.n_exog
+        + config.order.p
+        + config.order.q
+        + config.order.pp
+        + config.order.qq
+        + if config.concentrate_scale { 0 } else { 1 }
+}
+
+/// Transform constrained parameters to unconstrained space for optimization.
+///
+/// Layout: `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`
 pub fn untransform_params(constrained: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+    let expected = expected_param_len(config);
+    if constrained.len() != expected {
+        return Err(SarimaxError::ParamLengthMismatch {
+            expected,
+            got: constrained.len(),
+        });
+    }
+
     let kt = config.trend.k_trend();
     let n_exog = config.n_exog;
     let p = config.order.p;
@@ -84,7 +103,15 @@ pub fn untransform_params(constrained: &[f64], config: &SarimaxConfig) -> Result
 }
 
 /// Transform unconstrained parameters back to constrained space.
-pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Vec<f64> {
+pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+    let expected = expected_param_len(config);
+    if unconstrained.len() != expected {
+        return Err(SarimaxError::ParamLengthMismatch {
+            expected,
+            got: unconstrained.len(),
+        });
+    }
+
     let kt = config.trend.k_trend();
     let n_exog = config.n_exog;
     let p = config.order.p;
@@ -136,7 +163,7 @@ pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Vec<f6
         out.push(params::constrain_variance(unconstrained[i]));
     }
 
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,13 +187,13 @@ impl SarimaxObjective {
 
     /// Evaluate log-likelihood for given unconstrained parameters.
     fn eval_loglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
-        let constrained = transform_params(unconstrained, &self.config);
+        let constrained =
+            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
 
-        let sparams = SarimaxParams::from_flat(&constrained, &self.config)
-            .map_err(|e| e.to_string())?;
+        let sparams =
+            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
-        let ss = StateSpace::new(&self.config, &sparams, &self.endog,
-            self.exog.as_deref())
+        let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
             .map_err(|e| e.to_string())?;
 
         let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
@@ -187,11 +214,15 @@ impl SarimaxObjective {
     ///
     /// Uses score() (tangent linear KF) in constrained space, then applies
     /// the chain rule via the Jacobian of transform_params.
-    fn analytical_gradient_negloglike(&self, unconstrained: &[f64]) -> std::result::Result<Vec<f64>, String> {
-        let constrained = transform_params(unconstrained, &self.config);
+    fn analytical_gradient_negloglike(
+        &self,
+        unconstrained: &[f64],
+    ) -> std::result::Result<Vec<f64>, String> {
+        let constrained =
+            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
 
-        let sparams = SarimaxParams::from_flat(&constrained, &self.config)
-            .map_err(|e| e.to_string())?;
+        let sparams =
+            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
         let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
             .map_err(|e| e.to_string())?;
@@ -200,13 +231,19 @@ impl SarimaxObjective {
 
         // Score in constrained space: ∂ll/∂θ_constrained
         let score_constrained = score::score(
-            &self.endog, &ss, &init, &self.config, &sparams,
-            self.config.concentrate_scale, self.exog.as_deref(),
-        ).map_err(|e| e.to_string())?;
+            &self.endog,
+            &ss,
+            &init,
+            &self.config,
+            &sparams,
+            self.config.concentrate_scale,
+            self.exog.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
 
         // Chain rule: ∂(-ll)/∂u = -J' · ∂ll/∂θ
         // where J[j,i] = ∂θ_j / ∂u_i (Jacobian of transform_params)
-        let grad = apply_transform_jacobian(&score_constrained, unconstrained, &self.config);
+        let grad = apply_transform_jacobian(&score_constrained, unconstrained, &self.config)?;
 
         // Return negative gradient (minimizing -loglike)
         Ok(grad.iter().map(|&g| -g).collect())
@@ -220,23 +257,23 @@ fn apply_transform_jacobian(
     score_constrained: &[f64],
     unconstrained: &[f64],
     config: &SarimaxConfig,
-) -> Vec<f64> {
+) -> std::result::Result<Vec<f64>, String> {
     let n = unconstrained.len();
     let eps = 1e-7;
-    let c_base = transform_params(unconstrained, config);
+    let c_base = transform_params(unconstrained, config).map_err(|e| e.to_string())?;
     let mut grad = vec![0.0; n];
 
     for i in 0..n {
         let mut u_pert = unconstrained.to_vec();
         u_pert[i] += eps;
-        let c_pert = transform_params(&u_pert, config);
+        let c_pert = transform_params(&u_pert, config).map_err(|e| e.to_string())?;
 
         // grad[i] = Σ_j score[j] * ∂c_j/∂u_i
         for j in 0..n {
             grad[i] += score_constrained[j] * (c_pert[j] - c_base[j]) / eps;
         }
     }
-    grad
+    Ok(grad)
 }
 
 impl CostFunction for SarimaxObjective {
@@ -245,7 +282,7 @@ impl CostFunction for SarimaxObjective {
 
     fn cost(&self, param: &Vec<f64>) -> std::result::Result<f64, argmin::core::Error> {
         match self.eval_loglike(param) {
-            Ok(ll) => Ok(-ll), // minimize negative log-likelihood
+            Ok(ll) => Ok(-ll),            // minimize negative log-likelihood
             Err(_) => Ok(f64::MAX / 2.0), // penalty for invalid parameters
         }
     }
@@ -313,14 +350,17 @@ fn run_lbfgs(
         .map_err(|e| e.to_string())?;
 
     let result = Executor::new(objective, solver)
-        .configure(|state: argmin::core::IterState<Vec<f64>, Vec<f64>, (), (), (), f64>| {
-            state.param(init_params).max_iters(maxiter)
-        })
+        .configure(
+            |state: argmin::core::IterState<Vec<f64>, Vec<f64>, (), (), (), f64>| {
+                state.param(init_params).max_iters(maxiter)
+            },
+        )
         .run()
         .map_err(|e| format!("L-BFGS failed: {}", e))?;
 
     let state = result.state();
-    let best_param = state.get_best_param()
+    let best_param = state
+        .get_best_param()
         .ok_or("L-BFGS: no best parameter found")?
         .clone();
     let best_cost = state.get_best_cost();
@@ -359,14 +399,17 @@ fn run_nelder_mead(
         .map_err(|e| e.to_string())?;
 
     let result = Executor::new(objective, solver)
-        .configure(|state: argmin::core::IterState<Vec<f64>, (), (), (), (), f64>| {
-            state.max_iters(maxiter)
-        })
+        .configure(
+            |state: argmin::core::IterState<Vec<f64>, (), (), (), (), f64>| {
+                state.max_iters(maxiter)
+            },
+        )
         .run()
         .map_err(|e| format!("Nelder-Mead failed: {}", e))?;
 
     let state = result.state();
-    let best_param = state.get_best_param()
+    let best_param = state
+        .get_best_param()
         .ok_or("Nelder-Mead: no best parameter found")?
         .clone();
     let best_cost = state.get_best_cost();
@@ -394,13 +437,21 @@ fn compute_bounds(config: &SarimaxConfig) -> Vec<(Option<f64>, Option<f64>)> {
     }
 
     // AR coefficients
-    let ar_bound = if config.enforce_stationarity { 20.0 } else { 0.999 };
+    let ar_bound = if config.enforce_stationarity {
+        20.0
+    } else {
+        0.999
+    };
     for _ in 0..config.order.p {
         bounds.push((Some(-ar_bound), Some(ar_bound)));
     }
 
     // MA coefficients
-    let ma_bound = if config.enforce_invertibility { 20.0 } else { 0.999 };
+    let ma_bound = if config.enforce_invertibility {
+        20.0
+    } else {
+        0.999
+    };
     for _ in 0..config.order.q {
         bounds.push((Some(-ma_bound), Some(ma_bound)));
     }
@@ -488,7 +539,9 @@ fn run_lbfgsb(
     problem.set_bounds(bounds_vec);
 
     let mut state = lbfgsb::LbfgsbState::new(problem, param);
-    state.minimize().map_err(|e| format!("L-BFGS-B failed: {}", e))?;
+    state
+        .minimize()
+        .map_err(|e| format!("L-BFGS-B failed: {}", e))?;
 
     let x = state.x().to_vec();
     let cost = state.fx();
@@ -520,6 +573,14 @@ pub fn fit(
 ) -> Result<FitResult> {
     let maxiter = maxiter.unwrap_or(500);
     let method = method.unwrap_or("lbfgsb");
+    let min_obs = expected_param_len(config).max(config.order.k_states().saturating_add(1));
+    if endog.len() <= min_obs {
+        return Err(SarimaxError::DataError(format!(
+            "Not enough observations: n={} <= minimum required {} for model order",
+            endog.len(),
+            min_obs
+        )));
+    }
 
     // 1. Get starting parameters
     let constrained_start = match start_params {
@@ -555,10 +616,15 @@ pub fn fit(
     // Determine number of restarts based on model complexity
     let n_params_total = unconstrained_start.len();
     let has_seasonal = config.order.pp > 0 || config.order.qq > 0;
-    let n_restarts = if n_params_total >= 4 { 3 }
-        else if n_params_total >= 3 || has_seasonal { 2 }
-        else if n_params_total >= 2 { 1 }
-        else { 0 };
+    let n_restarts = if n_params_total >= 4 {
+        3
+    } else if n_params_total >= 3 || has_seasonal {
+        2
+    } else if n_params_total >= 2 {
+        1
+    } else {
+        0
+    };
 
     // 3. Run optimization
     let (best_unconstrained, _best_cost, n_iter, converged, used_method) = match method {
@@ -571,15 +637,20 @@ pub fn fit(
             let bounds = compute_bounds(config);
 
             // Initial L-BFGS-B run
-            let initial_result = match run_lbfgsb(&objective, unconstrained_start.clone(), bounds.clone(), maxiter) {
+            let initial_result = match run_lbfgsb(
+                &objective,
+                unconstrained_start.clone(),
+                bounds.clone(),
+                maxiter,
+            ) {
                 Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgsb".to_string())),
                 Err(_) => None,
             };
 
             let mut best = initial_result;
 
-            let mut try_update = |p: Vec<f64>, c: f64, n: u64, conv: bool, method_name: &str| {
-                match &best {
+            let mut try_update =
+                |p: Vec<f64>, c: f64, n: u64, conv: bool, method_name: &str| match &best {
                     Some((_, best_cost, _, _, _)) if c < *best_cost => {
                         best = Some((p, c, n, conv, method_name.to_string()));
                     }
@@ -587,13 +658,13 @@ pub fn fit(
                         best = Some((p, c, n, conv, method_name.to_string()));
                     }
                     _ => {}
-                }
-            };
+                };
 
             if n_restarts > 0 {
                 // 1. Zero-start
                 let zeros = vec![0.0; n_params_total];
-                if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, zeros, bounds.clone(), maxiter) {
+                if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, zeros, bounds.clone(), maxiter)
+                {
                     try_update(p, c, n, conv, "lbfgsb");
                 }
 
@@ -614,7 +685,9 @@ pub fn fit(
                             grid_constrained[sma_start + i] = ma_val;
                         }
                         if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
-                            if let Ok((p, c, n, conv)) = run_nelder_mead(objective.clone(), grid_uncons, maxiter) {
+                            if let Ok((p, c, n, conv)) =
+                                run_nelder_mead(objective.clone(), grid_uncons, maxiter)
+                            {
                                 try_update(p, c, n, conv, "lbfgsb+nm");
                             }
                         }
@@ -626,12 +699,16 @@ pub fn fit(
                 for _ in 0..n_restarts {
                     let mut perturbed = unconstrained_start.clone();
                     for v in perturbed.iter_mut() {
-                        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        rng_state = rng_state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
                         let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
                         let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
                         *v += u * scale;
                     }
-                    if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, perturbed, bounds.clone(), maxiter) {
+                    if let Ok((p, c, n, conv)) =
+                        run_lbfgsb(&objective, perturbed, bounds.clone(), maxiter)
+                    {
                         try_update(p, c, n, conv, "lbfgsb");
                     }
                 }
@@ -641,41 +718,45 @@ pub fn fit(
                 Some((best_p, best_c, best_n, _best_conv, method_name)) => {
                     // NM refinement
                     match run_nelder_mead(objective.clone(), best_p.clone(), maxiter / 2) {
-                        Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
-                            (nm_p, nm_c, best_n + nm_n, nm_conv, format!("{}+nm", method_name))
-                        }
+                        Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => (
+                            nm_p,
+                            nm_c,
+                            best_n + nm_n,
+                            nm_conv,
+                            format!("{}+nm", method_name),
+                        ),
                         _ => (best_p, best_c, best_n, true, method_name),
                     }
                 }
                 None => {
                     // All L-BFGS-B failed, fallback to NM
-                    let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                        .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    let (p, c, n, conv) =
+                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                            .map_err(|e| SarimaxError::OptimizationFailed(e))?;
                     (p, c, n, conv, "nelder-mead (fallback)".to_string())
                 }
             }
         }
         "lbfgs" => {
             // Initial L-BFGS run
-            let initial_result = match run_lbfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
-                Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgs".to_string())),
-                Err(_) => None,
-            };
+            let initial_result =
+                match run_lbfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
+                    Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgs".to_string())),
+                    Err(_) => None,
+                };
 
             // Multi-start: try perturbed starting points for complex models
             let mut best = initial_result;
 
             // Helper to update best with a new result
-            let mut try_update = |p: Vec<f64>, c: f64, n: u64, conv: bool| {
-                match &best {
-                    Some((_, best_cost, _, _, _)) if c < *best_cost => {
-                        best = Some((p, c, n, conv, "lbfgs".to_string()));
-                    }
-                    None => {
-                        best = Some((p, c, n, conv, "lbfgs".to_string()));
-                    }
-                    _ => {}
+            let mut try_update = |p: Vec<f64>, c: f64, n: u64, conv: bool| match &best {
+                Some((_, best_cost, _, _, _)) if c < *best_cost => {
+                    best = Some((p, c, n, conv, "lbfgs".to_string()));
                 }
+                None => {
+                    best = Some((p, c, n, conv, "lbfgs".to_string()));
+                }
+                _ => {}
             };
 
             if n_restarts > 0 {
@@ -703,7 +784,9 @@ pub fn fit(
                             grid_constrained[sma_start + i] = ma_val;
                         }
                         if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
-                            if let Ok((p, c, n, conv)) = run_nelder_mead(objective.clone(), grid_uncons, maxiter) {
+                            if let Ok((p, c, n, conv)) =
+                                run_nelder_mead(objective.clone(), grid_uncons, maxiter)
+                            {
                                 try_update(p, c, n, conv);
                             }
                         }
@@ -715,7 +798,9 @@ pub fn fit(
                 for _ in 0..n_restarts {
                     let mut perturbed = unconstrained_start.clone();
                     for v in perturbed.iter_mut() {
-                        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        rng_state = rng_state
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
                         let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
                         let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
                         *v += u * scale;
@@ -738,8 +823,9 @@ pub fn fit(
                 }
                 None => {
                     // All L-BFGS attempts failed, fallback to Nelder-Mead
-                    let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                        .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    let (p, c, n, conv) =
+                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                            .map_err(|e| SarimaxError::OptimizationFailed(e))?;
                     (p, c, n, conv, "nelder-mead (fallback)".to_string())
                 }
             }
@@ -753,7 +839,7 @@ pub fn fit(
     };
 
     // 4. Transform back to constrained space
-    let final_constrained = transform_params(&best_unconstrained, config);
+    let final_constrained = transform_params(&best_unconstrained, config)?;
 
     // 5. Evaluate final log-likelihood
     let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
@@ -799,8 +885,11 @@ mod tests {
     }
 
     fn make_config(
-        p: usize, d: usize, q: usize,
-        enforce_stat: bool, enforce_inv: bool,
+        p: usize,
+        d: usize,
+        q: usize,
+        enforce_stat: bool,
+        enforce_inv: bool,
     ) -> SarimaxConfig {
         SarimaxConfig {
             order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
@@ -819,13 +908,9 @@ mod tests {
         let config = make_config(2, 0, 1, true, true);
         let original = vec![0.5, -0.3, 0.2]; // ar(2), ma(1)
         let unconstrained = untransform_params(&original, &config).unwrap();
-        let recovered = transform_params(&unconstrained, &config);
+        let recovered = transform_params(&unconstrained, &config).unwrap();
         for (a, b) in original.iter().zip(recovered.iter()) {
-            assert!(
-                (a - b).abs() < 1e-10,
-                "roundtrip failed: {} vs {}",
-                a, b
-            );
+            assert!((a - b).abs() < 1e-10, "roundtrip failed: {} vs {}", a, b);
         }
     }
 
@@ -842,8 +927,10 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         let config = make_config(1, 0, 0, false, false);
@@ -862,8 +949,10 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         let config = make_config(1, 0, 0, false, false);
@@ -875,7 +964,11 @@ mod tests {
 
         let grad = obj.gradient(&vec![0.5]).unwrap();
         assert_eq!(grad.len(), 1);
-        assert!(grad[0].is_finite(), "gradient should be finite: {}", grad[0]);
+        assert!(
+            grad[0].is_finite(),
+            "gradient should be finite: {}",
+            grad[0]
+        );
     }
 
     #[test]
@@ -883,12 +976,16 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
         let expected_params: Vec<f64> = case["params"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
         let expected_loglike = case["loglike"].as_f64().unwrap();
 
@@ -901,13 +998,17 @@ mod tests {
         assert!(
             param_err < 1e-4,
             "AR(1) param error too large: {} (got {}, expected {})",
-            param_err, result.params[0], expected_params[0]
+            param_err,
+            result.params[0],
+            expected_params[0]
         );
         let ll_err = (result.loglike - expected_loglike).abs();
         assert!(
             ll_err < 1e-2,
             "AR(1) loglike error: {} (got {}, expected {})",
-            ll_err, result.loglike, expected_loglike
+            ll_err,
+            result.loglike,
+            expected_loglike
         );
     }
 
@@ -916,12 +1017,16 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arma11"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
         let expected_params: Vec<f64> = case["params"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         // Fixture was generated with approximate_diffuse init
@@ -933,7 +1038,10 @@ mod tests {
             assert!(
                 err < 1e-3,
                 "ARMA(1,1) param[{}] error: {} (got {}, expected {})",
-                i, err, got, exp
+                i,
+                err,
+                got,
+                exp
             );
         }
     }
@@ -943,8 +1051,10 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arima111"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
         let expected_loglike = case["loglike"].as_f64().unwrap();
 
@@ -956,7 +1066,9 @@ mod tests {
         assert!(
             ll_err < 1.0,
             "ARIMA(1,1,1) loglike error: {} (got {}, expected {})",
-            ll_err, result.loglike, expected_loglike
+            ll_err,
+            result.loglike,
+            expected_loglike
         );
     }
 
@@ -965,12 +1077,16 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
         let expected_params: Vec<f64> = case["params"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         let config = make_config(1, 0, 0, false, false);
@@ -980,7 +1096,9 @@ mod tests {
         assert!(
             param_err < 1e-3,
             "NM AR(1) param error: {} (got {}, expected {})",
-            param_err, result.params[0], expected_params[0]
+            param_err,
+            result.params[0],
+            expected_params[0]
         );
     }
 
@@ -989,8 +1107,10 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         let config = make_config(1, 0, 0, true, true);
@@ -1005,12 +1125,14 @@ mod tests {
         assert!(
             (result.aic - expected_aic).abs() < 1e-10,
             "AIC mismatch: got {}, expected {}",
-            result.aic, expected_aic
+            result.aic,
+            expected_aic
         );
         assert!(
             (result.bic - expected_bic).abs() < 1e-10,
             "BIC mismatch: got {}, expected {}",
-            result.bic, expected_bic
+            result.bic,
+            expected_bic
         );
     }
 
@@ -1019,8 +1141,10 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap()
-            .iter().map(|v| v.as_f64().unwrap())
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
             .collect();
 
         let config = make_config(1, 0, 0, false, false);

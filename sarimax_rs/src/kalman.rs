@@ -157,11 +157,11 @@ fn kalman_core(
 
     // Steady-state detection buffers (pz-vector based)
     let mut converged = false;
-    let mut k_gain = DVector::<f64>::zeros(k);  // K_∞ = T * P_∞ * Z
+    let mut k_gain = DVector::<f64>::zeros(k); // K_∞ = T * P_∞ * Z
     let mut f_steady = 0.0;
     let mut log_f_steady = 0.0;
     let mut pz_prev = DVector::<f64>::zeros(k);
-    let mut pz_inf = DVector::<f64>::zeros(k);  // cached pz_∞ = P_∞ * Z at convergence
+    let mut pz_inf = DVector::<f64>::zeros(k); // cached pz_∞ = P_∞ * Z at convergence
     let mut consec_count = 0_usize;
 
     for t in 0..n {
@@ -186,7 +186,9 @@ fn kalman_core(
             // Using sparse T: O(nnz) instead of dense gemv O(k²)
             let a_slice = a.as_slice();
             let a_next_slice = a_next.as_mut_slice();
-            for v in a_next_slice.iter_mut() { *v = 0.0; }
+            for v in a_next_slice.iter_mut() {
+                *v = 0.0;
+            }
             for &(i, j, val) in &sparse_t {
                 a_next_slice[i] += val * a_slice[j];
             }
@@ -228,7 +230,9 @@ fn kalman_core(
             {
                 let pz_s = pz.as_mut_slice();
                 let p_data = p.as_slice(); // column-major
-                for v in pz_s.iter_mut() { *v = 0.0; }
+                for v in pz_s.iter_mut() {
+                    *v = 0.0;
+                }
                 for &(zi, zv) in &sparse_z {
                     // P[:, zi] * zv → accumulate into pz
                     let col_start = zi * k;
@@ -260,7 +264,9 @@ fn kalman_core(
                 {
                     let a_s = a.as_slice();
                     let an_s = a_next.as_mut_slice();
-                    for v in an_s.iter_mut() { *v = 0.0; }
+                    for v in an_s.iter_mut() {
+                        *v = 0.0;
+                    }
                     for &(i, j, val) in &sparse_t {
                         an_s[i] += val * a_s[j];
                     }
@@ -278,7 +284,9 @@ fn kalman_core(
                 {
                     let p_data = p.as_slice(); // column-major
                     let tmp = temp_kk.as_mut_slice();
-                    for v in tmp.iter_mut() { *v = 0.0; }
+                    for v in tmp.iter_mut() {
+                        *v = 0.0;
+                    }
                     // temp_kk[i, j] += T[i,l] * P[l,j]
                     // In column-major: temp_kk[i + j*k] += val * p_data[l + j*k]
                     for &(i, l, val) in &sparse_t {
@@ -321,8 +329,13 @@ fn kalman_core(
                 if t >= burn + STEADY_STATE_MIN_STEPS {
                     // Compute pz from the PREDICTED P (already updated above)
                     pz.gemv(1.0, &p, z, 0.0);
-                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
-                        .map(|(a, b)| { let d = a - b; d * d })
+                    let pz_diff_sq: f64 = pz
+                        .iter()
+                        .zip(pz_prev.iter())
+                        .map(|(a, b)| {
+                            let d = a - b;
+                            d * d
+                        })
                         .sum();
                     let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
                     let pz_norm = pz_norm_sq.sqrt().max(1e-15);
@@ -334,11 +347,13 @@ fn kalman_core(
                             f_steady = z.dot(&pz);
                             log_f_steady = f_steady.ln();
                             pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
-                            // K_∞ = T * pz_∞
+                                                   // K_∞ = T * pz_∞
                             {
                                 let pz_s = pz.as_slice();
                                 let kg_s = k_gain.as_mut_slice();
-                                for v in kg_s.iter_mut() { *v = 0.0; }
+                                for v in kg_s.iter_mut() {
+                                    *v = 0.0;
+                                }
                                 for &(i, j, val) in &sparse_t {
                                     kg_s[i] += val * pz_s[j];
                                 }
@@ -365,7 +380,9 @@ fn kalman_core(
                 {
                     let a_s = a.as_slice();
                     let an_s = a_next.as_mut_slice();
-                    for v in an_s.iter_mut() { *v = 0.0; }
+                    for v in an_s.iter_mut() {
+                        *v = 0.0;
+                    }
                     for &(i, j, val) in &sparse_t {
                         an_s[i] += val * a_s[j];
                     }
@@ -380,7 +397,9 @@ fn kalman_core(
                 {
                     let p_data = p.as_slice();
                     let tmp = temp_kk.as_mut_slice();
-                    for v in tmp.iter_mut() { *v = 0.0; }
+                    for v in tmp.iter_mut() {
+                        *v = 0.0;
+                    }
                     for &(i, l, val) in &sparse_t {
                         for j in 0..k {
                             tmp[i + j * k] += val * p_data[l + j * k];
@@ -451,8 +470,13 @@ fn kalman_core(
                 // --- Steady-state convergence check (pz-vector based) ---
                 if t >= burn + STEADY_STATE_MIN_STEPS {
                     pz.gemv(1.0, &p, z, 0.0);
-                    let pz_diff_sq: f64 = pz.iter().zip(pz_prev.iter())
-                        .map(|(a, b)| { let d = a - b; d * d })
+                    let pz_diff_sq: f64 = pz
+                        .iter()
+                        .zip(pz_prev.iter())
+                        .map(|(a, b)| {
+                            let d = a - b;
+                            d * d
+                        })
                         .sum();
                     let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
                     let pz_norm = pz_norm_sq.sqrt().max(1e-15);
@@ -499,6 +523,12 @@ fn kalman_core(
     }
 
     // Compute log-likelihood
+    if !sum_log_f.is_finite() || !sum_v2_f.is_finite() {
+        return Err(SarimaxError::DataError(
+            "non-finite Kalman statistics encountered (possible NaN/Inf in inputs)".into(),
+        ));
+    }
+
     let (loglike, scale) = if concentrate_scale {
         let sigma2_hat = sum_v2_f / n_eff as f64;
         let sigma2_safe = sigma2_hat.max(1e-300);
@@ -514,6 +544,11 @@ fn kalman_core(
         let sigma2 = ss.state_cov[(0, 0)];
         (ll, sigma2)
     };
+    if !loglike.is_finite() || !scale.is_finite() {
+        return Err(SarimaxError::DataError(
+            "non-finite loglike/scale produced by Kalman filter".into(),
+        ));
+    }
 
     Ok(KalmanFilterOutput {
         loglike,
@@ -606,13 +641,7 @@ mod tests {
         }
     }
 
-    fn run_kalman_test(
-        fixture_key: &str,
-        p: usize,
-        d: usize,
-        q: usize,
-        tol: f64,
-    ) {
+    fn run_kalman_test(fixture_key: &str, p: usize, d: usize, q: usize, tol: f64) {
         let fixtures = load_fixtures();
         let case = &fixtures[fixture_key];
 
@@ -637,10 +666,7 @@ mod tests {
         let params = make_params(ar_coeffs, ma_coeffs);
 
         let ss = StateSpace::new(&config, &params, &data, None).unwrap();
-        let init = KalmanInit::approximate_diffuse(
-            ss.k_states,
-            KalmanInit::default_kappa(),
-        );
+        let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
 
         let output = kalman_loglike(&data, &ss, &init, true).unwrap();
 
@@ -706,8 +732,13 @@ mod tests {
 
     fn run_seasonal_kalman_test(
         fixture_key: &str,
-        p: usize, d: usize, q: usize,
-        pp: usize, dd: usize, qq: usize, s: usize,
+        p: usize,
+        d: usize,
+        q: usize,
+        pp: usize,
+        dd: usize,
+        qq: usize,
+        s: usize,
         tol: f64,
     ) {
         let fixtures = load_fixtures();
@@ -740,9 +771,12 @@ mod tests {
         };
 
         let mut i = 0;
-        let ar = &params_vec[i..i + p]; i += p;
-        let ma = &params_vec[i..i + q]; i += q;
-        let sar = &params_vec[i..i + pp]; i += pp;
+        let ar = &params_vec[i..i + p];
+        i += p;
+        let ma = &params_vec[i..i + q];
+        i += q;
+        let sar = &params_vec[i..i + pp];
+        i += pp;
         let sma = &params_vec[i..i + qq];
 
         let params = SarimaxParams {
@@ -756,10 +790,7 @@ mod tests {
         };
 
         let ss = StateSpace::new(&config, &params, &data, None).unwrap();
-        let init = KalmanInit::approximate_diffuse(
-            ss.k_states,
-            KalmanInit::default_kappa(),
-        );
+        let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
 
         let output = kalman_loglike(&data, &ss, &init, true).unwrap();
 
@@ -786,22 +817,12 @@ mod tests {
 
     #[test]
     fn test_sarima_100_100_4_loglike() {
-        run_seasonal_kalman_test(
-            "sarima_100_100_4",
-            1, 0, 0,
-            1, 0, 0, 4,
-            1e-6,
-        );
+        run_seasonal_kalman_test("sarima_100_100_4", 1, 0, 0, 1, 0, 0, 4, 1e-6);
     }
 
     #[test]
     fn test_sarima_111_111_12_loglike() {
-        run_seasonal_kalman_test(
-            "sarima_111_111_12",
-            1, 1, 1,
-            1, 1, 1, 12,
-            1e-6,
-        );
+        run_seasonal_kalman_test("sarima_111_111_12", 1, 1, 1, 1, 1, 1, 12, 1e-6);
     }
 
     // ---- kalman_filter tests ----
@@ -811,7 +832,11 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_config(1, 0, 0);
         let params = make_params(&[0.6527425084139002], &[]);
@@ -821,8 +846,12 @@ mod tests {
         let lo = kalman_loglike(&data, &ss, &init, true).unwrap();
         let fo = kalman_filter(&data, &ss, &init, true).unwrap();
 
-        assert!((lo.loglike - fo.loglike).abs() < 1e-12,
-            "loglike mismatch: {} vs {}", lo.loglike, fo.loglike);
+        assert!(
+            (lo.loglike - fo.loglike).abs() < 1e-12,
+            "loglike mismatch: {} vs {}",
+            lo.loglike,
+            fo.loglike
+        );
         assert!((lo.scale - fo.scale).abs() < 1e-12);
         assert_eq!(lo.innovations.len(), fo.innovations.len());
         for (a, b) in lo.innovations.iter().zip(fo.innovations.iter()) {
@@ -835,11 +864,19 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arma11"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_config(1, 0, 1);
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params = make_params(&params_vec[..1], &params_vec[1..2]);
         let ss = StateSpace::new(&config, &params, &data, None).unwrap();
         let init = KalmanInit::approximate_diffuse(ss.k_states, 1e6);
@@ -856,11 +893,19 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arma11"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_config(1, 0, 1);
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params = make_params(&params_vec[..1], &params_vec[1..2]);
         let ss = StateSpace::new(&config, &params, &data, None).unwrap();
         let init = KalmanInit::approximate_diffuse(ss.k_states, 1e6);

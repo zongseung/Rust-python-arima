@@ -5,7 +5,7 @@
 
 use rayon::prelude::*;
 
-use crate::error::Result;
+use crate::error::{Result, SarimaxError};
 use crate::forecast::{forecast_pipeline, ForecastResult};
 use crate::initialization::KalmanInit;
 use crate::kalman::kalman_loglike;
@@ -13,6 +13,12 @@ use crate::optimizer;
 use crate::params::SarimaxParams;
 use crate::state_space::StateSpace;
 use crate::types::{FitResult, SarimaxConfig};
+
+fn length_mismatch_results<T>(n: usize, msg: String) -> Vec<Result<T>> {
+    (0..n)
+        .map(|_| Err(SarimaxError::InvalidInput(msg.clone())))
+        .collect()
+}
 
 /// Compute log-likelihood for multiple time series in parallel.
 ///
@@ -24,11 +30,24 @@ pub fn batch_loglike(
     params: &SarimaxParams,
     exog_list: Option<&[Vec<Vec<f64>>]>,
 ) -> Vec<Result<f64>> {
+    if let Some(el) = exog_list {
+        if el.len() != series.len() {
+            return length_mismatch_results(
+                series.len(),
+                format!(
+                    "exog_list length ({}) must match series length ({})",
+                    el.len(),
+                    series.len()
+                ),
+            );
+        }
+    }
+
     series
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
-            let exog = exog_list.map(|el| &el[i][..]);
+            let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             let exog_ref: Option<&[Vec<f64>]> = exog;
             let ss = StateSpace::new(config, params, endog, exog_ref)?;
             let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
@@ -49,16 +68,35 @@ pub fn batch_fit(
     maxiter: Option<u64>,
     exog_list: Option<&[Vec<Vec<f64>>]>,
 ) -> Vec<Result<FitResult>> {
-    let method_str = method.unwrap_or("lbfgs");
+    let method_str = method.unwrap_or("lbfgsb");
     let maxiter_val = maxiter.unwrap_or(500);
+    if let Some(el) = exog_list {
+        if el.len() != series.len() {
+            return length_mismatch_results(
+                series.len(),
+                format!(
+                    "exog_list length ({}) must match series length ({})",
+                    el.len(),
+                    series.len()
+                ),
+            );
+        }
+    }
 
     series
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
-            let exog = exog_list.map(|el| &el[i][..]);
+            let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             let exog_ref: Option<&[Vec<f64>]> = exog;
-            optimizer::fit(endog, config, None, Some(method_str), Some(maxiter_val), exog_ref)
+            optimizer::fit(
+                endog,
+                config,
+                None,
+                Some(method_str),
+                Some(maxiter_val),
+                exog_ref,
+            )
         })
         .collect()
 }
@@ -77,16 +115,50 @@ pub fn batch_forecast(
     exog_list: Option<&[Vec<Vec<f64>>]>,
     future_exog_list: Option<&[Vec<Vec<f64>>]>,
 ) -> Vec<Result<ForecastResult>> {
+    if params_list.len() != series.len() {
+        return length_mismatch_results(
+            series.len(),
+            format!(
+                "params_list length ({}) must match series length ({})",
+                params_list.len(),
+                series.len()
+            ),
+        );
+    }
+    if let Some(el) = exog_list {
+        if el.len() != series.len() {
+            return length_mismatch_results(
+                series.len(),
+                format!(
+                    "exog_list length ({}) must match series length ({})",
+                    el.len(),
+                    series.len()
+                ),
+            );
+        }
+    }
+    if let Some(el) = future_exog_list {
+        if el.len() != series.len() {
+            return length_mismatch_results(
+                series.len(),
+                format!(
+                    "future_exog_list length ({}) must match series length ({})",
+                    el.len(),
+                    series.len()
+                ),
+            );
+        }
+    }
+
     series
         .par_iter()
-        .zip(params_list.par_iter())
         .enumerate()
-        .map(|(i, (endog, flat_params))| {
+        .map(|(i, endog)| {
+            let flat_params = &params_list[i];
             let sparams = SarimaxParams::from_flat(flat_params, config)?;
-            let exog = exog_list.map(|el| &el[i][..]);
-            let future_exog = future_exog_list.map(|el| &el[i][..]);
-            forecast_pipeline(endog, config, &sparams, steps, alpha,
-                exog, future_exog)
+            let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
+            let future_exog = future_exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
+            forecast_pipeline(endog, config, &sparams, steps, alpha, exog, future_exog)
         })
         .collect()
 }
@@ -106,8 +178,11 @@ mod tests {
     }
 
     fn make_config(
-        p: usize, d: usize, q: usize,
-        enforce_stat: bool, enforce_inv: bool,
+        p: usize,
+        d: usize,
+        q: usize,
+        enforce_stat: bool,
+        enforce_inv: bool,
     ) -> SarimaxConfig {
         SarimaxConfig {
             order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
@@ -214,7 +289,9 @@ mod tests {
             assert!(
                 (*ll - direct_ll).abs() < 1e-10,
                 "series {} loglike mismatch: batch={}, direct={}",
-                i, ll, direct_ll
+                i,
+                ll,
+                direct_ll
             );
         }
     }
@@ -250,7 +327,10 @@ mod tests {
                 assert!(
                     (a - b).abs() < 1e-10,
                     "series {} forecast[{}] mismatch: batch={}, direct={}",
-                    i, j, a, b
+                    i,
+                    j,
+                    a,
+                    b
                 );
             }
         }
