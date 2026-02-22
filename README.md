@@ -778,6 +778,33 @@ Rayon `par_iter()`를 사용해 N개 시계열을 work-stealing 방식으로 병
 
 대부분 모델에서 파라미터 정확도는 0.006 이내, 로그우도 차이는 0.005 이내입니다. ARIMA(2,1,1)은 고차 모델의 다중 최적점(Wheeler & Ionides, 2024)으로 인해 큰 차이를 보입니다. SARIMA(0,1,1)(0,1,1,12)는 Hannan-Rissanen 시작값에 의한 다른 수렴 경로 때문에 로그우도 오프셋(~1.2)이 있으나, 이는 양쪽 모두 유효한 최적점입니다.
 
+### 실무 고차 모델 — statsmodels 대비 정확도
+
+비계절 ARIMA(4~5차)부터 시간별(s=24) 고차 SARIMA까지 16개 모델을 검증했습니다. `rs_worse_by`는 sarimax_rs 로그우도가 statsmodels보다 얼마나 낮은지를 나타내며, 음수(★)는 sarimax_rs가 더 좋은 최적점을 찾았음을 의미합니다.
+
+| 모델 | k_states | rs_worse_by | 결과 |
+|------|:--------:|:-----------:|:----:|
+| ARIMA(4,1,1) | 5 | +0.002 | ✓ |
+| ARIMA(4,1,4) | 6 | **-2.07** | ✓ ★ |
+| ARIMA(3,1,3) | 5 | +0.004 | ✓ |
+| ARIMA(5,1,1) | 6 | ~0 | ✓ |
+| ARIMA(1,1,5) | 7 | ~0 | ✓ |
+| SARIMA(3,1,2)(2,1,1,4) | 16 | +0.86 | ✓ |
+| SARIMA(2,1,1)(2,1,1,4) | 15 | +2.40 | ✓ |
+| SARIMA(2,1,2)(1,1,1,7) | 18 | +0.003 | ✓ |
+| SARIMA(3,1,1)(1,1,1,7) | 18 | +0.04 | ✓ |
+| SARIMA(4,1,1)(2,1,1,12) | 41 | +0.07 | ✓ |
+| SARIMA(4,1,4)(2,1,2,12) | 42 | +5.90 | ✓ |
+| SARIMA(2,1,2)(2,1,1,12) | 39 | **-2.46** | ✓ ★ |
+| SARIMA(3,1,1)(2,1,1,12) | 40 | +0.05 | ✓ |
+| SARIMA(2,1,1)(2,1,1,24) | 75 | +1.35 | ✓ |
+| SARIMA(2,1,2)(1,1,1,24) | 52 | +1.01 | ✓ |
+| SARIMA(1,1,1)(2,1,1,24) | 74 | +0.32 | ✓ |
+
+**16/16 통과.** ★ 표시 모델(ARIMA(4,1,4), SARIMA(2,1,2)(2,1,1,12))에서는 statsmodels가 ConvergenceWarning을 내고 수렴 실패한 반면 sarimax_rs는 더 좋은 해를 찾음. k_states=75인 SARIMA(2,1,1)(2,1,1,24)(s=24 시간별 고차)도 정상 동작.
+
+---
+
 ### 속도 — 단일 적합
 
 best-of-5 wall clock 시간(작을수록 좋음):
@@ -858,6 +885,7 @@ sarimax_rs/
 │   ├── test_exog.py                 # 외생 회귀변수 (14)
 │   ├── test_api_contract.py         # API 계약 테스트 (37)
 │   ├── test_multi_order_accuracy.py # 차수 전반 정확도 검증 (20)
+│   ├── test_high_order_accuracy.py  # 실무 고차 모델 검증 (17)
 │   ├── test_matrix_tier_a.py        # tier-A 행렬 테스트 (7)
 │   ├── test_matrix_tier_b.py        # tier-B 행렬 테스트 (5)
 │   ├── test_wheel_smoke.py          # wheel 설치 스모크 (8)
@@ -907,7 +935,7 @@ sarimax_rs/
 # Rust 단위 테스트 (114 tests)
 cargo test --all-targets
 
-# Python 통합 테스트 (235 tests, wheel 빌드 필요)
+# Python 통합 테스트 (252 tests, wheel 빌드 필요)
 maturin develop --release
 .venv/bin/python -m pytest python_tests/ -v
 
@@ -939,11 +967,12 @@ cargo bench
 | Python exog | 14 | exogenous regressors, future_exog, batch exog |
 | Python API contract | 37 | API shape, edge cases, error messages |
 | Python accuracy | 20 | multi-order cross-validation vs statsmodels |
+| Python high-order accuracy | 17 | ARIMA(4~5차), SARIMA(4,1,4)(2,1,2,12), s=24 고차 모델 |
 | Python matrix | 12 | tier-A and tier-B convergence matrices |
 | Python wheel smoke | 8 | installation, basic fit, model wrapper |
 | Python perf regression | 7 | accuracy regression, iteration count, batch |
 | Python parameter summary | 59 | param_names, inference modes, statsmodels parity, risk fixes |
-| **Total** | **349** | |
+| **Total** | **366** | |
 
 ## 제한 사항
 
