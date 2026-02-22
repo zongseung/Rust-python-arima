@@ -737,6 +737,28 @@ pub fn fit(
         // If loglike is not finite, fall through to optimizer
     }
 
+    // 1c. Early return for maxiter=0: no optimization, return start params as-is
+    if maxiter == 0 {
+        let sp = SarimaxParams::from_flat(&constrained_start, config)?;
+        let ss = StateSpace::new(config, &sp, endog, exog)?;
+        let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+        let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
+        let n_params = SarimaxParams::n_estimated_params(config);
+        return Ok(FitResult {
+            params: constrained_start,
+            loglike: output.loglike,
+            scale: output.scale,
+            n_obs: endog.len(),
+            n_params,
+            n_iter: 0,
+            converged: false,
+            method: method.to_string(),
+            aic: 0.0,
+            bic: 0.0,
+        }
+        .with_information_criteria());
+    }
+
     // 2. Transform to unconstrained space
     let unconstrained_start = untransform_params(&constrained_start, config)?;
 
@@ -1409,6 +1431,84 @@ mod tests {
         assert!(
             !result.converged,
             "lbfgsb-multi with maxiter=0 must report not converged"
+        );
+    }
+
+    #[test]
+    fn test_zero_maxiter_not_converged_for_lbfgsb_single() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["ar1"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 0, false, false);
+        let result = fit(&data, &config, None, Some("lbfgsb"), Some(0), None).unwrap();
+
+        eprintln!(
+            "lbfgsb single maxiter=0: n_iter={}, converged={}, method={}",
+            result.n_iter, result.converged, result.method
+        );
+        assert_eq!(
+            result.n_iter, 0,
+            "lbfgsb with maxiter=0 should report n_iter=0, got {}",
+            result.n_iter
+        );
+        assert!(
+            !result.converged,
+            "lbfgsb with maxiter=0 must report not converged"
+        );
+    }
+
+    #[test]
+    fn test_small_maxiter_lbfgs_not_converged() {
+        // With maxiter=1, L-BFGS should NOT converge (not enough iterations)
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 1, false, false);
+        let result = fit(&data, &config, None, Some("lbfgs"), Some(1), None).unwrap();
+        eprintln!(
+            "lbfgs maxiter=1: n_iter={}, converged={}, method={}",
+            result.n_iter, result.converged, result.method
+        );
+        // With only 1 iteration, ARMA(1,1) cannot converge
+        assert!(
+            !result.converged,
+            "lbfgs with maxiter=1 on ARMA(1,1) should not converge"
+        );
+    }
+
+    #[test]
+    fn test_small_maxiter_nm_not_converged() {
+        // With maxiter=1, NM should NOT converge
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 1, false, false);
+        let result = fit(&data, &config, None, Some("nelder-mead"), Some(1), None).unwrap();
+        eprintln!(
+            "nm maxiter=1: n_iter={}, converged={}, method={}",
+            result.n_iter, result.converged, result.method
+        );
+        assert!(
+            !result.converged,
+            "nelder-mead with maxiter=1 on ARMA(1,1) should not converge"
         );
     }
 

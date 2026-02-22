@@ -218,6 +218,11 @@ class ForecastResult:
         np.ndarray of shape (n, 2)
             Columns are [lower, upper].
         """
+        if alpha is not None and not (0.0 < alpha < 1.0):
+            raise ValueError(
+                f"alpha must be in (0, 1), got {alpha!r}"
+            )
+
         if alpha is None or alpha == self._alpha:
             return np.column_stack([self.ci_lower, self.ci_upper])
 

@@ -113,9 +113,16 @@ pub struct FitResult {
     pub scale: f64,
     pub n_obs: usize,
     pub n_params: usize,
-    /// Number of optimizer iterations (for L-BFGS, Nelder-Mead) or
-    /// function evaluations (for L-BFGS-B, where the crate does not
-    /// expose an iteration counter).
+    /// Total optimizer work units consumed.
+    ///
+    /// - **L-BFGS / Nelder-Mead** (argmin): solver iterations (`state.get_iter()`).
+    /// - **L-BFGS-B** (Fortran wrapper): objective function evaluations, because the
+    ///   crate does not expose a native iteration counter. For L-BFGS-B each iteration
+    ///   typically requires 1–3 function+gradient evaluations (line search), so
+    ///   `n_iter` ≈ 1–3× actual Fortran iterations.
+    /// - **Multi-start methods** (`lbfgsb-multi`, `lbfgs`): cumulative sum across all
+    ///   sub-runs (initial + restarts + NM refinement), capped by `maxiter`.
+    /// - **`maxiter=0`**: always returns `n_iter=0` via the early-return guard.
     pub n_iter: u64,
     pub converged: bool,
     pub method: String,
