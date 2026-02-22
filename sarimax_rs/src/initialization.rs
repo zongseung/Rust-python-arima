@@ -144,14 +144,28 @@ fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix
         a_i.copy_from(&temp_aa);
 
         if diff_sq.sqrt() < 1e-14 * norm {
-            // Validate result
+            // Validate result: check finiteness
             if q_i.iter().any(|v| !v.is_finite()) {
                 return None;
             }
-            if (0..k).any(|i| q_i[(i, i)] < -1e-10) {
-                return None;
+            // Validate positive-definiteness via Cholesky decomposition.
+            // A diagonal-only check is insufficient because off-diagonal
+            // entries can make the matrix indefinite even with positive diagonals.
+            match q_i.clone().cholesky() {
+                Some(_) => return Some(q_i),
+                None => {
+                    // Cholesky failed: matrix is not positive-definite.
+                    // Clamp negative eigenvalues by adding a small ridge.
+                    for i in 0..k {
+                        q_i[(i, i)] += 1e-10;
+                    }
+                    // Retry Cholesky after ridge
+                    match q_i.clone().cholesky() {
+                        Some(_) => return Some(q_i),
+                        None => return None,
+                    }
+                }
             }
-            return Some(q_i);
         }
     }
     None
@@ -218,11 +232,7 @@ mod tests {
         let t_t = t.transpose();
         let residual = &t * &p * &t_t + &q - &p;
         let max_err = residual.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        assert!(
-            max_err < 1e-10,
-            "Lyapunov residual too large: {}",
-            max_err
-        );
+        assert!(max_err < 1e-10, "Lyapunov residual too large: {}", max_err);
 
         // P should be symmetric positive definite
         assert!(p[(0, 0)] > 0.0);

@@ -74,6 +74,12 @@ const STEADY_STATE_CONSEC: usize = 3;
 /// covariance P_{t+1|t} converges to a steady-state P_∞. Once detected,
 /// the Kalman gain K_∞ is cached and the expensive O(k³) covariance
 /// prediction step is skipped for all remaining time steps.
+///
+/// **Note on state_intercept (c_t)**: The steady-state optimization is valid
+/// even when state_intercept varies over time (e.g. trend models). Covariance
+/// convergence depends only on T, Z, R, Q which are time-invariant in SARIMAX.
+/// The time-varying c_t affects only the state mean recursion, not P, and is
+/// correctly applied at each step in the steady-state path.
 fn kalman_core(
     endog: &[f64],
     ss: &StateSpace,
@@ -173,7 +179,9 @@ fn kalman_core(
         };
 
         if converged {
-            // ---- Steady-state path: O(nnz) per step ----
+            // ---- PATH 1: Steady-state — O(nnz) per step ----
+            // P has converged to P_∞, so K_∞ and F_∞ are constant.
+            // Only the state mean recursion is computed; covariance is frozen.
             let a_slice = a.as_slice();
             let za: f64 = sparse_z.iter().map(|&(i, v)| v * a_slice[i]).sum();
             let v_t = endog[t] - za - d_t;
@@ -221,8 +229,9 @@ fn kalman_core(
                 sum_v2_f += v_t * v_t / f_steady;
             }
         } else if use_sparse {
-            // ---- Sparse Kalman path: O(nnz×k) per step ----
-            // For SARIMA companion matrices with ~4% density, this is ~23× faster.
+            // ---- PATH 2: Sparse Kalman — O(nnz×k) per step ----
+            // Used when T density < 50%. For SARIMA(1,1,1)(1,1,1,12) with k=27,
+            // T has ~31/729 = 4% non-zeros, giving ~23× speedup over dense gemm.
             let v_t = endog[t] - z.dot(&a) - d_t;
             innovations.push(v_t);
 
@@ -422,7 +431,9 @@ fn kalman_core(
                 std::mem::swap(&mut a, &mut a_next);
             }
         } else {
-            // ---- Dense Kalman path: O(k³) per step (for small/dense T) ----
+            // ---- PATH 3: Dense Kalman — O(k³) per step ----
+            // Standard nalgebra gemm for small state dimensions or dense T.
+            // This is the textbook Kalman filter implementation.
             let v_t = endog[t] - z.dot(&a) - d_t;
             innovations.push(v_t);
 

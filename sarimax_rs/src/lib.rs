@@ -22,6 +22,16 @@ use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
 
 const MAX_K_STATES: usize = 1024;
 
+// Hard upper bounds on individual model order parameters to prevent
+// OOM / compute-DoS from adversarial or erroneous inputs.
+const MAX_P: usize = 20;
+const MAX_Q: usize = 20;
+const MAX_D: usize = 3;
+const MAX_PP: usize = 4;
+const MAX_QQ: usize = 4;
+const MAX_DD: usize = 2;
+const MAX_S: usize = 365;
+
 // ---------------------------------------------------------------------------
 // Shared helpers (eliminate boilerplate across PyO3 functions)
 // ---------------------------------------------------------------------------
@@ -62,6 +72,61 @@ fn validate_finite_cols(cols: &[Vec<f64>], input_name: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Validate that a 1D endog slice contains no NaN/Inf values.
+fn validate_endog_finite(endog: &[f64]) -> PyResult<()> {
+    if endog.iter().any(|v| !v.is_finite()) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "input time series contains NaN or Inf values",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that each series in a batch contains no NaN/Inf values.
+fn validate_batch_finite(series_list: &[PyReadonlyArray1<'_, f64>]) -> PyResult<Vec<Vec<f64>>> {
+    let mut result = Vec::with_capacity(series_list.len());
+    for (i, s) in series_list.iter().enumerate() {
+        let sl = s.as_slice()?;
+        if sl.iter().any(|v| !v.is_finite()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "input time series at index {} contains NaN or Inf values",
+                i
+            )));
+        }
+        result.push(sl.to_vec());
+    }
+    Ok(result)
+}
+
+/// Parse and validate exog_list for batch operations.
+fn parse_and_validate_exog_list(
+    exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
+    series_len: usize,
+) -> PyResult<(Option<Vec<Vec<Vec<f64>>>>, usize)> {
+    if let Some(ref el) = exog_list {
+        if el.len() != series_len {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "exog_list length ({}) must match series_list length ({})",
+                el.len(), series_len
+            )));
+        }
+        let exog_vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
+        let n_exog = exog_vecs.first().map_or(0, |c| c.len());
+        for (i, cols) in exog_vecs.iter().enumerate() {
+            validate_finite_cols(cols, &format!("exog_list[{}]", i))?;
+            if cols.len() != n_exog {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "exog at index {} has {} columns but expected {} (from first series)",
+                    i, cols.len(), n_exog
+                )));
+            }
+        }
+        Ok((Some(exog_vecs), n_exog))
+    } else {
+        Ok((None, 0))
+    }
+}
+
 /// Build SarimaxConfig from Python-facing tuples and flags.
 fn build_config(
     order: (usize, usize, usize),
@@ -73,6 +138,49 @@ fn build_config(
 ) -> PyResult<SarimaxConfig> {
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
+
+    // Individual order bounds (DoS prevention)
+    if p > MAX_P {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "AR order p={} exceeds maximum {}", p, MAX_P
+        )));
+    }
+    if q > MAX_Q {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "MA order q={} exceeds maximum {}", q, MAX_Q
+        )));
+    }
+    if d > MAX_D {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "differencing order d={} exceeds maximum {}", d, MAX_D
+        )));
+    }
+    if pp > MAX_PP {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "seasonal AR order P={} exceeds maximum {}", pp, MAX_PP
+        )));
+    }
+    if qq > MAX_QQ {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "seasonal MA order Q={} exceeds maximum {}", qq, MAX_QQ
+        )));
+    }
+    if dd > MAX_DD {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "seasonal differencing D={} exceeds maximum {}", dd, MAX_DD
+        )));
+    }
+    if s > MAX_S {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "seasonal period s={} exceeds maximum {}", s, MAX_S
+        )));
+    }
+    if (pp > 0 || dd > 0 || qq > 0) && s < 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "seasonal order (P,D,Q) > 0 requires seasonal period s >= 2",
+        ));
+    }
+
     let k_ar = p
         .checked_add(s.checked_mul(pp).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err("order overflow while computing k_ar")
@@ -159,11 +267,7 @@ fn sarimax_loglike<'py>(
     enforce_invertibility: bool,
 ) -> PyResult<f64> {
     let endog = y.as_slice()?;
-    if endog.iter().any(|v| !v.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "input time series contains NaN or Inf values",
-        ));
-    }
+    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
     if let Some(ref cols) = exog_cols {
@@ -209,11 +313,7 @@ fn sarimax_fit<'py>(
     maxiter: Option<u64>,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
-    if endog.iter().any(|v| !v.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "input time series contains NaN or Inf values",
-        ));
-    }
+    validate_endog_finite(endog)?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
     if let Some(ref cols) = exog_cols {
         validate_finite_cols(cols, "exog")?;
@@ -252,7 +352,7 @@ fn sarimax_fit<'py>(
 /// Returns a dict with: mean, variance, ci_lower, ci_upper.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, steps=10, alpha=0.05,
-                    exog=None, exog_forecast=None, concentrate_scale=true))]
+                    exog=None, future_exog=None, concentrate_scale=true))]
 fn sarimax_forecast<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -262,7 +362,7 @@ fn sarimax_forecast<'py>(
     steps: usize,
     alpha: f64,
     exog: Option<PyReadonlyArray2<'py, f64>>,
-    exog_forecast: Option<PyReadonlyArray2<'py, f64>>,
+    future_exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
 ) -> PyResult<Py<PyDict>> {
     if alpha <= 0.0 || alpha >= 1.0 {
@@ -279,37 +379,33 @@ fn sarimax_forecast<'py>(
     }
 
     let endog = y.as_slice()?;
-    if endog.iter().any(|v| !v.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "input time series contains NaN or Inf values",
-        ));
-    }
+    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    let future_exog_cols = exog_forecast.as_ref().map(|e| numpy2d_to_cols(e));
+    let future_exog_cols = future_exog.as_ref().map(|e| numpy2d_to_cols(e));
     if let Some(ref cols) = exog_cols {
         validate_finite_cols(cols, "exog")?;
     }
     if let Some(ref cols) = future_exog_cols {
-        validate_finite_cols(cols, "exog_forecast")?;
+        validate_finite_cols(cols, "future_exog")?;
     }
 
     if let Some(ref fec) = future_exog_cols {
         if fec.len() != n_exog {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "exog_forecast column count ({}) must match exog column count ({})",
+                "future_exog column count ({}) must match exog column count ({})",
                 fec.len(),
                 n_exog
             )));
         }
     }
 
-    // V-6: Validate exog_forecast has enough rows for forecast steps
+    // Validate future_exog has enough rows for forecast steps
     if let Some(ref fec) = future_exog_cols {
         for (j, col) in fec.iter().enumerate() {
             if col.len() < steps {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog_forecast column {} has {} rows but {} forecast steps requested",
+                    "future_exog column {} has {} rows but {} forecast steps requested",
                     j,
                     col.len(),
                     steps
@@ -319,9 +415,9 @@ fn sarimax_forecast<'py>(
     }
 
     // Require future exog for exog models
-    if n_exog > 0 && steps > 0 && exog_forecast.is_none() {
+    if n_exog > 0 && steps > 0 && future_exog.is_none() {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "model has exogenous variables: exog_forecast is required for forecasting",
+            "model has exogenous variables: future_exog is required for forecasting",
         ));
     }
 
@@ -363,11 +459,7 @@ fn sarimax_residuals<'py>(
     concentrate_scale: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
-    if endog.iter().any(|v| !v.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "input time series contains NaN or Inf values",
-        ));
-    }
+    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
     if let Some(ref cols) = exog_cols {
@@ -385,6 +477,60 @@ fn sarimax_residuals<'py>(
     dict.set_item("standardized_residuals", result.standardized_residuals)?;
 
     Ok(dict.into())
+}
+
+/// Compute log-likelihood for multiple time series in parallel (Rayon).
+///
+/// All series share the same model config and parameters.
+/// Returns a list of dicts, each with "loglike" key or "error" key.
+#[pyfunction]
+#[pyo3(signature = (series_list, order, seasonal, params,
+                    exog_list=None, concentrate_scale=true,
+                    enforce_stationarity=false, enforce_invertibility=false))]
+fn sarimax_batch_loglike<'py>(
+    py: Python<'py>,
+    series_list: Vec<PyReadonlyArray1<'py, f64>>,
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    params: PyReadonlyArray1<'py, f64>,
+    exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    concentrate_scale: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+) -> PyResult<Py<PyList>> {
+    let series = validate_batch_finite(&series_list)?;
+    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
+
+    let config = build_config(
+        order,
+        seasonal,
+        n_exog,
+        enforce_stationarity,
+        enforce_invertibility,
+        concentrate_scale,
+    )?;
+
+    let params_flat = params.as_slice()?;
+    let sarimax_params = SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
+
+    let results = batch::batch_loglike(&series, &config, &sarimax_params, exog_vecs.as_deref());
+
+    let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
+    for r in results {
+        let dict = PyDict::new(py);
+        match r {
+            Ok(loglike) => {
+                dict.set_item("loglike", loglike)?;
+            }
+            Err(e) => {
+                dict.set_item("error", e.to_string())?;
+            }
+        }
+        py_results.push(dict.into());
+    }
+
+    let list = PyList::new(py, &py_results)?;
+    Ok(list.into())
 }
 
 /// Fit SARIMAX models to multiple time series in parallel (Rayon).
@@ -408,54 +554,8 @@ fn sarimax_batch_fit<'py>(
     maxiter: Option<u64>,
     exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
 ) -> PyResult<Py<PyList>> {
-    // V-1: NaN/Inf check for each series
-    for (i, s) in series_list.iter().enumerate() {
-        let sl = s.as_slice()?;
-        if sl.iter().any(|v| !v.is_finite()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "input time series at index {} contains NaN or Inf values",
-                i
-            )));
-        }
-    }
-
-    // V-2: exog_list length must match series_list length
-    if let Some(ref el) = exog_list {
-        if el.len() != series_list.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "exog_list length ({}) must match series_list length ({})",
-                el.len(),
-                series_list.len()
-            )));
-        }
-    }
-
-    let exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_list
-        .as_ref()
-        .map(|el| el.iter().map(|e| numpy2d_to_cols(e)).collect());
-    if let Some(ref ev) = exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            validate_finite_cols(cols, &format!("exog_list[{}]", i))?;
-        }
-    }
-    let n_exog = exog_vecs
-        .as_ref()
-        .and_then(|v| v.first())
-        .map_or(0, |c| c.len());
-
-    // V-5: n_exog consistency across all batch series
-    if let Some(ref ev) = exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            if cols.len() != n_exog {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog at index {} has {} columns but expected {} (from first series)",
-                    i,
-                    cols.len(),
-                    n_exog
-                )));
-            }
-        }
-    }
+    let series = validate_batch_finite(&series_list)?;
+    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
 
     let config = build_config(
         order,
@@ -465,11 +565,6 @@ fn sarimax_batch_fit<'py>(
         enforce_invertibility,
         concentrate_scale,
     )?;
-
-    let series: Vec<Vec<f64>> = series_list
-        .iter()
-        .map(|a| a.as_slice().map(|s| s.to_vec()))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let results = batch::batch_fit(&series, &config, method, maxiter, exog_vecs.as_deref());
 
@@ -543,100 +638,42 @@ fn sarimax_batch_forecast<'py>(
         )));
     }
 
-    // V-1: NaN/Inf check for each series
-    for (i, s) in series_list.iter().enumerate() {
-        let sl = s.as_slice()?;
-        if sl.iter().any(|v| !v.is_finite()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "input time series at index {} contains NaN or Inf values",
-                i
-            )));
-        }
-    }
+    let series = validate_batch_finite(&series_list)?;
+    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
 
-    // V-2: exog_list length must match series_list length
-    if let Some(ref el) = exog_list {
-        if el.len() != series_list.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "exog_list length ({}) must match series_list length ({})",
-                el.len(),
-                series_list.len()
-            )));
-        }
-    }
-
-    // V-2: exog_forecast_list length must match series_list length
-    if let Some(ref el) = exog_forecast_list {
-        if el.len() != series_list.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "exog_forecast_list length ({}) must match series_list length ({})",
-                el.len(),
-                series_list.len()
-            )));
-        }
-    }
-
-    let exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_list
-        .as_ref()
-        .map(|el| el.iter().map(|e| numpy2d_to_cols(e)).collect());
-    let future_exog_vecs: Option<Vec<Vec<Vec<f64>>>> = exog_forecast_list
-        .as_ref()
-        .map(|el| el.iter().map(|e| numpy2d_to_cols(e)).collect());
-    if let Some(ref ev) = exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            validate_finite_cols(cols, &format!("exog_list[{}]", i))?;
-        }
-    }
-    if let Some(ref ev) = future_exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            validate_finite_cols(cols, &format!("exog_forecast_list[{}]", i))?;
-        }
-    }
-    let n_exog = exog_vecs
-        .as_ref()
-        .and_then(|v| v.first())
-        .map_or(0, |c| c.len());
-
-    // V-5: n_exog consistency across all batch series
-    if let Some(ref ev) = exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            if cols.len() != n_exog {
+    // Validate exog_forecast_list separately (has additional steps-length check)
+    let future_exog_vecs: Option<Vec<Vec<Vec<f64>>>> = match exog_forecast_list {
+        Some(ref el) => {
+            if el.len() != series_list.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog at index {} has {} columns but expected {} (from first series)",
-                    i,
-                    cols.len(),
-                    n_exog
+                    "exog_forecast_list length ({}) must match series_list length ({})",
+                    el.len(), series_list.len()
                 )));
             }
-        }
-    }
-    if let Some(ref ev) = future_exog_vecs {
-        for (i, cols) in ev.iter().enumerate() {
-            if cols.len() != n_exog {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog_forecast at index {} has {} columns but expected {}",
-                    i,
-                    cols.len(),
-                    n_exog
-                )));
-            }
-            for (j, col) in cols.iter().enumerate() {
-                if col.len() < steps {
+            let vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
+            for (i, cols) in vecs.iter().enumerate() {
+                validate_finite_cols(cols, &format!("exog_forecast_list[{}]", i))?;
+                if cols.len() != n_exog {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "exog_forecast_list[{}] column {} has {} rows but {} forecast steps requested",
-                        i, j, col.len(), steps
+                        "exog_forecast at index {} has {} columns but expected {}",
+                        i, cols.len(), n_exog
                     )));
                 }
+                for (j, col) in cols.iter().enumerate() {
+                    if col.len() < steps {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "exog_forecast_list[{}] column {} has {} rows but {} forecast steps requested",
+                            i, j, col.len(), steps
+                        )));
+                    }
+                }
             }
+            Some(vecs)
         }
-    }
+        None => None,
+    };
 
     let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
-
-    let series: Vec<Vec<f64>> = series_list
-        .iter()
-        .map(|a| a.as_slice().map(|s| s.to_vec()))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let params_vecs: Vec<Vec<f64>> = params_list
         .iter()
@@ -682,6 +719,7 @@ fn sarimax_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sarimax_fit, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_forecast, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_residuals, m)?)?;
+    m.add_function(wrap_pyfunction!(sarimax_batch_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_fit, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_forecast, m)?)?;
     Ok(())
