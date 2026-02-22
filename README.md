@@ -94,11 +94,14 @@ result = model.fit()
 # Summary with parameter table (fast, no inference)
 print(result.summary())
 
-# Summary with inference statistics (std err, z, p-value, CI)
-print(result.summary(include_inference=True))
+# Summary with Hessian-based inference (std err, z, p-value, CI)
+print(result.summary(inference="hessian"))
+
+# Summary comparing Hessian vs statsmodels inference side-by-side
+print(result.summary(inference="both"))
 
 # Machine-readable parameter summary
-ps = result.parameter_summary(alpha=0.05)
+ps = result.parameter_summary(alpha=0.05, inference="hessian")
 print(ps["name"])       # ['ar.L1', 'ma.L1']
 print(ps["std_err"])    # numerical Hessian-based standard errors
 print(ps["p_value"])    # two-sided p-values
@@ -544,10 +547,12 @@ result.forecast(steps=10, alpha=0.05)     # → ForecastResult
 result.forecast(steps=10, exog=X_future)  # with future exog
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels compat)
 result.summary()                          # → str (basic parameter table)
-result.summary(include_inference=True)    # → str (with std err / z / p / CI)
+result.summary(inference="hessian")       # → str (with std err / z / p / CI)
+result.summary(inference="statsmodels")   # → str (borrow statsmodels inference)
+result.summary(inference="both")          # → str (dual-column comparison)
 
 # Parameter summary (machine-readable dict)
-ps = result.parameter_summary(alpha=0.05, include_inference=True)
+ps = result.parameter_summary(alpha=0.05, inference="hessian")
 # Returns: dict with keys:
 #   name: list[str]         — parameter names
 #   coef: np.ndarray        — coefficient estimates
@@ -731,38 +736,69 @@ CSS (Conditional Sum of Squares) based estimation for optimizer initialization.
 
 ---
 
-## Numerical Validation
+## Benchmarks
 
-Validated against statsmodels SARIMAX reference outputs (ground truth).
-
-### Latest Validation (2026-02-22)
-
-Environment: macOS arm64, Python 3.14, `sarimax_rs 0.1.0`
+All benchmarks run on macOS 15.1 (Apple Silicon arm64), Python 3.14, sarimax_rs 0.1.0 vs statsmodels 0.14.6.
 
 ```bash
-.venv/bin/python -m pytest python_tests/test_multi_order_accuracy.py -q
-.venv/bin/python -m pytest python_tests/test_multi_order_accuracy.py::test_comprehensive_accuracy_report -s -q
-.venv/bin/python python_tests/bench_comparison.py
+.venv/bin/python python_tests/bench_readme.py
 ```
 
-**Accuracy** (19 model configurations, excluding ARMA(2,2) — over-parameterized with multiple optima):
+### Accuracy vs statsmodels
 
-| Metric | Max Error |
-|--------|-----------|
-| Parameter | ≤ 0.0018 |
-| Log-likelihood | ≤ 0.0029 |
-| AIC | ≤ 0.0058 |
+Both engines fit the same data with `enforce_stationarity=True`, `enforce_invertibility=True`, `concentrate_scale=True`, `trend='n'`. The table shows the maximum absolute difference between sarimax_rs and statsmodels parameter estimates, log-likelihood, and AIC.
 
-**Speed** (`bench_comparison.py`, best-of-repeat):
+| Model | n | k | Max \|Δparam\| | \|Δloglike\| | \|ΔAIC\| |
+|-------|:-:|:-:|:-----------:|:----------:|:------:|
+| AR(1) | 200 | 1 | 0.000124 | 0.0000 | 0.0000 |
+| AR(2) | 300 | 2 | 0.001902 | 0.0007 | 0.0013 |
+| MA(1) | 200 | 1 | 0.003862 | 0.0015 | 0.0031 |
+| ARMA(1,1) | 300 | 2 | 0.000646 | 0.0030 | 0.0060 |
+| ARIMA(1,1,1) | 300 | 2 | 0.026525 | 0.0011 | 0.0022 |
+| ARIMA(2,1,1) | 400 | 3 | 0.833380 | 0.4884 | 0.9768 |
+| SARIMA(1,0,0)(1,0,0,4) | 200 | 2 | 0.002865 | 0.0014 | 0.0028 |
+| SARIMA(0,1,1)(0,1,1,12) | 300 | 2 | 0.000308 | 0.4960 | 0.9919 |
+| SARIMA(1,1,1)(1,1,1,12) | 300 | 4 | 0.005656 | 0.0010 | 0.0020 |
 
-| Scenario | Rust (ms) | statsmodels (ms) | Speedup |
-|----------|:---------:|:-----------------:|:-------:|
-| AR(1) single fit (n=200) | 0.6 | 3.3 | **5.5x** |
-| ARIMA(1,1,1) single fit (n=300) | 12.5 | 11.2 | 0.9x |
-| SARIMA(1,1,1)(1,1,1,12) single fit (n=300) | 3496.6 | 343.1 | 0.1x |
-| AR(1) batch fit (100 × n=200) | 6.3 | 314.3 | **50.1x** |
+Most models achieve parameter accuracy within 0.006 and log-likelihood within 0.003. ARIMA(2,1,1) shows a larger gap due to different local minima (multiple optima in high-order models). SARIMA(0,1,1)(0,1,1,12) has a loglike offset of ~0.5 due to initialization differences, but identical parameter estimates (Δparam < 0.001).
 
-Note: Single-model speed depends heavily on order, data, constraints, and hardware. Batch processing is where Rust parallelism provides the largest gains.
+### Speed — Single Fit
+
+Best-of-5 wall clock time (lower is better):
+
+| Model | sarimax_rs | statsmodels | Speedup |
+|-------|:----------:|:-----------:|:-------:|
+| AR(1) n=200 | 0.6 ms | 2.9 ms | **4.5x** |
+| AR(2) n=300 | 1.1 ms | 4.9 ms | **4.4x** |
+| MA(1) n=200 | 0.4 ms | 3.5 ms | **8.0x** |
+| ARMA(1,1) n=300 | 4.9 ms | 11.0 ms | **2.3x** |
+| ARIMA(1,1,1) n=300 | 2.9 ms | 10.4 ms | **3.6x** |
+| ARIMA(2,1,1) n=400 | 1.4 ms | 33.4 ms | **23.8x** |
+| SARIMA(1,0,0)(1,0,0,4) n=200 | 6.0 ms | 8.0 ms | **1.3x** |
+| SARIMA(0,1,1)(0,1,1,12) n=300 | 275.4 ms | 111.9 ms | 0.4x |
+| SARIMA(1,1,1)(1,1,1,12) n=300 | 257.9 ms | 237.8 ms | 0.9x |
+
+Non-seasonal and low-order models see **2-24x speedup**. High-order seasonal models (large state dimension) are currently slower due to L-BFGS-B overhead on high-dimensional state spaces — this is an active optimization target.
+
+### Speed — Batch Fit (Rayon parallel)
+
+AR(1) n=200 per series, best-of-3:
+
+| Batch Size | sarimax_rs | statsmodels | Speedup |
+|:----------:|:----------:|:-----------:|:-------:|
+| 10 series | 2.3 ms | 36.3 ms | **16x** |
+| 100 series | 12.5 ms | 304.9 ms | **24x** |
+| 500 series | 36.1 ms | 1,792 ms | **50x** |
+
+Batch processing is where Rust + Rayon parallelism provides the largest gains. The speedup scales with the number of series as Rayon distributes work across all available CPU cores.
+
+### Speed — Forecast
+
+ARIMA(1,1,1) 10-step forecast (after fit), best-of-20:
+
+| | sarimax_rs | statsmodels | Speedup |
+|-|:----------:|:-----------:|:-------:|
+| Forecast | 0.01 ms | 0.49 ms | **35x** |
 
 ---
 
@@ -793,7 +829,7 @@ sarimax_rs/
 │       ├── __init__.py              # Package exports
 │       └── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult
 │
-├── python_tests/                    # Python integration tests (176 tests)
+├── python_tests/                    # Python integration tests (228 tests)
 │   ├── conftest.py                  # pytest fixtures
 │   ├── generate_fixtures.py         # statsmodels reference data generator
 │   ├── test_smoke.py                # import/version (2)
@@ -852,10 +888,10 @@ sarimax_rs/
 ## Development
 
 ```bash
-# Rust unit tests (103 tests)
+# Rust unit tests (109 tests)
 cargo test --all-targets
 
-# Python integration tests (176 tests, requires wheel built first)
+# Python integration tests (228 tests, requires wheel built first)
 maturin develop --release
 .venv/bin/python -m pytest python_tests/ -v
 
@@ -876,7 +912,7 @@ cargo bench
 
 | Category | Tests | Coverage |
 |----------|:-----:|---------|
-| Rust unit tests | 103 | types, params, polynomial, state_space, initialization, kalman, score, start_params, optimizer, forecast, batch |
+| Rust unit tests | 109 | types, params, polynomial, state_space, initialization, kalman, score, start_params, optimizer, forecast, batch |
 | Python smoke | 2 | import, version |
 | Python loglike | 4 | AR(1), ARMA(1,1), ARIMA(1,1,1) vs statsmodels |
 | Python fit | 9 | fitting, AIC/BIC, convergence, start_params, Nelder-Mead |
@@ -890,15 +926,16 @@ cargo bench
 | Python matrix | 12 | tier-A and tier-B convergence matrices |
 | Python wheel smoke | 8 | installation, basic fit, model wrapper |
 | Python perf regression | 7 | accuracy regression, iteration count, batch |
-| **Total** | **279** | |
+| Python parameter summary | 52 | param_names, inference modes, statsmodels parity |
+| **Total** | **337** | |
 
 ## Limitations
 
 - Seasonal differencing `D > 1` not supported (`D = 0` or `1` only)
 - Trend parameters supported internally but not exposed in Python API
-- No information matrix (Hessian) — parameter standard errors not available
 - Forecast steps capped at 10,000; `alpha` must be in (0, 1)
 - State dimension capped at 1,024 (prevents OOM on extreme orders)
+- High-order seasonal models (large state dimension) may be slower than statsmodels for single fits
 
 ## License
 
