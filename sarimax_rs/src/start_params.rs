@@ -49,6 +49,66 @@ fn autocovariance(y: &[f64], k: usize) -> f64 {
     sum / n as f64
 }
 
+/// Estimate AR coefficients via Burg's maximum entropy method.
+///
+/// Burg's method has less finite-sample bias than Yule-Walker for high-order AR,
+/// because it minimizes the sum of forward and backward prediction errors directly
+/// from the data rather than going through autocovariance estimates. It also
+/// guarantees a stable (stationary) AR model at each stage.
+fn burg_ar(y: &[f64], p: usize) -> Option<Vec<f64>> {
+    if p == 0 {
+        return Some(vec![]);
+    }
+    let n = y.len();
+    if n <= p {
+        return None;
+    }
+
+    let mean: f64 = y.iter().sum::<f64>() / n as f64;
+
+    // Initialize forward and backward prediction errors
+    let mut ef: Vec<f64> = y.iter().map(|&v| v - mean).collect();
+    let mut eb: Vec<f64> = ef.clone();
+
+    let mut a = vec![0.0; p];
+
+    for k in 0..p {
+        // Compute reflection coefficient
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for t in (k + 1)..n {
+            num += ef[t] * eb[t - 1];
+            den += ef[t] * ef[t] + eb[t - 1] * eb[t - 1];
+        }
+        if den.abs() < 1e-15 {
+            return None;
+        }
+        let kk = 2.0 * num / den;
+
+        // Stability check: |kk| < 1 (should always hold for Burg, but be safe)
+        if kk.abs() >= 1.0 {
+            return None;
+        }
+
+        // Update AR coefficients via Levinson recursion
+        let a_prev: Vec<f64> = a[..k].to_vec();
+        a[k] = kk;
+        for j in 0..k {
+            a[j] = a_prev[j] - kk * a_prev[k - 1 - j];
+        }
+
+        // Update prediction errors (reverse iteration to avoid overwriting
+        // eb[t-1] before it's read at the next t)
+        for t in ((k + 1)..n).rev() {
+            let ef_t = ef[t];
+            ef[t] = ef_t - kk * eb[t - 1];
+            eb[t] = eb[t - 1] - kk * ef_t;
+        }
+    }
+
+    Some(a)
+}
+
 /// Estimate AR coefficients via Yule-Walker equations.
 ///
 /// Solves the Yule-Walker system: R * phi = r
@@ -340,8 +400,10 @@ pub fn compute_start_params(
         }
     }
 
-    // AR coefficients
-    let ar = yule_walker(&diffed, p).unwrap_or_else(|| vec![0.0; p]);
+    // AR coefficients (Burg primary, Yule-Walker fallback)
+    let ar = burg_ar(&diffed, p)
+        .or_else(|| yule_walker(&diffed, p))
+        .unwrap_or_else(|| vec![0.0; p]);
     params.extend_from_slice(&ar);
 
     // MA coefficients from AR residuals
@@ -441,6 +503,70 @@ mod tests {
         let y = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let d = seasonal_difference(&y, 1, 4);
         assert_eq!(d, vec![4.0, 4.0, 4.0, 4.0]);
+    }
+
+    #[test]
+    fn test_burg_ar1() {
+        // Generate AR(1) process with phi=0.7
+        let n = 500;
+        let mut y = vec![0.0; n];
+        let mut rng_state: u64 = 42;
+        for t in 1..n {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+            y[t] = 0.7 * y[t - 1] + u;
+        }
+        let ar = burg_ar(&y, 1).unwrap();
+        assert_eq!(ar.len(), 1);
+        assert!(
+            (ar[0] - 0.7).abs() < 0.15,
+            "Burg AR(1) estimate too far: {}",
+            ar[0]
+        );
+    }
+
+    #[test]
+    fn test_burg_ar5() {
+        // Generate AR(5) process
+        let n = 1000;
+        let phi = [0.3, -0.2, 0.15, -0.1, 0.05];
+        let mut y = vec![0.0; n];
+        let mut rng_state: u64 = 42;
+        for t in 5..n {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+            y[t] = phi[0] * y[t - 1]
+                + phi[1] * y[t - 2]
+                + phi[2] * y[t - 3]
+                + phi[3] * y[t - 4]
+                + phi[4] * y[t - 5]
+                + u;
+        }
+        let ar = burg_ar(&y, 5).unwrap();
+        assert_eq!(ar.len(), 5);
+        // Check first coefficient is roughly in the right direction
+        assert!(
+            (ar[0] - phi[0]).abs() < 0.2,
+            "Burg AR(5)[0] estimate too far: {} (expected {})",
+            ar[0],
+            phi[0]
+        );
+    }
+
+    #[test]
+    fn test_burg_stability() {
+        // Burg should always produce stable (stationary) coefficients
+        let n = 200;
+        let mut y = vec![0.0; n];
+        let mut rng_state: u64 = 123;
+        for t in 1..n {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let u = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 0.5;
+            y[t] = 0.95 * y[t - 1] + u;
+        }
+        // High-order Burg should still produce a result
+        let ar = burg_ar(&y, 8);
+        assert!(ar.is_some(), "Burg should succeed for AR(8) estimation");
     }
 
     #[test]
