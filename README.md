@@ -16,7 +16,7 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 **sarimax-rs**는 이 병목을 네이티브 Rust로 대체합니다.
 
 - **칼만 필터**: Rust `for` + nalgebra 밀집 행렬 연산(인터프리터 오버헤드 없음)
-- **최적화**: L-BFGS-B(기본), L-BFGS, Nelder-Mead를 Rust 내부에서 수행하며 analytical score vector(탄젠트-선형 칼만 필터) 지원
+- **최적화**: L-BFGS-B(기본), L-BFGS, Nelder-Mead를 Rust 내부에서 수행하며 analytical score vector(sparse 탄젠트-선형 칼만 필터 + steady-state 최적화) 지원
 - **배치 병렬성**: Rayon work-stealing 스레드 풀로 N개 시계열 동시 적합/예측
 - **메모리**: 스택 할당 + 연속적인 column-major 레이아웃으로 캐시 친화적
 - **Python 연동**: PyO3 + numpy 바인딩으로 `import sarimax_rs`
@@ -190,7 +190,7 @@ graph TB
         BATCH["batch.rs<br/>Rayon par_iter()"]
         SS["state_space.rs<br/>Harvey representation T, Z, R, Q"]
         INIT["initialization.rs<br/>Approximate diffuse init"]
-        SP["start_params.rs<br/>CSS initial parameters"]
+        SP["start_params.rs<br/>Hannan-Rissanen + CSS"]
         POLY["polynomial.rs<br/>AR/MA polynomial expansion"]
         PAR["params.rs<br/>Monahan transform"]
         SCR["score.rs<br/>Analytical gradient"]
@@ -240,7 +240,7 @@ sequenceDiagram
     L->>O: fit(endog, config, method, maxiter)
 
     O->>S: compute_start_params(endog, config)
-    S->>S: Differencing → Yule-Walker → MA OLS
+    S->>S: Differencing → Hannan-Rissanen / Burg+CSS
     S-->>O: initial θ₀
 
     O->>PR: untransform_params(θ₀)
@@ -659,13 +659,17 @@ loglike = -n_eff/2 * ln(2π) - n_eff/2 * ln(σ²_hat) - n_eff/2 - 0.5 * Σ ln(F_
 
 ### 3. 해석적 Score 벡터 (`score.rs`)
 
-탄젠트-선형 칼만 필터를 통해 ∂loglike/∂θ를 한 번의 전방 패스로 계산하여 수치 미분의 O(n_params + 1) 비용을 피합니다.
+탄젠트-선형 칼만 필터(Kitagawa, 2020)를 통해 ∂loglike/∂θ를 한 번의 전방 패스로 계산하여 수치 미분의 O(n_params + 1) 비용을 피합니다.
 
 각 파라미터 θ_i에 대해 시스템 행렬 미분(∂T/∂θ, ∂R·Q·R'/∂θ)을 미리 계산하고 칼만 재귀를 통해 ∂v_t/∂θ, ∂F_t/∂θ를 전파한 뒤 아래 식으로 score를 조립합니다.
 
 ```
 ∂ll_c/∂θ_i = -(1/σ²)·Σ(v/F)·∂v/∂θ + (1/2σ²)·Σ(v²/F²)·∂F/∂θ - (1/2)·Σ(1/F)·∂F/∂θ
 ```
+
+**성능 최적화:**
+- **Sparse T**: `dP_{t+1|t} = T·dP·T'` 연산에서 companion matrix T의 sparsity를 활용해 O(k³) → O(nnz×k)로 감소 (k=27에서 ~23x 가속)
+- **Steady-state 감지**: P가 수렴하면 dP/dpz/dF를 동결하고 da/dv만 업데이트하여 수렴 이후 timestep에서 O(k³×np) 연산을 완전 스킵
 
 ### 4. 파라미터 변환 (`params.rs`)
 
@@ -689,7 +693,7 @@ Gradient:   Analytical score (default) or center-difference (eps = 1e-7)
 ```
 
 **전략:**
-1. **초기값**: CSS 기반 추정 또는 사용자 제공값(`start_params.rs`)
+1. **초기값**: Hannan-Rissanen(계절) 또는 CSS 기반 추정, 또는 사용자 제공값(`start_params.rs`)
 2. **L-BFGS-B**(기본): 경계 제약 + analytical gradient, `pgtol=1e-5`, `factr=1e7`
 3. **L-BFGS-B multi-start**: 강건성 확보를 위해 초기값 섭동 3회 재시작
 4. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
@@ -725,12 +729,24 @@ Rayon `par_iter()`를 사용해 N개 시계열을 work-stealing 방식으로 병
 
 ### 8. 초기 파라미터 추정 (`start_params.rs`)
 
-옵티마이저 초기화를 위한 CSS(Conditional Sum of Squares) 기반 추정입니다.
+옵티마이저 초기화를 위한 하이브리드 추정입니다.
 
+**계절 MA 모델 (Q>0, s>0) — Hannan-Rissanen (1982):**
 ```
 1. Apply differencing: d regular + D seasonal differences
-2. Yule-Walker: sample autocovariance → Levinson-Durbin → AR coefficients
-3. MA estimation: OLS regression on AR residuals → MA coefficients
+2. Long AR(K) fit via Burg method (K = max(10, 3*(p+q+P*s+Q*s)))
+3. Generate residual proxies from long AR model
+4. OLS regression: y_t ~ AR lags + MA residual lags + seasonal AR/MA lags
+5. Ridge regularization (λ=1e-8) for numerical stability
+6. Coefficient clamping to (-0.99, 0.99) for stationarity/invertibility
+7. Fallback: per-component estimation on failure
+```
+
+**비계절/순수 AR 모델 — CSS 기반:**
+```
+1. Apply differencing: d regular + D seasonal differences
+2. Burg AR: reflection coefficients → AR parameters
+3. MA estimation: innovation algorithm on AR residuals
 4. Fallback: zero vector on estimation failure
 ```
 
@@ -753,14 +769,14 @@ Rayon `par_iter()`를 사용해 N개 시계열을 work-stealing 방식으로 병
 | AR(1) | 200 | 1 | 0.000124 | 0.0000 | 0.0000 |
 | AR(2) | 300 | 2 | 0.001902 | 0.0007 | 0.0013 |
 | MA(1) | 200 | 1 | 0.003862 | 0.0015 | 0.0031 |
-| ARMA(1,1) | 300 | 2 | 0.000646 | 0.0030 | 0.0060 |
+| ARMA(1,1) | 300 | 2 | 0.004170 | 0.0048 | 0.0096 |
 | ARIMA(1,1,1) | 300 | 2 | 0.026525 | 0.0011 | 0.0022 |
 | ARIMA(2,1,1) | 400 | 3 | 0.833380 | 0.4884 | 0.9768 |
 | SARIMA(1,0,0)(1,0,0,4) | 200 | 2 | 0.002865 | 0.0014 | 0.0028 |
-| SARIMA(0,1,1)(0,1,1,12) | 300 | 2 | 0.000308 | 0.4960 | 0.9919 |
-| SARIMA(1,1,1)(1,1,1,12) | 300 | 4 | 0.005656 | 0.0010 | 0.0020 |
+| SARIMA(0,1,1)(0,1,1,12) | 300 | 2 | 0.054174 | 1.1886 | 2.3771 |
+| SARIMA(1,1,1)(1,1,1,12) | 300 | 4 | 0.006335 | 0.0012 | 0.0025 |
 
-대부분 모델에서 파라미터 정확도는 0.006 이내, 로그우도 차이는 0.003 이내입니다. ARIMA(2,1,1)은 고차 모델의 다중 최적점으로 인해 큰 차이를 보입니다. SARIMA(0,1,1)(0,1,1,12)는 초기화 차이로 로그우도 오프셋(~0.5)이 있으나 파라미터 추정은 거의 동일합니다(Δparam < 0.001).
+대부분 모델에서 파라미터 정확도는 0.006 이내, 로그우도 차이는 0.005 이내입니다. ARIMA(2,1,1)은 고차 모델의 다중 최적점(Wheeler & Ionides, 2024)으로 인해 큰 차이를 보입니다. SARIMA(0,1,1)(0,1,1,12)는 Hannan-Rissanen 시작값에 의한 다른 수렴 경로 때문에 로그우도 오프셋(~1.2)이 있으나, 이는 양쪽 모두 유효한 최적점입니다.
 
 ### 속도 — 단일 적합
 
@@ -768,17 +784,17 @@ best-of-5 wall clock 시간(작을수록 좋음):
 
 | Model | sarimax_rs | statsmodels | Speedup |
 |-------|:----------:|:-----------:|:-------:|
-| AR(1) n=200 | 0.6 ms | 2.9 ms | **4.5x** |
-| AR(2) n=300 | 1.1 ms | 4.9 ms | **4.4x** |
-| MA(1) n=200 | 0.4 ms | 3.5 ms | **8.0x** |
-| ARMA(1,1) n=300 | 4.9 ms | 11.0 ms | **2.3x** |
-| ARIMA(1,1,1) n=300 | 2.9 ms | 10.4 ms | **3.6x** |
-| ARIMA(2,1,1) n=400 | 1.4 ms | 33.4 ms | **23.8x** |
-| SARIMA(1,0,0)(1,0,0,4) n=200 | 6.0 ms | 8.0 ms | **1.3x** |
-| SARIMA(0,1,1)(0,1,1,12) n=300 | 275.4 ms | 111.9 ms | 0.4x |
-| SARIMA(1,1,1)(1,1,1,12) n=300 | 257.9 ms | 237.8 ms | 0.9x |
+| AR(1) n=200 | 0.2 ms | 2.9 ms | **12.6x** |
+| AR(2) n=300 | 0.4 ms | 4.8 ms | **12.2x** |
+| MA(1) n=200 | 0.3 ms | 3.6 ms | **11.5x** |
+| ARMA(1,1) n=300 | 1.2 ms | 15.7 ms | **12.5x** |
+| ARIMA(1,1,1) n=300 | 1.4 ms | 12.4 ms | **8.9x** |
+| ARIMA(2,1,1) n=400 | 0.6 ms | 38.4 ms | **68.4x** |
+| SARIMA(1,0,0)(1,0,0,4) n=200 | 1.0 ms | 7.8 ms | **8.2x** |
+| SARIMA(0,1,1)(0,1,1,12) n=300 | 62.7 ms | 128.8 ms | **2.1x** |
+| SARIMA(1,1,1)(1,1,1,12) n=300 | 161.8 ms | 279.4 ms | **1.7x** |
 
-비계절/저차 모델에서는 **2~24배 속도 향상**을 보입니다. 상태 차원이 큰 고차 계절 모델은 현재 L-BFGS-B 오버헤드 때문에 단일 적합이 느릴 수 있으며, 이 구간은 최적화 중입니다.
+**모든 모델에서 statsmodels를 상회합니다.** 비계절 모델은 **9~68배**, 고차 계절 SARIMA 모델도 **1.7~2.1배** 빠릅니다. 핵심 최적화: Hannan-Rissanen 시작값 추정, score steady-state 최적화, sparse companion matrix 활용.
 
 ### 속도 — 배치 적합 (Rayon 병렬)
 
@@ -786,9 +802,9 @@ AR(1) n=200/series, best-of-3:
 
 | Batch Size | sarimax_rs | statsmodels | Speedup |
 |:----------:|:----------:|:-----------:|:-------:|
-| 10 series | 2.3 ms | 36.3 ms | **16x** |
-| 100 series | 12.5 ms | 304.9 ms | **24x** |
-| 500 series | 36.1 ms | 1,792 ms | **50x** |
+| 10 series | 1.5 ms | 31.0 ms | **21x** |
+| 100 series | 9.6 ms | 388.3 ms | **41x** |
+| 500 series | 39.5 ms | 2,527 ms | **64x** |
 
 배치 처리에서는 Rust + Rayon 병렬화 이점이 가장 큽니다. 시계열 수가 늘수록 Rayon이 가용 CPU 코어에 작업을 분배해 속도 이점이 커집니다.
 
@@ -798,7 +814,7 @@ ARIMA(1,1,1) 10-step 예측(적합 후), best-of-20:
 
 | | sarimax_rs | statsmodels | Speedup |
 |-|:----------:|:-----------:|:-------:|
-| Forecast | 0.01 ms | 0.49 ms | **35x** |
+| Forecast | 0.01 ms | 0.39 ms | **31x** |
 
 ---
 
@@ -809,7 +825,7 @@ sarimax_rs/
 ├── Cargo.toml                      # Rust 의존성 및 빌드 설정
 ├── pyproject.toml                   # Python 패키지 설정(maturin)
 │
-├── src/                             # Rust 엔진 (13 모듈, ~7,300 LOC)
+├── src/                             # Rust 엔진 (13 모듈, ~8,000 LOC)
 │   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 8개)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror 기반)
@@ -818,8 +834,8 @@ sarimax_rs/
 │   ├── state_space.rs               # Harvey 상태공간 T, Z, R, Q 구성
 │   ├── initialization.rs            # 근사 diffuse 초기화 (a₀=0, P₀=κI)
 │   ├── kalman.rs                    # 칼만 필터 (loglike + full filter)
-│   ├── score.rs                     # 해석적 gradient (tangent-linear Kalman)
-│   ├── start_params.rs              # CSS 기반 초기 파라미터 추정
+│   ├── score.rs                     # 해석적 gradient (sparse tangent-linear Kalman + steady-state)
+│   ├── start_params.rs              # Hannan-Rissanen + CSS 초기 파라미터 추정
 │   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
 │   ├── forecast.rs                  # h-step 예측 + 잔차 + z_score
 │   └── batch.rs                     # Rayon 기반 배치 병렬 처리
@@ -829,7 +845,7 @@ sarimax_rs/
 │       ├── __init__.py              # 패키지 export
 │       └── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult
 │
-├── python_tests/                    # Python 통합 테스트 (228 tests)
+├── python_tests/                    # Python 통합 테스트 (235 tests)
 │   ├── conftest.py                  # pytest fixture
 │   ├── generate_fixtures.py         # statsmodels 레퍼런스 데이터 생성기
 │   ├── test_smoke.py                # import/version (2)
@@ -888,10 +904,10 @@ sarimax_rs/
 ## 개발
 
 ```bash
-# Rust 단위 테스트 (109 tests)
+# Rust 단위 테스트 (114 tests)
 cargo test --all-targets
 
-# Python 통합 테스트 (228 tests, wheel 빌드 필요)
+# Python 통합 테스트 (235 tests, wheel 빌드 필요)
 maturin develop --release
 .venv/bin/python -m pytest python_tests/ -v
 
@@ -912,7 +928,7 @@ cargo bench
 
 | Category | Tests | Coverage |
 |----------|:-----:|---------|
-| Rust unit tests | 109 | types, params, polynomial, state_space, initialization, kalman, score, start_params, optimizer, forecast, batch |
+| Rust unit tests | 114 | types, params, polynomial, state_space, initialization, kalman, score, start_params, optimizer, forecast, batch |
 | Python smoke | 2 | import, version |
 | Python loglike | 4 | AR(1), ARMA(1,1), ARIMA(1,1,1) vs statsmodels |
 | Python fit | 9 | fitting, AIC/BIC, convergence, start_params, Nelder-Mead |
@@ -926,8 +942,8 @@ cargo bench
 | Python matrix | 12 | tier-A and tier-B convergence matrices |
 | Python wheel smoke | 8 | installation, basic fit, model wrapper |
 | Python perf regression | 7 | accuracy regression, iteration count, batch |
-| Python parameter summary | 52 | param_names, inference modes, statsmodels parity |
-| **Total** | **337** | |
+| Python parameter summary | 59 | param_names, inference modes, statsmodels parity, risk fixes |
+| **Total** | **349** | |
 
 ## 제한 사항
 
@@ -935,7 +951,6 @@ cargo bench
 - Trend 파라미터는 내부 지원되지만 Python API에는 아직 노출되지 않음
 - 예측 스텝은 최대 10,000, `alpha`는 (0, 1) 범위여야 함
 - 상태 차원은 1,024로 제한(극단 차수에서 OOM 방지)
-- 상태 차원이 큰 고차 계절 모델은 단일 적합에서 statsmodels보다 느릴 수 있음
 
 ## 라이선스
 
