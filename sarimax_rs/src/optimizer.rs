@@ -856,8 +856,10 @@ pub fn fit(
             // NM fallback only if L-BFGS-B fails entirely.
             let bounds = compute_bounds(config);
             match run_lbfgsb(&objective, unconstrained_start.clone(), bounds, maxiter) {
-                Ok((p, c, n, conv)) => (p, c, n, conv, "lbfgsb".to_string()),
-                Err(_) => {
+                Ok((p, c, n, conv)) => {
+                    (p, c, n, conv, "lbfgsb".to_string())
+                }
+                Err(e) => {
                     // L-BFGS-B failed → fallback to Nelder-Mead
                     let (p, c, n, conv) =
                         run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
@@ -1258,6 +1260,27 @@ mod tests {
     }
 
     #[test]
+    fn test_fit_ar1_lbfgsb_convergence() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["ar1"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        // Test with enforce=false
+        let config_noforce = make_config(1, 0, 0, false, false);
+        let r1 = fit(&data, &config_noforce, None, Some("lbfgsb"), Some(500), None).unwrap();
+        assert!(r1.converged, "AR(1) lbfgsb enforce=false should converge");
+
+        // Test with enforce=true (Python default)
+        let config_force = make_config(1, 0, 0, true, true);
+        let r2 = fit(&data, &config_force, None, Some("lbfgsb"), Some(500), None).unwrap();
+        assert!(r2.converged, "AR(1) lbfgsb enforce=true should converge");
+    }
+
     fn test_fit_ar1() {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
