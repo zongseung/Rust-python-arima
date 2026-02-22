@@ -1,18 +1,26 @@
 /// SARIMAX model order specification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SarimaxOrder {
-    pub p: usize,   // AR order
-    pub d: usize,   // differencing order
-    pub q: usize,   // MA order
-    pub pp: usize,  // seasonal AR order (P)
-    pub dd: usize,  // seasonal differencing order (D)
-    pub qq: usize,  // seasonal MA order (Q)
-    pub s: usize,   // seasonal period
+    pub p: usize,  // AR order
+    pub d: usize,  // differencing order
+    pub q: usize,  // MA order
+    pub pp: usize, // seasonal AR order (P)
+    pub dd: usize, // seasonal differencing order (D)
+    pub qq: usize, // seasonal MA order (Q)
+    pub s: usize,  // seasonal period
 }
 
 impl SarimaxOrder {
     pub fn new(p: usize, d: usize, q: usize, pp: usize, dd: usize, qq: usize, s: usize) -> Self {
-        Self { p, d, q, pp, dd, qq, s }
+        Self {
+            p,
+            d,
+            q,
+            pp,
+            dd,
+            qq,
+            s,
+        }
     }
 
     /// Extended AR order: p + s*P

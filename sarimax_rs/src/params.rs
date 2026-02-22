@@ -29,8 +29,7 @@ impl SarimaxParams {
         let pp = config.order.pp;
         let qq = config.order.qq;
 
-        let expected = kt + n_exog + p + q + pp + qq
-            + if config.concentrate_scale { 0 } else { 1 };
+        let expected = kt + n_exog + p + q + pp + qq + if config.concentrate_scale { 0 } else { 1 };
 
         if flat.len() != expected {
             return Err(SarimaxError::ParamLengthMismatch {
@@ -296,12 +295,7 @@ mod tests {
         let constrained = constrain_stationary(&original);
         let unconstrained = unconstrain_stationary(&constrained);
         for (a, b) in original.iter().zip(unconstrained.iter()) {
-            assert!(
-                (a - b).abs() < 1e-10,
-                "roundtrip failed: {} vs {}",
-                a,
-                b
-            );
+            assert!((a - b).abs() < 1e-10, "roundtrip failed: {} vs {}", a, b);
         }
     }
 
@@ -311,12 +305,7 @@ mod tests {
         let constrained = constrain_stationary(&original);
         let unconstrained = unconstrain_stationary(&constrained);
         for (a, b) in original.iter().zip(unconstrained.iter()) {
-            assert!(
-                (a - b).abs() < 1e-10,
-                "roundtrip failed: {} vs {}",
-                a,
-                b
-            );
+            assert!((a - b).abs() < 1e-10, "roundtrip failed: {} vs {}", a, b);
         }
     }
 

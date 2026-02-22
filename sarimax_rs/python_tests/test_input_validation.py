@@ -78,11 +78,11 @@ def test_forecast_rejects_missing_future_exog():
         enforce_stationarity=False, enforce_invertibility=False,
     )
     params = np.array(result["params"], dtype=np.float64)
-    with pytest.raises(ValueError, match="exog_forecast is required"):
+    with pytest.raises(ValueError, match="future_exog is required"):
         sarimax_rs.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
             steps=5, exog=exog,
-            # exog_forecast intentionally omitted
+            # future_exog intentionally omitted
         )
 
 
@@ -399,4 +399,128 @@ class TestErrorTypes:
                 y, (3, 0, 3), (0, 0, 0, 0),
                 enforce_stationarity=False,
                 enforce_invertibility=False,
+            )
+
+
+# --- Vuln-2: Model order upper bounds ---
+
+class TestOrderUpperBounds:
+    """Excessive model orders must be rejected to prevent OOM/DoS."""
+
+    def test_rejects_p_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="AR order p=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (21, 0, 0), (0, 0, 0, 0),
+                np.zeros(21, dtype=np.float64),
+            )
+
+    def test_rejects_q_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="MA order q=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 21), (0, 0, 0, 0),
+                np.zeros(21, dtype=np.float64),
+            )
+
+    def test_rejects_d_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="differencing order d=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 4, 0), (0, 0, 0, 0),
+                np.array([], dtype=np.float64),
+            )
+
+    def test_rejects_seasonal_P_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="seasonal AR order P=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 0), (5, 0, 0, 4),
+                np.zeros(5, dtype=np.float64),
+            )
+
+    def test_rejects_seasonal_D_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="seasonal differencing D=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 0), (0, 3, 0, 4),
+                np.array([], dtype=np.float64),
+            )
+
+    def test_rejects_seasonal_Q_too_large(self):
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="seasonal MA order Q=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 0), (0, 0, 5, 4),
+                np.zeros(5, dtype=np.float64),
+            )
+
+    def test_rejects_s_too_large(self):
+        y = _sample_series(n=1000)
+        with pytest.raises(ValueError, match="seasonal period s=.*exceeds maximum"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 0), (1, 0, 0, 400),
+                np.zeros(1, dtype=np.float64),
+            )
+
+    def test_rejects_seasonal_order_without_period(self):
+        """P>0 or D>0 or Q>0 with s<2 must be rejected."""
+        y = _sample_series(n=100)
+        with pytest.raises(ValueError, match="requires seasonal period s >= 2"):
+            sarimax_rs.sarimax_loglike(
+                y, (0, 0, 0), (1, 0, 0, 0),
+                np.zeros(1, dtype=np.float64),
+            )
+
+    def test_accepts_max_valid_orders(self):
+        """Maximum valid individual orders should still be accepted."""
+        y = _sample_series(n=100)
+        # p=20 is the limit, should be accepted (though fit might fail for other reasons)
+        ll = sarimax_rs.sarimax_loglike(
+            y, (20, 0, 0), (0, 0, 0, 0),
+            np.zeros(20, dtype=np.float64),
+            enforce_stationarity=False,
+        )
+        assert np.isfinite(ll)
+
+
+# --- Vuln-1: exog NaN/Inf validation (verify existing guards) ---
+
+class TestExogNanInfRejection:
+    """Verify that NaN/Inf in exog is rejected (not silently computed)."""
+
+    def test_loglike_rejects_nan_exog(self):
+        y = _sample_series(n=50)
+        exog = np.ones((50, 1), dtype=np.float64)
+        exog[5, 0] = np.nan
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            sarimax_rs.sarimax_loglike(
+                y, (1, 0, 0), (0, 0, 0, 0),
+                np.array([0.0, 0.1], dtype=np.float64),
+                exog=exog,
+            )
+
+    def test_fit_rejects_inf_exog(self):
+        y = _sample_series(n=50)
+        exog = np.ones((50, 1), dtype=np.float64)
+        exog[3, 0] = np.inf
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            sarimax_rs.sarimax_fit(
+                y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
+            )
+
+    def test_forecast_rejects_nan_exog_forecast(self):
+        y = _sample_series(n=100)
+        exog = np.ones((100, 1), dtype=np.float64)
+        result = sarimax_rs.sarimax_fit(
+            y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
+            enforce_stationarity=False, enforce_invertibility=False,
+        )
+        params = np.array(result["params"], dtype=np.float64)
+        future_exog = np.ones((5, 1), dtype=np.float64)
+        future_exog[2, 0] = np.nan
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            sarimax_rs.sarimax_forecast(
+                y, (1, 0, 0), (0, 0, 0, 0), params, steps=5,
+                exog=exog, future_exog=future_exog,
             )

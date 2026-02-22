@@ -15,7 +15,7 @@ use crate::types::SarimaxConfig;
 pub struct StateSpace {
     pub k_states: usize,
     pub k_states_diff: usize,
-    pub k_posdef: usize, // always 1 for univariate ARIMA
+    pub k_posdef: usize,           // always 1 for univariate ARIMA
     pub transition: DMatrix<f64>,  // T: k_states × k_states
     pub design: DVector<f64>,      // Z: k_states (single observation row)
     pub selection: DMatrix<f64>,   // R: k_states × k_posdef
@@ -73,7 +73,9 @@ impl StateSpace {
                 if col.len() != n {
                     return Err(SarimaxError::DataError(format!(
                         "exog column {} has {} rows but y has {} observations",
-                        j, col.len(), n
+                        j,
+                        col.len(),
+                        n
                     )));
                 }
             }
@@ -89,12 +91,16 @@ impl StateSpace {
         let obs_intercept = Self::build_obs_intercept(n, params, exog);
 
         // State intercept: c_t (trend contribution)
-        let state_intercept = Self::build_state_intercept(n, k_states, k_states_diff, config, params);
+        let state_intercept =
+            Self::build_state_intercept(n, k_states, k_states_diff, config, params);
 
         if transition.nrows() != k_states || transition.ncols() != k_states {
             return Err(SarimaxError::StateSpaceError(format!(
                 "T matrix dimension mismatch: expected {}×{}, got {}×{}",
-                k_states, k_states, transition.nrows(), transition.ncols()
+                k_states,
+                k_states,
+                transition.nrows(),
+                transition.ncols()
             )));
         }
 
@@ -119,10 +125,7 @@ impl StateSpace {
     /// 3. Cross-diff: regular diff states → last seasonal state
     /// 4. Diff → ARMA: regular diff + first seasonal of each layer → ARMA
     /// 5. ARMA companion [sd..sd+ko, sd..sd+ko]
-    fn build_transition(
-        config: &SarimaxConfig,
-        params: &SarimaxParams,
-    ) -> Result<DMatrix<f64>> {
+    fn build_transition(config: &SarimaxConfig, params: &SarimaxParams) -> Result<DMatrix<f64>> {
         let order = &config.order;
         let k_states = order.k_states();
         let d = order.d;
@@ -222,10 +225,7 @@ impl StateSpace {
     ///
     /// R[d, 0] = 1
     /// R[d+i, 0] = reduced_ma[i] for i >= 1
-    fn build_selection(
-        config: &SarimaxConfig,
-        params: &SarimaxParams,
-    ) -> Result<DMatrix<f64>> {
+    fn build_selection(config: &SarimaxConfig, params: &SarimaxParams) -> Result<DMatrix<f64>> {
         let order = &config.order;
         let k_states = order.k_states();
         let sd = order.k_states_diff();
@@ -268,16 +268,14 @@ impl StateSpace {
         exog: Option<&[Vec<f64>]>,
     ) -> Vec<f64> {
         match exog {
-            Some(x) if !params.exog_coeffs.is_empty() => {
-                (0..n)
-                    .map(|t| {
-                        x.iter()
-                            .zip(params.exog_coeffs.iter())
-                            .map(|(col, &b)| col[t] * b)
-                            .sum()
-                    })
-                    .collect()
-            }
+            Some(x) if !params.exog_coeffs.is_empty() => (0..n)
+                .map(|t| {
+                    x.iter()
+                        .zip(params.exog_coeffs.iter())
+                        .map(|(col, &b)| col[t] * b)
+                        .sum()
+                })
+                .collect(),
             _ => vec![0.0; n],
         }
     }
@@ -309,9 +307,7 @@ impl StateSpace {
             let val = match config.trend {
                 Trend::Constant => params.trend_coeffs[0],
                 Trend::Linear => params.trend_coeffs[0] * (t as f64),
-                Trend::Both => {
-                    params.trend_coeffs[0] + params.trend_coeffs[1] * (t as f64)
-                }
+                Trend::Both => params.trend_coeffs[0] + params.trend_coeffs[1] * (t as f64),
                 Trend::None => 0.0,
             };
             c[t * k_states + inject_idx] = val;
@@ -340,8 +336,13 @@ mod tests {
     }
 
     fn make_seasonal_config(
-        p: usize, d: usize, q: usize,
-        pp: usize, dd: usize, qq: usize, s: usize,
+        p: usize,
+        d: usize,
+        q: usize,
+        pp: usize,
+        dd: usize,
+        qq: usize,
+        s: usize,
     ) -> SarimaxConfig {
         SarimaxConfig {
             order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
@@ -367,10 +368,7 @@ mod tests {
         }
     }
 
-    fn make_seasonal_params(
-        ar: &[f64], ma: &[f64],
-        sar: &[f64], sma: &[f64],
-    ) -> SarimaxParams {
+    fn make_seasonal_params(ar: &[f64], ma: &[f64], sar: &[f64], sma: &[f64]) -> SarimaxParams {
         SarimaxParams {
             trend_coeffs: vec![],
             exog_coeffs: vec![],
@@ -561,10 +559,7 @@ mod tests {
         //            = [1, -0.7672, 0, 0, -0.2322, 0.17815]
         // ARMA companion first col = [0.7672, 0, 0, 0.2322, -0.17815]
         let config = make_seasonal_config(1, 0, 0, 1, 0, 0, 4);
-        let params = make_seasonal_params(
-            &[0.7671699347442852], &[],
-            &[0.2322174491752982], &[],
-        );
+        let params = make_seasonal_params(&[0.7671699347442852], &[], &[0.2322174491752982], &[]);
         let endog = vec![0.0; 200];
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
 
@@ -610,10 +605,7 @@ mod tests {
     fn test_sarima_111_111_12_dimensions() {
         // SARIMA(1,1,1)(1,1,1,12): k_states=27
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
-        let params = make_seasonal_params(
-            &[0.9903], &[0.0660],
-            &[0.0007], &[-1.0664],
-        );
+        let params = make_seasonal_params(&[0.9903], &[0.0660], &[0.0007], &[-1.0664]);
         let endog = vec![0.0; 300];
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
 
@@ -629,8 +621,10 @@ mod tests {
     fn test_sarima_111_111_12_transition() {
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
         let params = make_seasonal_params(
-            &[0.9903479224371599], &[0.0659541127042639],
-            &[0.0007132203797734934], &[-1.0663518115052784],
+            &[0.9903479224371599],
+            &[0.0659541127042639],
+            &[0.0007132203797734934],
+            &[-1.0663518115052784],
         );
         let endog = vec![0.0; 300];
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
@@ -651,7 +645,9 @@ mod tests {
             assert!(
                 (ss.transition[(i + 1, i)] - 1.0).abs() < 1e-10,
                 "T[{}, {}] should be 1, got {}",
-                i + 1, i, ss.transition[(i + 1, i)]
+                i + 1,
+                i,
+                ss.transition[(i + 1, i)]
             );
         }
 
@@ -663,7 +659,8 @@ mod tests {
             assert!(
                 (ss.transition[(13 + i, 14 + i)] - 1.0).abs() < 1e-10,
                 "Superdiag T[{}, {}] should be 1",
-                13 + i, 14 + i
+                13 + i,
+                14 + i
             );
         }
     }
@@ -671,9 +668,7 @@ mod tests {
     #[test]
     fn test_sarima_111_111_12_design() {
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
-        let params = make_seasonal_params(
-            &[0.99], &[0.07], &[0.001], &[-1.07],
-        );
+        let params = make_seasonal_params(&[0.99], &[0.07], &[0.001], &[-1.07]);
         let endog = vec![0.0; 300];
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
 
@@ -697,8 +692,10 @@ mod tests {
     fn test_sarima_111_111_12_selection() {
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
         let params = make_seasonal_params(
-            &[0.9903479224371599], &[0.0659541127042639],
-            &[0.0007132203797734934], &[-1.0663518115052784],
+            &[0.9903479224371599],
+            &[0.0659541127042639],
+            &[0.0007132203797734934],
+            &[-1.0663518115052784],
         );
         let endog = vec![0.0; 300];
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();

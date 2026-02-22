@@ -14,7 +14,11 @@ def test_ar1_loglike(statsmodels_fixtures):
     params = np.array(case["params"])
     expected = case["loglike"]
 
-    ll = sarimax_rs.sarimax_loglike(y, (1, 0, 0), (0, 0, 0, 0), params)
+    # Fixtures were generated with enforce_stationarity=False, enforce_invertibility=False
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
     assert abs(ll - expected) < TOL, f"AR(1) loglike error: {abs(ll - expected):.2e}"
 
 
@@ -25,7 +29,10 @@ def test_arma11_loglike(statsmodels_fixtures):
     params = np.array(case["params"])
     expected = case["loglike"]
 
-    ll = sarimax_rs.sarimax_loglike(y, (1, 0, 1), (0, 0, 0, 0), params)
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 1), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
     assert abs(ll - expected) < TOL, f"ARMA(1,1) loglike error: {abs(ll - expected):.2e}"
 
 
@@ -36,7 +43,10 @@ def test_arima111_loglike(statsmodels_fixtures):
     params = np.array(case["params"])
     expected = case["loglike"]
 
-    ll = sarimax_rs.sarimax_loglike(y, (1, 1, 1), (0, 0, 0, 0), params)
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 1, 1), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
     assert abs(ll - expected) < TOL, f"ARIMA(1,1,1) loglike error: {abs(ll - expected):.2e}"
 
 
@@ -46,8 +56,13 @@ def test_concentrate_scale_default(statsmodels_fixtures):
     y = np.array(case["data"])
     params = np.array(case["params"])
 
-    ll_default = sarimax_rs.sarimax_loglike(y, (1, 0, 0), (0, 0, 0, 0), params)
+    ll_default = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
     ll_explicit = sarimax_rs.sarimax_loglike(
-        y, (1, 0, 0), (0, 0, 0, 0), params, concentrate_scale=True
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        concentrate_scale=True,
+        enforce_stationarity=False, enforce_invertibility=False,
     )
     assert ll_default == ll_explicit

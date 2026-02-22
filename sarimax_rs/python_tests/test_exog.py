@@ -167,7 +167,7 @@ class TestExogForecast:
 
         fcast = sarimax_rs.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
-            steps=steps, exog=exog, exog_forecast=future_exog,
+            steps=steps, exog=exog, future_exog=future_exog,
         )
         assert len(fcast["mean"]) == steps
         assert all(np.isfinite(fcast["mean"]))
@@ -188,13 +188,13 @@ class TestExogForecast:
         future_high = np.ones((steps, 1), dtype=np.float64) * 5.0
         fcast_high = sarimax_rs.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
-            steps=steps, exog=exog, exog_forecast=future_high,
+            steps=steps, exog=exog, future_exog=future_high,
         )
         # Low exog values
         future_low = np.ones((steps, 1), dtype=np.float64) * (-5.0)
         fcast_low = sarimax_rs.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
-            steps=steps, exog=exog, exog_forecast=future_low,
+            steps=steps, exog=exog, future_exog=future_low,
         )
         # Means should differ significantly if beta > 0
         diff = np.array(fcast_high["mean"]) - np.array(fcast_low["mean"])

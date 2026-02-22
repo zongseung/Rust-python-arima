@@ -16,10 +16,12 @@ use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
-use crate::polynomial::{polymul, make_ar_poly, make_ma_poly, make_seasonal_ar_poly, make_seasonal_ma_poly};
+use crate::params::SarimaxParams;
+use crate::polynomial::{
+    make_ar_poly, make_ma_poly, make_seasonal_ar_poly, make_seasonal_ma_poly, polymul,
+};
 use crate::state_space::StateSpace;
 use crate::types::{SarimaxConfig, Trend};
-use crate::params::SarimaxParams;
 
 // ---------------------------------------------------------------------------
 // System matrix derivatives
@@ -58,8 +60,7 @@ fn precompute_derivatives(
     let n_exog = config.n_exog;
     let n = endog_len;
 
-    let n_params = kt + n_exog + p + q + pp + qq
-        + if config.concentrate_scale { 0 } else { 1 };
+    let n_params = kt + n_exog + p + q + pp + qq + if config.concentrate_scale { 0 } else { 1 };
 
     let mut dt: Vec<Vec<(usize, usize, f64)>> = vec![vec![]; n_params];
     let mut drqr: Vec<Option<DMatrix<f64>>> = vec![None; n_params];
@@ -83,16 +84,24 @@ fn precompute_derivatives(
         let inject_idx = sd;
         match config.trend {
             Trend::Constant => {
-                for t in 0..n { c_deriv[t * k + inject_idx] = 1.0; }
+                for t in 0..n {
+                    c_deriv[t * k + inject_idx] = 1.0;
+                }
             }
             Trend::Linear => {
-                for t in 0..n { c_deriv[t * k + inject_idx] = t as f64; }
+                for t in 0..n {
+                    c_deriv[t * k + inject_idx] = t as f64;
+                }
             }
             Trend::Both => {
                 if ti == 0 {
-                    for t in 0..n { c_deriv[t * k + inject_idx] = 1.0; }
+                    for t in 0..n {
+                        c_deriv[t * k + inject_idx] = 1.0;
+                    }
                 } else {
-                    for t in 0..n { c_deriv[t * k + inject_idx] = t as f64; }
+                    for t in 0..n {
+                        c_deriv[t * k + inject_idx] = t as f64;
+                    }
                 }
             }
             Trend::None => {}
@@ -205,7 +214,13 @@ fn precompute_derivatives(
         drqr[param_idx] = Some(d_rqr);
     }
 
-    SystemDerivatives { n_params, dt, drqr, dd, dc }
+    SystemDerivatives {
+        n_params,
+        dt,
+        drqr,
+        dd,
+        dc,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +245,8 @@ pub fn score(
 
     if n <= burn {
         return Err(SarimaxError::DataError(format!(
-            "Not enough observations: n={} <= burn={}", n, burn
+            "Not enough observations: n={} <= burn={}",
+            n, burn
         )));
     }
     let n_eff = n - burn;
@@ -278,14 +294,18 @@ pub fn score(
     let mut temp2 = DMatrix::<f64>::zeros(k, k);
 
     // Score accumulators
-    let mut sum_v_dv = vec![0.0; np];       // Σ (v/F)·dv
-    let mut sum_v2f2_df = vec![0.0; np];    // Σ (v²/F²)·dF
-    let mut sum_inv_f_df = vec![0.0; np];   // Σ (1/F)·dF
-    let mut sum_v2_f = 0.0;                 // Σ v²/F  (for σ²)
+    let mut sum_v_dv = vec![0.0; np]; // Σ (v/F)·dv
+    let mut sum_v2f2_df = vec![0.0; np]; // Σ (v²/F²)·dF
+    let mut sum_inv_f_df = vec![0.0; np]; // Σ (1/F)·dF
+    let mut sum_v2_f = 0.0; // Σ v²/F  (for σ²)
 
     for t in 0..n {
         // ---- Step 1: Innovation (from predicted state) ----
-        let d_t = if t < ss.obs_intercept.len() { ss.obs_intercept[t] } else { 0.0 };
+        let d_t = if t < ss.obs_intercept.len() {
+            ss.obs_intercept[t]
+        } else {
+            0.0
+        };
         let v_t = endog[t] - sparse_z_dot(&sparse_z, a.as_slice()) - d_t;
         sparse_z_mvp(&sparse_z, &p, k, &mut pz);
         let f_t: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
@@ -293,14 +313,17 @@ pub fn score(
         if f_t <= 0.0 {
             if t >= burn {
                 return Err(SarimaxError::DataError(format!(
-                    "F_t <= 0 at t={} in score computation", t
+                    "F_t <= 0 at t={} in score computation",
+                    t
                 )));
             }
             // Burn-in with F<=0: skip update, just predict
             // Standard KF predict
             a_next.gemv(1.0, t_mat, &a, 0.0);
             if has_state_intercept {
-                for r in 0..k { a_next[r] += ss.state_intercept[t * k + r]; }
+                for r in 0..k {
+                    a_next[r] += ss.state_intercept[t * k + r];
+                }
             }
             temp_kk.gemm(1.0, t_mat, &p, 0.0);
             p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
@@ -310,17 +333,28 @@ pub fn score(
             for i in 0..np {
                 sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
                 da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
-                for r in 0..k { da_next_i[r] += dt_a[r]; }
+                for r in 0..k {
+                    da_next_i[r] += dt_a[r];
+                }
                 if !derivs.dc[i].is_empty() {
                     let base = t * k;
-                    for r in 0..k { da_next_i[r] += derivs.dc[i][base + r]; }
+                    for r in 0..k {
+                        da_next_i[r] += derivs.dc[i][base + r];
+                    }
                 }
                 da[i].copy_from(&da_next_i);
 
                 compute_dp_predict(
-                    &derivs.dt[i], &derivs.drqr[i],
-                    t_mat, &t_mat_t, &p, &dp[i],
-                    k, &mut dp_next_i, &mut temp_kk, &mut temp2,
+                    &derivs.dt[i],
+                    &derivs.drqr[i],
+                    t_mat,
+                    &t_mat_t,
+                    &p,
+                    &dp[i],
+                    k,
+                    &mut dp_next_i,
+                    &mut temp_kk,
+                    &mut temp2,
                 );
                 dp[i].copy_from(&dp_next_i);
             }
@@ -380,8 +414,8 @@ pub fn score(
                 for col in 0..k {
                     let col_off = col * k;
                     for row in 0..k {
-                        dp_data[col_off + row] +=
-                            coeff_dpz * (dpz_s[row] * pz_s[col] + pz_s[row] * dpz_s[col])
+                        dp_data[col_off + row] += coeff_dpz
+                            * (dpz_s[row] * pz_s[col] + pz_s[row] * dpz_s[col])
                             + coeff_df * pz_s[row] * pz_s[col];
                     }
                 }
@@ -393,18 +427,29 @@ pub fn score(
             // da_{t+1|t} = dT_i * a_{t|t} + T * da_{t|t} + dc_i
             sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
             da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
-            for r in 0..k { da_next_i[r] += dt_a[r]; }
+            for r in 0..k {
+                da_next_i[r] += dt_a[r];
+            }
             if !derivs.dc[i].is_empty() {
                 let base = t * k;
-                for r in 0..k { da_next_i[r] += derivs.dc[i][base + r]; }
+                for r in 0..k {
+                    da_next_i[r] += derivs.dc[i][base + r];
+                }
             }
             da[i].copy_from(&da_next_i);
 
             // dP_{t+1|t} = dT_i*P_{t|t}*T' + T*dP_{t|t}*T' + T*P_{t|t}*dT_i' + dRQR_i
             compute_dp_predict(
-                &derivs.dt[i], &derivs.drqr[i],
-                t_mat, &t_mat_t, &p, &dp[i],
-                k, &mut dp_next_i, &mut temp_kk, &mut temp2,
+                &derivs.dt[i],
+                &derivs.drqr[i],
+                t_mat,
+                &t_mat_t,
+                &p,
+                &dp[i],
+                k,
+                &mut dp_next_i,
+                &mut temp_kk,
+                &mut temp2,
             );
             dp[i].copy_from(&dp_next_i);
         }
@@ -412,7 +457,9 @@ pub fn score(
         // ---- Step 6: Standard KF predict ----
         a_next.gemv(1.0, t_mat, &a, 0.0);
         if has_state_intercept {
-            for r in 0..k { a_next[r] += ss.state_intercept[t * k + r]; }
+            for r in 0..k {
+                a_next[r] += ss.state_intercept[t * k + r];
+            }
         }
         temp_kk.gemm(1.0, t_mat, &p, 0.0);
         p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
@@ -426,7 +473,7 @@ pub fn score(
         let s = sum_v2_f / n_eff as f64;
         if s <= 0.0 {
             return Err(SarimaxError::DataError(
-                "concentrated σ² <= 0 in score computation".into()
+                "concentrated σ² <= 0 in score computation".into(),
             ));
         }
         s
@@ -437,9 +484,7 @@ pub fn score(
     // score_i = -(1/σ²)·Σ(v/F)·dv + (1/(2σ²))·Σ(v²/F²)·dF - (1/2)·Σ(1/F)·dF
     let result: Vec<f64> = (0..np)
         .map(|i| {
-            -sum_v_dv[i] / sigma2_hat
-            + 0.5 * sum_v2f2_df[i] / sigma2_hat
-            - 0.5 * sum_inv_f_df[i]
+            -sum_v_dv[i] / sigma2_hat + 0.5 * sum_v2f2_df[i] / sigma2_hat - 0.5 * sum_inv_f_df[i]
         })
         .collect();
 
@@ -459,7 +504,9 @@ fn sparse_z_dot(sparse_z: &[(usize, f64)], x: &[f64]) -> f64 {
 fn sparse_z_mvp(sparse_z: &[(usize, f64)], p: &DMatrix<f64>, k: usize, result: &mut DVector<f64>) {
     let p_data = p.as_slice();
     let res = result.as_mut_slice();
-    for v in res[..k].iter_mut() { *v = 0.0; }
+    for v in res[..k].iter_mut() {
+        *v = 0.0;
+    }
     for &(j, zv) in sparse_z {
         let col_start = j * k;
         for r in 0..k {
@@ -471,7 +518,9 @@ fn sparse_z_mvp(sparse_z: &[(usize, f64)], p: &DMatrix<f64>, k: usize, result: &
 #[inline]
 fn sparse_dt_vec(dt: &[(usize, usize, f64)], x: &[f64], k: usize, result: &mut DVector<f64>) {
     let res = result.as_mut_slice();
-    for v in res[..k].iter_mut() { *v = 0.0; }
+    for v in res[..k].iter_mut() {
+        *v = 0.0;
+    }
     for &(row, col, val) in dt {
         res[row] += val * x[col];
     }
@@ -582,12 +631,14 @@ mod tests {
             p_plus[i] = params_flat[i] + h;
             p_minus[i] = params_flat[i] - h;
             let g_h = (eval_loglike(endog, config, &p_plus, exog)
-                     - eval_loglike(endog, config, &p_minus, exog)) / (2.0 * h);
+                - eval_loglike(endog, config, &p_minus, exog))
+                / (2.0 * h);
 
             p_plus[i] = params_flat[i] + h2;
             p_minus[i] = params_flat[i] - h2;
             let g_h2 = (eval_loglike(endog, config, &p_plus, exog)
-                      - eval_loglike(endog, config, &p_minus, exog)) / (2.0 * h2);
+                - eval_loglike(endog, config, &p_minus, exog))
+                / (2.0 * h2);
 
             // Richardson extrapolation: (4*g_{h/2} - g_h) / 3 → O(h^4)
             grad[i] = (4.0 * g_h2 - g_h) / 3.0;
@@ -622,8 +673,13 @@ mod tests {
     }
 
     fn make_seasonal_config(
-        p: usize, d: usize, q: usize,
-        pp: usize, dd: usize, qq: usize, s: usize,
+        p: usize,
+        d: usize,
+        q: usize,
+        pp: usize,
+        dd: usize,
+        qq: usize,
+        s: usize,
     ) -> SarimaxConfig {
         SarimaxConfig {
             order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
@@ -638,8 +694,12 @@ mod tests {
     }
 
     fn assert_gradient_close(analytical: &[f64], numerical: &[f64], tol: f64, label: &str) {
-        assert_eq!(analytical.len(), numerical.len(),
-            "{}: gradient length mismatch", label);
+        assert_eq!(
+            analytical.len(),
+            numerical.len(),
+            "{}: gradient length mismatch",
+            label
+        );
         for (i, (&a, &n)) in analytical.iter().zip(numerical.iter()).enumerate() {
             let abs_err = (a - n).abs();
             let denom = n.abs().max(a.abs()).max(1.0);
@@ -657,7 +717,11 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let phi = 0.6527425084139002;
 
         let config = make_config(1, 0, 0);
@@ -678,9 +742,17 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arma11"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_config(1, 0, 1);
         let params_flat = params_vec[..2].to_vec();
@@ -700,9 +772,17 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["arima111"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_config(1, 1, 1);
         let params_flat = params_vec[..2].to_vec();
@@ -722,9 +802,17 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["sarima_100_100_4"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_seasonal_config(1, 0, 0, 1, 0, 0, 4);
         let params_flat = params_vec.clone();
@@ -746,7 +834,11 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["sarima_111_111_12"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
         // params: [ar, ma, sar, sma] — well within stationary/invertible region
@@ -769,9 +861,17 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["sarima_111_111_12"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let params_vec: Vec<f64> = case["params"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
         let params_flat = params_vec.clone();
@@ -784,7 +884,12 @@ mod tests {
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         // Wider tolerance: near-unit-root AR makes numerical gradient unreliable
-        assert_gradient_close(&analytical, &numerical, 0.06, "SARIMA(1,1,1)(1,1,1,12) fixture");
+        assert_gradient_close(
+            &analytical,
+            &numerical,
+            0.06,
+            "SARIMA(1,1,1)(1,1,1,12) fixture",
+        );
     }
 
     #[test]
@@ -792,7 +897,11 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
         let n = data.len();
 
         let exog_col: Vec<f64> = (0..n).map(|t| (t as f64) * 0.01).collect();
@@ -814,7 +923,8 @@ mod tests {
         let ss = StateSpace::new(&config, &sparams, &data, Some(&exog[..])).unwrap();
         let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, Some(&exog[..])).unwrap();
+        let analytical =
+            score(&data, &ss, &init, &config, &sparams, true, Some(&exog[..])).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, Some(&exog[..]));
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "SARIMAX with exog");
@@ -825,7 +935,11 @@ mod tests {
         let fixtures = load_fixtures();
         let case = &fixtures["ar1"];
         let data: Vec<f64> = case["data"]
-            .as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
 
         let config = SarimaxConfig {
             order: SarimaxOrder::new(1, 0, 0, 0, 0, 0, 0),

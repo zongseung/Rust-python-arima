@@ -154,7 +154,13 @@ pub fn batch_forecast(
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
-            let flat_params = &params_list[i];
+            let flat_params = params_list.get(i).ok_or_else(|| {
+                SarimaxError::InvalidInput(format!(
+                    "params_list index {} out of bounds (len={})",
+                    i,
+                    params_list.len()
+                ))
+            })?;
             let sparams = SarimaxParams::from_flat(flat_params, config)?;
             let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             let future_exog = future_exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
