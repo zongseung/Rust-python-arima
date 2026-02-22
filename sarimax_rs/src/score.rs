@@ -265,6 +265,22 @@ pub fn score(
     let t_mat_t = t_mat.transpose();
     let has_state_intercept = ss.state_intercept.len() == n * k;
 
+    // Sparse T for O(nnz×k) dp predict instead of O(k³) dense gemm.
+    // Same pattern as kalman.rs — SARIMA companion matrices are very sparse.
+    let sparse_t: Vec<(usize, usize, f64)> = {
+        let mut entries = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                let v = t_mat[(i, j)];
+                if v != 0.0 {
+                    entries.push((i, j, v));
+                }
+            }
+        }
+        entries
+    };
+    let use_sparse_t = sparse_t.len() < k * k / 2;
+
     let sparse_z: Vec<(usize, f64)> = (0..k)
         .filter_map(|i| if z[i] != 0.0 { Some((i, z[i])) } else { None })
         .collect();
@@ -299,6 +315,20 @@ pub fn score(
     let mut sum_inv_f_df = vec![0.0; np]; // Σ (1/F)·dF
     let mut sum_v2_f = 0.0; // Σ v²/F  (for σ²)
 
+    // Steady-state detection for tangent linear filter.
+    // Once pz = P*Z converges, dpz = dP*Z and dF = Z'*dP*Z also converge.
+    // After convergence we freeze dp, dpz_buf, df_buf and skip the expensive
+    // O(k²×np) dP update and O(k³×np) dP predict steps.
+    const SCORE_SS_TOL: f64 = 1e-9;
+    const SCORE_SS_MIN_STEPS: usize = 5;
+    const SCORE_SS_CONSEC: usize = 3;
+    let mut pz_prev = DVector::<f64>::zeros(k);
+    let mut ss_converged = false;
+    let mut ss_consec = 0_usize;
+    let mut f_inv_steady = 0.0;
+    // Cached steady-state Kalman gain: K_∞ = T * pz_∞ / F_∞
+    let mut k_gain = DVector::<f64>::zeros(k);
+
     for t in 0..n {
         // ---- Step 1: Innovation (from predicted state) ----
         let d_t = if t < ss.obs_intercept.len() {
@@ -307,6 +337,92 @@ pub fn score(
             0.0
         };
         let v_t = endog[t] - sparse_z_dot(&sparse_z, a.as_slice()) - d_t;
+
+        if ss_converged {
+            // ---- STEADY-STATE PATH: P, dP, dpz, dF are frozen ----
+            let f_inv = f_inv_steady;
+
+            // Tangent linear innovation: only dv changes (depends on da)
+            for i in 0..np {
+                let dd_i_t = if !derivs.dd[i].is_empty() && t < derivs.dd[i].len() {
+                    derivs.dd[i][t]
+                } else {
+                    0.0
+                };
+                dv_buf[i] = -dd_i_t - sparse_z_dot(&sparse_z, da[i].as_slice());
+
+                // dpz_buf[i] and df_buf[i] are frozen from convergence point
+                if t >= burn {
+                    sum_v_dv[i] += v_t * f_inv * dv_buf[i];
+                    sum_v2f2_df[i] += v_t * v_t * f_inv * f_inv * df_buf[i];
+                    sum_inv_f_df[i] += f_inv * df_buf[i];
+                }
+            }
+
+            if t >= burn {
+                sum_v2_f += v_t * v_t * f_inv;
+            }
+
+            // Standard KF update (steady-state): a_{t|t} = a + K_∞ * v_t / F
+            // Actually: a_{t|t} = a + (v/F)*pz
+            // Then predict: a_{t+1|t} = T * a_{t|t} + c
+            // Combined: a_{t+1|t} = T*a + T*(v/F)*pz + c = T*a + v*K_∞ + c
+            // where K_∞ = T*pz/F (precomputed)
+
+            // Tangent linear update + predict for da (combined, no dP update):
+            // da_{t|t}_i = da_i + (dv_i/F - v*dF_i/F²)*pz + (v/F)*dpz_i
+            // da_{t+1|t}_i = dT_i * a_{t|t} + T * da_{t|t}_i + dc_i
+            for i in 0..np {
+                let coeff1 = dv_buf[i] * f_inv - v_t * df_buf[i] * f_inv * f_inv;
+                let coeff2 = v_t * f_inv;
+                {
+                    let da_s = da[i].as_mut_slice();
+                    let pz_s = pz.as_slice();
+                    let dpz_s = dpz_buf[i].as_slice();
+                    for r in 0..k {
+                        da_s[r] += coeff1 * pz_s[r] + coeff2 * dpz_s[r];
+                    }
+                }
+
+                // Predict step for da
+                sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
+                // Add K_∞ * v contribution to state before computing dT*a
+                // Actually a_{t|t} = a + (v/F)*pz, so dT*a_{t|t} uses the updated a
+                // But we need a_{t|t} not a_{t+1|t} for dT:
+                // For now, use pre-update a + correction
+                {
+                    // dt_a already has dT*a (pre-update)
+                    // Need to add dT * (v/F)*pz
+                    for &(row, col, val) in &derivs.dt[i] {
+                        dt_a.as_mut_slice()[row] += val * v_t * f_inv * pz[col];
+                    }
+                }
+                da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
+                for r in 0..k {
+                    da_next_i[r] += dt_a[r];
+                }
+                if !derivs.dc[i].is_empty() {
+                    let base = t * k;
+                    for r in 0..k {
+                        da_next_i[r] += derivs.dc[i][base + r];
+                    }
+                }
+                da[i].copy_from(&da_next_i);
+            }
+
+            // Standard KF state predict: a_{t+1|t} = T*(a + (v/F)*pz) + c
+            a.axpy(v_t * f_inv, &pz, 1.0);
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
+                for r in 0..k {
+                    a_next[r] += ss.state_intercept[t * k + r];
+                }
+            }
+            std::mem::swap(&mut a, &mut a_next);
+            continue;
+        }
+
+        // ---- NON-STEADY-STATE PATH (full computation) ----
         sparse_z_mvp(&sparse_z, &p, k, &mut pz);
         let f_t: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
 
@@ -325,9 +441,27 @@ pub fn score(
                     a_next[r] += ss.state_intercept[t * k + r];
                 }
             }
-            temp_kk.gemm(1.0, t_mat, &p, 0.0);
-            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
-            p += &rqr;
+            if use_sparse_t {
+                let p_data = p.as_slice();
+                let tmp = temp_kk.as_mut_slice();
+                for v in tmp.iter_mut() { *v = 0.0; }
+                for &(i, l, val) in &sparse_t {
+                    for j in 0..k { tmp[i + j * k] += val * p_data[l + j * k]; }
+                }
+                let tmp_data = temp_kk.as_slice();
+                let p_out = p.as_mut_slice();
+                let rqr_data = rqr.as_slice();
+                p_out.copy_from_slice(rqr_data);
+                for &(j, l, val) in &sparse_t {
+                    let col_l = l * k;
+                    let col_j = j * k;
+                    for i in 0..k { p_out[col_j + i] += val * tmp_data[col_l + i]; }
+                }
+            } else {
+                temp_kk.gemm(1.0, t_mat, &p, 0.0);
+                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+                p += &rqr;
+            }
 
             // Tangent linear predict (no update since F<=0)
             for i in 0..np {
@@ -349,6 +483,8 @@ pub fn score(
                     &derivs.drqr[i],
                     t_mat,
                     &t_mat_t,
+                    &sparse_t,
+                    use_sparse_t,
                     &p,
                     &dp[i],
                     k,
@@ -444,6 +580,8 @@ pub fn score(
                 &derivs.drqr[i],
                 t_mat,
                 &t_mat_t,
+                &sparse_t,
+                use_sparse_t,
                 &p,
                 &dp[i],
                 k,
@@ -461,9 +599,62 @@ pub fn score(
                 a_next[r] += ss.state_intercept[t * k + r];
             }
         }
-        temp_kk.gemm(1.0, t_mat, &p, 0.0);
-        p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
-        p += &rqr;
+        if use_sparse_t {
+            let p_data = p.as_slice();
+            let tmp = temp_kk.as_mut_slice();
+            for v in tmp.iter_mut() { *v = 0.0; }
+            for &(i, l, val) in &sparse_t {
+                for j in 0..k { tmp[i + j * k] += val * p_data[l + j * k]; }
+            }
+            let tmp_data = temp_kk.as_slice();
+            let p_out = p.as_mut_slice();
+            let rqr_data = rqr.as_slice();
+            p_out.copy_from_slice(rqr_data);
+            for &(j, l, val) in &sparse_t {
+                let col_l = l * k;
+                let col_j = j * k;
+                for i in 0..k { p_out[col_j + i] += val * tmp_data[col_l + i]; }
+            }
+        } else {
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+        }
+
+        // ---- Step 7: Steady-state convergence check (pz-vector based) ----
+        // Same criterion as kalman.rs: check if pz = P*Z has converged.
+        // Once pz converges, P has converged, so dP also converges.
+        if t >= burn + SCORE_SS_MIN_STEPS {
+            // Recompute pz from the PREDICTED P (just updated above)
+            sparse_z_mvp(&sparse_z, &p, k, &mut pz);
+            let pz_diff_sq: f64 = pz
+                .iter()
+                .zip(pz_prev.iter())
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+            let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+            if pz_diff_sq.sqrt() / pz_norm < SCORE_SS_TOL {
+                ss_consec += 1;
+                if ss_consec >= SCORE_SS_CONSEC {
+                    ss_converged = true;
+                    let f_steady: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
+                    f_inv_steady = 1.0 / f_steady;
+                    // Cache K_∞ = T * pz / F
+                    k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
+                    // dpz_buf and df_buf are already at their steady-state values
+                    // from the last non-steady iteration
+                }
+            } else {
+                ss_consec = 0;
+            }
+            pz_prev.copy_from(&pz);
+        } else if t >= burn {
+            // Before min_steps, just track pz for comparison
+            sparse_z_mvp(&sparse_z, &p, k, &mut pz);
+            pz_prev.copy_from(&pz);
+        }
 
         std::mem::swap(&mut a, &mut a_next);
     }
@@ -529,12 +720,16 @@ fn sparse_dt_vec(dt: &[(usize, usize, f64)], x: &[f64], k: usize, result: &mut D
 /// Compute dP prediction step:
 ///   dP_next = dT*P*T' + T*dP*T' + T*P*dT' + dRQR
 ///
+/// When `use_sparse_t` is true, uses sparse T representation (O(nnz×k) per term)
+/// instead of dense gemm (O(k³)), matching the kalman.rs sparse predict pattern.
 /// `p_upd` and `dp_upd` must be the UPDATED (post-observation) values.
 fn compute_dp_predict(
     dt_sparse: &[(usize, usize, f64)],
     drqr: &Option<DMatrix<f64>>,
     t_mat: &DMatrix<f64>,
     t_mat_t: &DMatrix<f64>,
+    sparse_t: &[(usize, usize, f64)],
+    use_sparse_t: bool,
     p_upd: &DMatrix<f64>,
     dp_upd: &DMatrix<f64>,
     k: usize,
@@ -550,8 +745,34 @@ fn compute_dp_predict(
     }
 
     // Term: T * dP * T'
-    temp.gemm(1.0, t_mat, dp_upd, 0.0);
-    result.gemm(1.0, temp, t_mat_t, 1.0);
+    if use_sparse_t {
+        // Sparse path: O(nnz×k) per step — same as kalman.rs
+        // Step 1: temp = sparse_T * dP  — O(nnz × k)
+        let dp_data = dp_upd.as_slice();
+        let tmp = temp.as_mut_slice();
+        for v in tmp.iter_mut() {
+            *v = 0.0;
+        }
+        for &(i, l, val) in sparse_t {
+            for j in 0..k {
+                tmp[i + j * k] += val * dp_data[l + j * k];
+            }
+        }
+        // Step 2: result += temp * T'  — O(nnz × k)
+        let tmp_data = temp.as_slice();
+        let res = result.as_mut_slice();
+        for &(j, l, val) in sparse_t {
+            let col_l = l * k;
+            let col_j = j * k;
+            for i in 0..k {
+                res[col_j + i] += val * tmp_data[col_l + i];
+            }
+        }
+    } else {
+        // Dense path: O(k³) — used when T is not sparse enough
+        temp.gemm(1.0, t_mat, dp_upd, 0.0);
+        result.gemm(1.0, temp, t_mat_t, 1.0);
+    }
 
     if dt_sparse.is_empty() {
         return;
@@ -563,20 +784,44 @@ fn compute_dp_predict(
     let p_data = p_upd.as_slice();
     let tmp2 = temp2.as_mut_slice();
     for &(i, l, val) in dt_sparse {
-        // temp2[i, j] += val * P[l, j]
-        // column-major: P[l,j] = p_data[l + j*k]
         for j in 0..k {
             tmp2[i + j * k] += val * p_data[l + j * k];
         }
     }
-    // result += temp2 * T'
-    result.gemm(1.0, temp2, t_mat_t, 1.0);
+
+    if use_sparse_t {
+        // result += temp2 * T' (sparse)
+        let tmp2_data = temp2.as_slice();
+        let res = result.as_mut_slice();
+        for &(j, l, val) in sparse_t {
+            let col_l = l * k;
+            let col_j = j * k;
+            for i in 0..k {
+                res[col_j + i] += val * tmp2_data[col_l + i];
+            }
+        }
+    } else {
+        result.gemm(1.0, temp2, t_mat_t, 1.0);
+    }
 
     // Term: T * P * dT'
-    // Compute temp = T * P
-    temp.gemm(1.0, t_mat, p_upd, 0.0);
+    if use_sparse_t {
+        // Compute temp = sparse_T * P  — O(nnz × k)
+        let p_data2 = p_upd.as_slice();
+        let tmp = temp.as_mut_slice();
+        for v in tmp.iter_mut() {
+            *v = 0.0;
+        }
+        for &(i, l, val) in sparse_t {
+            for j in 0..k {
+                tmp[i + j * k] += val * p_data2[l + j * k];
+            }
+        }
+    } else {
+        // Compute temp = T * P  — O(k³)
+        temp.gemm(1.0, t_mat, p_upd, 0.0);
+    }
     // result += temp * dT'
-    // dT'[l, i] = dT[i, l], so result[:, i] += val * temp[:, l]
     let tmp_data = temp.as_slice();
     let res = result.as_mut_slice();
     for &(i, l, val) in dt_sparse {
