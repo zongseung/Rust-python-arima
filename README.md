@@ -91,7 +91,18 @@ from sarimax_py import SARIMAXModel
 model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0))
 result = model.fit()
 
+# Summary with parameter table (fast, no inference)
 print(result.summary())
+
+# Summary with inference statistics (std err, z, p-value, CI)
+print(result.summary(include_inference=True))
+
+# Machine-readable parameter summary
+ps = result.parameter_summary(alpha=0.05)
+print(ps["name"])       # ['ar.L1', 'ma.L1']
+print(ps["std_err"])    # numerical Hessian-based standard errors
+print(ps["p_value"])    # two-sided p-values
+
 print(f"AIC: {result.aic:.2f}, BIC: {result.bic:.2f}")
 
 # Forecast with confidence intervals
@@ -518,6 +529,7 @@ result = model.fit(method="lbfgsb", maxiter=500)
 
 # Attributes
 result.params          # np.ndarray — estimated parameters
+result.param_names     # list[str] — parameter names (e.g., ['ar.L1', 'ma.L1'])
 result.llf             # float — log-likelihood
 result.aic             # float — AIC
 result.bic             # float — BIC
@@ -531,8 +543,35 @@ result.resid           # np.ndarray — standardized residuals (lazy)
 result.forecast(steps=10, alpha=0.05)     # → ForecastResult
 result.forecast(steps=10, exog=X_future)  # with future exog
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels compat)
-result.summary()                          # → str (model summary)
+result.summary()                          # → str (basic parameter table)
+result.summary(include_inference=True)    # → str (with std err / z / p / CI)
+
+# Parameter summary (machine-readable dict)
+ps = result.parameter_summary(alpha=0.05, include_inference=True)
+# Returns: dict with keys:
+#   name: list[str]         — parameter names
+#   coef: np.ndarray        — coefficient estimates
+#   std_err: np.ndarray     — numerical Hessian-based standard errors
+#   z: np.ndarray           — z-statistics (coef / std_err)
+#   p_value: np.ndarray     — two-sided p-values
+#   ci_lower: np.ndarray    — lower CI bound
+#   ci_upper: np.ndarray    — upper CI bound
+#   inference_status: str   — "ok" | "skipped" | "failed" | "partial"
+#   inference_message: str  — diagnostic message (if status != "ok")
 ```
+
+**Parameter naming convention** (matches statsmodels):
+
+| Component | Names |
+|-----------|-------|
+| Exogenous | `x1`, `x2`, ..., `xk` |
+| AR | `ar.L1`, `ar.L2`, ..., `ar.Lp` |
+| MA | `ma.L1`, `ma.L2`, ..., `ma.Lq` |
+| Seasonal AR | `ar.S.L{s}`, `ar.S.L{2s}`, ..., `ar.S.L{Ps}` |
+| Seasonal MA | `ma.S.L{s}`, `ma.S.L{2s}`, ..., `ma.S.L{Qs}` |
+| Variance | `sigma2` (only when `concentrate_scale=False`) |
+
+**Inference statistics** are computed via numerical Hessian (central differences) of the concentrated log-likelihood. The observed information matrix `I = -H` is inverted to obtain the variance-covariance matrix. If inversion fails, `pinv()` is used as fallback; if that also fails, values are `NaN` with `inference_status="failed"`.
 
 #### `ForecastResult`
 

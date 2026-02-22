@@ -202,6 +202,7 @@ result = model.fit()
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `params` | `np.ndarray` | Estimated parameters |
+| `param_names` | `list[str]` | Parameter names matching params vector (e.g. `["ar.L1", "ma.L1"]`) |
 | `llf` | `float` | Log-likelihood |
 | `aic` | `float` | AIC |
 | `bic` | `float` | BIC |
@@ -212,9 +213,85 @@ result = model.fit()
 | `resid` | `np.ndarray` | Standardized residuals (lazy-loaded) |
 
 **Methods:**
-- `forecast(steps=1, alpha=0.05)` → `ForecastResult`
-- `get_forecast(steps=1, alpha=0.05)` → `ForecastResult` (alias)
-- `summary()` → `str`
+
+#### `parameter_summary(alpha=0.05, inference=None, include_inference=None)`
+
+Return parameter summary as a machine-readable dict.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `alpha` | `float` | `0.05` | Significance level for CI, must be in `(0, 1)` |
+| `inference` | `str` or `None` | `None` | Inference mode (see below) |
+| `include_inference` | `bool` or `None` | `None` | **Deprecated.** Use `inference` instead |
+
+**Inference modes:**
+
+| Mode | Description | Cost |
+|------|-------------|------|
+| `"none"` | Coefficients only (default) | Fastest |
+| `"hessian"` | Numerical Hessian-based std err / z / CI | O(k²) loglike evals |
+| `"statsmodels"` | Fit statsmodels internally, borrow its inference | Requires statsmodels |
+| `"both"` | Hessian + statsmodels with delta comparison columns | Both costs combined |
+
+**Return dict keys by mode:**
+
+- All modes: `name`, `coef`, `inference_status`, `inference_message`
+- `"none"`: `std_err`, `z`, `p_value`, `ci_lower`, `ci_upper` (all `NaN`)
+- `"hessian"` / `"statsmodels"`: `std_err`, `z`, `p_value`, `ci_lower`, `ci_upper`
+- `"both"`: all of the above plus `hessian_std_err`, `hessian_z`, `hessian_p_value`, `hessian_ci_lower`, `hessian_ci_upper`, `sm_std_err`, `sm_z`, `sm_p_value`, `sm_ci_lower`, `sm_ci_upper`, `delta_std_err`, `delta_ci_lower`, `delta_ci_upper`, `inference_status_hessian`, `inference_status_sm`
+
+**Backward compatibility:** `include_inference=True` maps to `inference="hessian"`, `include_inference=False` maps to `inference="none"`. Using `include_inference` emits a `DeprecationWarning`.
+
+```python
+result = model.fit()
+
+# Quick: no inference
+ps = result.parameter_summary(inference="none")
+
+# Hessian-based inference
+ps = result.parameter_summary(inference="hessian")
+
+# statsmodels-based inference
+ps = result.parameter_summary(inference="statsmodels")
+
+# Compare both sources
+ps = result.parameter_summary(inference="both")
+print(ps["delta_std_err"])  # hessian - statsmodels difference
+```
+
+#### `summary(alpha=0.05, inference=None, include_inference=None)`
+
+Return a human-readable summary string. Same parameter semantics as `parameter_summary()`.
+
+```python
+# Default: coefficients only
+print(result.summary())
+
+# With inference statistics
+print(result.summary(inference="hessian"))
+
+# Dual-column comparison
+print(result.summary(inference="both"))
+```
+
+#### `forecast(steps=1, alpha=0.05, exog=None)` → `ForecastResult`
+
+#### `get_forecast(steps=1, alpha=0.05, exog=None)` → `ForecastResult` (alias)
+
+---
+
+### Parameter Naming Convention
+
+Parameter names follow statsmodels convention:
+
+| Component | Pattern | Example |
+|-----------|---------|---------|
+| Exogenous | `x1`, `x2`, ... | `x1` |
+| AR | `ar.L1`, `ar.L2`, ... | `ar.L1` |
+| MA | `ma.L1`, `ma.L2`, ... | `ma.L1` |
+| Seasonal AR | `ar.S.L{s}`, `ar.S.L{2s}`, ... | `ar.S.L12` |
+| Seasonal MA | `ma.S.L{s}`, `ma.S.L{2s}`, ... | `ma.S.L12` |
+| Variance | `sigma2` (only when `concentrate_scale=False`) | `sigma2` |
 
 ---
 

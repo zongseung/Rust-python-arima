@@ -10,6 +10,8 @@ use argmin::solver::linesearch::MoreThuenteLineSearch;
 use argmin::solver::neldermead::NelderMead;
 use argmin::solver::quasinewton::LBFGS;
 
+use std::cell::RefCell;
+
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::kalman_loglike;
@@ -170,12 +172,35 @@ pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Result
 // Objective function for argmin
 // ---------------------------------------------------------------------------
 
+/// Cached fused evaluation result (cost + gradient at same params).
+///
+/// Used by L-BFGS path to avoid redundant StateSpace construction when
+/// argmin calls `cost()` and `gradient()` at the same parameter point.
+struct CachedEval {
+    params: Vec<f64>,
+    cost: f64,
+    gradient: Vec<f64>,
+}
+
 /// Negative log-likelihood objective for optimizer.
-#[derive(Clone)]
 struct SarimaxObjective {
     endog: Vec<f64>,
     config: SarimaxConfig,
     exog: Option<Vec<Vec<f64>>>,
+    /// Single-entry cache: stores the last fused (cost, gradient) evaluation.
+    /// Populated by `gradient()`, consumed by `cost()` at the same params.
+    cache: RefCell<Option<CachedEval>>,
+}
+
+impl Clone for SarimaxObjective {
+    fn clone(&self) -> Self {
+        SarimaxObjective {
+            endog: self.endog.clone(),
+            config: self.config.clone(),
+            exog: self.exog.clone(),
+            cache: RefCell::new(None), // cloned objectives start with empty cache
+        }
+    }
 }
 
 impl SarimaxObjective {
@@ -333,6 +358,13 @@ impl CostFunction for SarimaxObjective {
     type Output = f64;
 
     fn cost(&self, param: &Vec<f64>) -> std::result::Result<f64, argmin::core::Error> {
+        // Check cache (populated by gradient() via fused eval)
+        if let Some(ref cached) = *self.cache.borrow() {
+            if cached.params == *param {
+                return Ok(cached.cost);
+            }
+        }
+
         match self.eval_loglike(param) {
             Ok(ll) => Ok(-ll),            // minimize negative log-likelihood
             Err(_) => Ok(f64::MAX / 2.0), // penalty for invalid parameters
@@ -345,7 +377,27 @@ impl Gradient for SarimaxObjective {
     type Gradient = Vec<f64>;
 
     fn gradient(&self, param: &Vec<f64>) -> std::result::Result<Vec<f64>, argmin::core::Error> {
-        // Try analytical gradient first (1 KF pass + tangent linear)
+        // Check cache (populated by a previous fused eval at same params)
+        if let Some(ref cached) = *self.cache.borrow() {
+            if cached.params == *param {
+                return Ok(cached.gradient.clone());
+            }
+        }
+
+        // Try fused eval: builds StateSpace once for both cost and gradient.
+        // Cache the result so a subsequent cost() call at the same params is free.
+        if let Ok((negll, grad)) = self.eval_negloglike_with_gradient(param) {
+            if negll.is_finite() && grad.iter().all(|g| g.is_finite()) {
+                *self.cache.borrow_mut() = Some(CachedEval {
+                    params: param.clone(),
+                    cost: negll,
+                    gradient: grad.clone(),
+                });
+                return Ok(grad);
+            }
+        }
+
+        // Fallback: analytical gradient only (no fused eval)
         if let Ok(grad) = self.analytical_gradient_negloglike(param) {
             if grad.iter().all(|g| g.is_finite()) {
                 return Ok(grad);
@@ -770,6 +822,7 @@ pub fn fit(
         endog: endog.to_vec(),
         config: config.clone(),
         exog: exog.map(|e| e.to_vec()),
+        cache: RefCell::new(None),
     };
 
     // Determine number of restarts based on model complexity
@@ -1169,6 +1222,7 @@ mod tests {
             endog: data,
             config,
             exog: None,
+            cache: RefCell::new(None),
         };
 
         let cost = obj.cost(&vec![0.5]).unwrap();
@@ -1191,6 +1245,7 @@ mod tests {
             endog: data,
             config,
             exog: None,
+            cache: RefCell::new(None),
         };
 
         let grad = obj.gradient(&vec![0.5]).unwrap();

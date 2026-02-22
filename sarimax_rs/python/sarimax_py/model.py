@@ -165,6 +165,120 @@ def _compute_numerical_hessian(loglike_fn, params):
     return H
 
 
+def _resolve_inference_mode(inference=None, include_inference=None):
+    """Resolve inference mode from new enum or legacy bool parameter.
+
+    Parameters
+    ----------
+    inference : str or None
+        New enum: "none", "hessian", "statsmodels", "both".
+    include_inference : bool or None
+        Legacy parameter (deprecated).
+
+    Returns
+    -------
+    str : resolved mode ("none", "hessian", "statsmodels", "both")
+    """
+    if inference is not None and include_inference is not None:
+        import warnings
+        warnings.warn(
+            "Both 'inference' and 'include_inference' specified; "
+            "'inference' takes precedence.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return inference
+
+    if inference is not None:
+        valid = ("none", "hessian", "statsmodels", "both")
+        if inference not in valid:
+            raise ValueError(
+                f"inference must be one of {valid}, got {inference!r}"
+            )
+        return inference
+
+    if include_inference is not None:
+        import warnings
+        warnings.warn(
+            "include_inference is deprecated; use inference='hessian' or "
+            "inference='none' instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return "hessian" if include_inference else "none"
+
+    # Default
+    return "none"
+
+
+def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
+                                   exog=None, n_params_rs=None):
+    """Compute inference statistics using statsmodels as reference.
+
+    Parameters
+    ----------
+    endog : np.ndarray
+    order : tuple (p, d, q)
+    seasonal_order : tuple (P, D, Q, s)
+    alpha : float
+    exog : np.ndarray or None
+    n_params_rs : int or None
+        Number of non-sigma2 params in sarimax_rs (for alignment).
+
+    Returns
+    -------
+    dict with sm_ prefixed keys, or failed dict on error.
+    """
+    try:
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+    except ImportError:
+        k = n_params_rs or 0
+        nan_arr = np.full(k, np.nan)
+        return dict(
+            sm_std_err=nan_arr.copy(),
+            sm_z=nan_arr.copy(),
+            sm_p_value=nan_arr.copy(),
+            sm_ci_lower=nan_arr.copy(),
+            sm_ci_upper=nan_arr.copy(),
+            inference_status_sm="failed",
+            inference_message_sm="statsmodels not installed",
+        )
+
+    try:
+        model_sm = SARIMAX(
+            endog, order=order, seasonal_order=seasonal_order,
+            exog=exog,
+            enforce_stationarity=True, enforce_invertibility=True,
+        )
+        res_sm = model_sm.fit(disp=False)
+
+        # statsmodels includes sigma2 as last param; align to sarimax_rs count
+        k = n_params_rs if n_params_rs is not None else len(res_sm.params) - 1
+        ci = res_sm.conf_int(alpha=alpha)
+
+        return dict(
+            sm_std_err=np.array(res_sm.bse[:k]),
+            sm_z=np.array(res_sm.zvalues[:k]),
+            sm_p_value=np.array(res_sm.pvalues[:k]),
+            sm_ci_lower=np.array(ci[:k, 0]),
+            sm_ci_upper=np.array(ci[:k, 1]),
+            inference_status_sm="ok",
+            inference_message_sm=None,
+        )
+    except Exception as e:
+        k = n_params_rs or 0
+        nan_arr = np.full(k, np.nan)
+        return dict(
+            sm_std_err=nan_arr.copy(),
+            sm_z=nan_arr.copy(),
+            sm_p_value=nan_arr.copy(),
+            sm_ci_lower=nan_arr.copy(),
+            sm_ci_upper=nan_arr.copy(),
+            inference_status_sm="failed",
+            inference_message_sm=str(e),
+        )
+
+
 def _compute_inference(loglike_fn, params, alpha=0.05):
     """Compute inference statistics from numerical Hessian.
 
@@ -400,51 +514,165 @@ class SARIMAXResult:
         except Exception:
             return np.nan
 
-    def parameter_summary(self, alpha=0.05, include_inference=True):
+    def parameter_summary(self, alpha=0.05, include_inference=None, inference=None):
         """Return parameter summary as a machine-readable dict.
 
         Parameters
         ----------
         alpha : float
-            Significance level for confidence intervals.
-        include_inference : bool
-            If True, compute numerical Hessian-based inference statistics.
+            Significance level for confidence intervals (0 < alpha < 1).
+        include_inference : bool, optional
+            **Deprecated.** Use ``inference`` instead.
+            ``True`` maps to ``inference="hessian"``,
+            ``False`` maps to ``inference="none"``.
+        inference : str, optional
+            Inference mode. One of:
+
+            - ``"none"``  — coefficients only (fastest).
+            - ``"hessian"``  — numerical Hessian-based std err / z / CI.
+            - ``"statsmodels"``  — fit statsmodels SARIMAX internally and
+              borrow its inference statistics.
+            - ``"both"``  — compute both hessian and statsmodels, include
+              delta columns for comparison.
+
+            Default is ``"none"`` when neither parameter is given, or
+            ``"hessian"`` when legacy ``include_inference=True`` is used.
 
         Returns
         -------
-        dict with keys:
-            name, coef, std_err, z, p_value, ci_lower, ci_upper,
-            inference_status, inference_message
+        dict
+            Always contains ``name`` and ``coef``.
+            Additional keys depend on the inference mode.
         """
+        mode = _resolve_inference_mode(inference, include_inference)
+
+        if not (0.0 < alpha < 1.0):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+
         names = self.param_names
         k = len(self.params)
+        nan_arr = lambda: np.full(k, np.nan)  # noqa: E731
 
         result = dict(
             name=names,
             coef=self.params.copy(),
         )
 
-        if not include_inference:
+        if mode == "none":
             result.update(
-                std_err=np.full(k, np.nan),
-                z=np.full(k, np.nan),
-                p_value=np.full(k, np.nan),
-                ci_lower=np.full(k, np.nan),
-                ci_upper=np.full(k, np.nan),
-                inference_status="skipped",
-                inference_message=None,
+                std_err=nan_arr(), z=nan_arr(), p_value=nan_arr(),
+                ci_lower=nan_arr(), ci_upper=nan_arr(),
+                inference_status="skipped", inference_message=None,
             )
             return result
 
-        # Check cache
-        cache_key = alpha
-        if cache_key not in self._inference_cache:
-            self._inference_cache[cache_key] = _compute_inference(
+        if mode == "hessian":
+            cache_key = ("hessian", alpha)
+            if cache_key not in self._inference_cache:
+                self._inference_cache[cache_key] = _compute_inference(
+                    self._loglike_fn, self.params, alpha=alpha,
+                )
+            result.update(self._inference_cache[cache_key])
+            return result
+
+        if mode == "statsmodels":
+            cache_key = ("statsmodels", alpha)
+            if cache_key not in self._inference_cache:
+                self._inference_cache[cache_key] = _compute_statsmodels_inference(
+                    self.model.endog,
+                    self.model.order,
+                    self.model.seasonal_order,
+                    alpha=alpha,
+                    exog=self.model.exog,
+                    n_params_rs=k,
+                )
+            sm = self._inference_cache[cache_key]
+            result.update(
+                std_err=sm["sm_std_err"],
+                z=sm["sm_z"],
+                p_value=sm["sm_p_value"],
+                ci_lower=sm["sm_ci_lower"],
+                ci_upper=sm["sm_ci_upper"],
+                inference_status=sm["inference_status_sm"],
+                inference_message=sm["inference_message_sm"],
+            )
+            return result
+
+        # mode == "both"
+        # Hessian
+        hess_key = ("hessian", alpha)
+        if hess_key not in self._inference_cache:
+            self._inference_cache[hess_key] = _compute_inference(
                 self._loglike_fn, self.params, alpha=alpha,
             )
-        inf = self._inference_cache[cache_key]
+        hess = self._inference_cache[hess_key]
 
-        result.update(inf)
+        # statsmodels
+        sm_key = ("statsmodels", alpha)
+        if sm_key not in self._inference_cache:
+            self._inference_cache[sm_key] = _compute_statsmodels_inference(
+                self.model.endog,
+                self.model.order,
+                self.model.seasonal_order,
+                alpha=alpha,
+                exog=self.model.exog,
+                n_params_rs=k,
+            )
+        sm = self._inference_cache[sm_key]
+
+        # Legacy keys from hessian (default view)
+        result.update(
+            std_err=hess["std_err"],
+            z=hess["z"],
+            p_value=hess["p_value"],
+            ci_lower=hess["ci_lower"],
+            ci_upper=hess["ci_upper"],
+        )
+
+        # Prefixed hessian keys
+        result.update(
+            hessian_std_err=hess["std_err"],
+            hessian_z=hess["z"],
+            hessian_p_value=hess["p_value"],
+            hessian_ci_lower=hess["ci_lower"],
+            hessian_ci_upper=hess["ci_upper"],
+            inference_status_hessian=hess["inference_status"],
+        )
+
+        # statsmodels keys
+        result.update(
+            sm_std_err=sm["sm_std_err"],
+            sm_z=sm["sm_z"],
+            sm_p_value=sm["sm_p_value"],
+            sm_ci_lower=sm["sm_ci_lower"],
+            sm_ci_upper=sm["sm_ci_upper"],
+            inference_status_sm=sm["inference_status_sm"],
+        )
+
+        # Delta columns (hessian - statsmodels)
+        result.update(
+            delta_std_err=hess["std_err"] - sm["sm_std_err"],
+            delta_ci_lower=hess["ci_lower"] - sm["sm_ci_lower"],
+            delta_ci_upper=hess["ci_upper"] - sm["sm_ci_upper"],
+        )
+
+        # Combined status
+        h_ok = hess["inference_status"] in ("ok", "partial")
+        s_ok = sm["inference_status_sm"] == "ok"
+        if h_ok and s_ok:
+            result["inference_status"] = "ok"
+        elif h_ok or s_ok:
+            result["inference_status"] = "partial"
+        else:
+            result["inference_status"] = "failed"
+
+        msgs = []
+        if hess.get("inference_message"):
+            msgs.append(f"hessian: {hess['inference_message']}")
+        if sm.get("inference_message_sm"):
+            msgs.append(f"statsmodels: {sm['inference_message_sm']}")
+        result["inference_message"] = "; ".join(msgs) if msgs else None
+
         return result
 
     def forecast(self, steps=1, alpha=0.05, exog=None):
@@ -500,17 +728,24 @@ class SARIMAXResult:
             self._resid = np.array(result["standardized_residuals"])
         return self._resid
 
-    def summary(self, alpha=0.05, include_inference=False):
+    def summary(self, alpha=0.05, include_inference=None, inference=None):
         """Return a summary string of the model fit.
 
         Parameters
         ----------
         alpha : float
-            Significance level for inference CI (if include_inference=True).
-        include_inference : bool
-            If True, compute and display std err / z / p-value / CI columns.
+            Significance level for inference CI.
+        include_inference : bool, optional
+            **Deprecated.** Use ``inference`` instead.
+        inference : str, optional
+            Inference mode: ``"none"`` | ``"hessian"`` | ``"statsmodels"``
+            | ``"both"``.  Default ``"none"``.
         """
-        ps = self.parameter_summary(alpha=alpha, include_inference=include_inference)
+        ps = self.parameter_summary(
+            alpha=alpha, include_inference=include_inference, inference=inference,
+        )
+
+        mode = _resolve_inference_mode(inference, include_inference)
 
         lines = [
             "SARIMAX Results",
@@ -526,12 +761,37 @@ class SARIMAXResult:
             "=" * 78,
         ]
 
-        # Parameter table
         names = ps["name"]
         coefs = ps["coef"]
-        has_inf = include_inference and ps["inference_status"] != "skipped"
+        has_inf = mode != "none" and ps["inference_status"] != "skipped"
 
-        if has_inf:
+        if has_inf and mode == "both":
+            # Dual-column view: hessian + statsmodels + delta
+            header = (
+                f"{'':>16s} {'coef':>10s} "
+                f"{'hess_se':>9s} {'sm_se':>9s} {'d_se':>9s} "
+                f"{'hess_z':>8s} {'sm_z':>8s} "
+                f"{'P>|z|':>8s}"
+            )
+            lines.append(header)
+            lines.append("-" * 90)
+            hse = ps.get("hessian_std_err", np.full(len(names), np.nan))
+            sse = ps.get("sm_std_err", np.full(len(names), np.nan))
+            dse = ps.get("delta_std_err", np.full(len(names), np.nan))
+            hz = ps.get("hessian_z", np.full(len(names), np.nan))
+            sz = ps.get("sm_z", np.full(len(names), np.nan))
+            pval = ps.get("p_value", np.full(len(names), np.nan))
+            for i, name in enumerate(names):
+                def _f(v, fmt=".4f"):
+                    return f"{v:{fmt}}" if np.isfinite(v) else "NaN"
+                lines.append(
+                    f"{name:>16s} {coefs[i]:>10.4f} "
+                    f"{_f(hse[i]):>9s} {_f(sse[i]):>9s} {_f(dse[i]):>9s} "
+                    f"{_f(hz[i], '.3f'):>8s} {_f(sz[i], '.3f'):>8s} "
+                    f"{_f(pval[i], '.3f'):>8s}"
+                )
+        elif has_inf:
+            # Single inference source (hessian or statsmodels)
             std_err = ps["std_err"]
             z = ps["z"]
             pval = ps["p_value"]
@@ -560,8 +820,10 @@ class SARIMAXResult:
         lines.append("-" * 78)
         lines.append(f"  Scale (sigma2): {self.scale:.6f}")
 
-        if has_inf and ps["inference_message"]:
+        if has_inf and ps.get("inference_message"):
             lines.append(f"  Note: {ps['inference_message']}")
+        if mode != "none":
+            lines.append(f"  Inference:       {mode}")
 
         return "\n".join(lines)
 

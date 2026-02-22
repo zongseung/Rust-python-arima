@@ -18,10 +18,13 @@ import sys
 
 sys.path.insert(0, "python")
 
+import warnings
+
 from sarimax_py.model import (
     SARIMAXModel,
     _generate_param_names,
     _compute_numerical_hessian,
+    _resolve_inference_mode,
 )
 
 
@@ -411,3 +414,185 @@ class TestNumericalHessian:
         """If function returns NaN, Hessian should return None."""
         H = _compute_numerical_hessian(lambda x: np.nan, np.array([1.0]))
         assert H is None
+
+
+# ---------------------------------------------------------------------------
+# 7. Inference enum (Section 11)
+# ---------------------------------------------------------------------------
+
+class TestResolveInferenceMode:
+    """Unit tests for _resolve_inference_mode()."""
+
+    def test_default_is_none(self):
+        assert _resolve_inference_mode() == "none"
+
+    def test_inference_enum_values(self):
+        for mode in ("none", "hessian", "statsmodels", "both"):
+            assert _resolve_inference_mode(inference=mode) == mode
+
+    def test_invalid_inference_raises(self):
+        with pytest.raises(ValueError, match="inference must be one of"):
+            _resolve_inference_mode(inference="invalid")
+
+    def test_legacy_true_maps_to_hessian(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = _resolve_inference_mode(include_inference=True)
+            assert result == "hessian"
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+
+    def test_legacy_false_maps_to_none(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = _resolve_inference_mode(include_inference=False)
+            assert result == "none"
+            assert len(w) == 1
+
+    def test_both_specified_inference_wins(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = _resolve_inference_mode(inference="statsmodels", include_inference=True)
+            assert result == "statsmodels"
+            assert len(w) == 1
+
+
+class TestInferenceEnum:
+    """Test parameter_summary() with inference enum modes."""
+
+    def test_mode_none(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="none")
+        assert ps["inference_status"] == "skipped"
+        assert np.all(np.isnan(ps["std_err"]))
+
+    def test_mode_hessian(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="hessian")
+        assert ps["inference_status"] in ("ok", "partial")
+        assert np.all(np.isfinite(ps["std_err"]))
+        assert "hessian_std_err" not in ps  # no prefix in hessian-only mode
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_statsmodels(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="statsmodels")
+        assert ps["inference_status"] in ("ok", "failed")
+        if ps["inference_status"] == "ok":
+            assert np.all(np.isfinite(ps["std_err"]))
+            assert np.all(ps["std_err"] > 0)
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_both_keys(self, ar1_data):
+        """'both' mode should include hessian_, sm_, and delta_ prefixed keys."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="both")
+
+        # Check all expected keys are present
+        for prefix in ("hessian_std_err", "hessian_z", "hessian_p_value",
+                        "hessian_ci_lower", "hessian_ci_upper"):
+            assert prefix in ps, f"Missing key: {prefix}"
+        for prefix in ("sm_std_err", "sm_z", "sm_p_value",
+                        "sm_ci_lower", "sm_ci_upper"):
+            assert prefix in ps, f"Missing key: {prefix}"
+        for prefix in ("delta_std_err", "delta_ci_lower", "delta_ci_upper"):
+            assert prefix in ps, f"Missing key: {prefix}"
+
+        assert "inference_status_hessian" in ps
+        assert "inference_status_sm" in ps
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_both_delta_finite(self, ar1_data):
+        """Delta columns should be finite when both sources succeed."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="both")
+
+        if (ps.get("inference_status_hessian") in ("ok", "partial")
+                and ps.get("inference_status_sm") == "ok"):
+            assert np.all(np.isfinite(ps["delta_std_err"]))
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_both_delta_tolerance(self, ar1_data):
+        """For AR(1), delta_std_err should be small (hessian ≈ statsmodels)."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="both")
+
+        if (ps.get("inference_status_hessian") in ("ok", "partial")
+                and ps.get("inference_status_sm") == "ok"):
+            # Hessian and statsmodels std_err should be within 50% of each other
+            for i in range(len(ps["hessian_std_err"])):
+                h = ps["hessian_std_err"][i]
+                s = ps["sm_std_err"][i]
+                if np.isfinite(h) and np.isfinite(s) and s > 0:
+                    assert abs(h - s) / s < 0.5, (
+                        f"param {i}: hessian_se={h:.4f}, sm_se={s:.4f}"
+                    )
+
+    def test_alpha_validation(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        with pytest.raises(ValueError, match="alpha must be in"):
+            result.parameter_summary(alpha=0.0, inference="hessian")
+        with pytest.raises(ValueError, match="alpha must be in"):
+            result.parameter_summary(alpha=1.0, inference="hessian")
+
+    def test_invalid_inference_in_summary(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        with pytest.raises(ValueError, match="inference must be one of"):
+            result.parameter_summary(inference="invalid_mode")
+
+
+class TestSummaryInferenceEnum:
+    """Test summary() string output with inference enum modes."""
+
+    def test_summary_inference_none(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        s = result.summary(inference="none")
+        assert "std err" not in s
+        assert "Parameters:" in s
+
+    def test_summary_inference_hessian(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        s = result.summary(inference="hessian")
+        assert "std err" in s
+        assert "P>|z|" in s
+        assert "Inference:       hessian" in s
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_summary_inference_statsmodels(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        s = result.summary(inference="statsmodels")
+        assert "std err" in s
+        assert "Inference:       statsmodels" in s
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_summary_inference_both(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        s = result.summary(inference="both")
+        assert "hess_se" in s
+        assert "sm_se" in s
+        assert "d_se" in s
+        assert "Inference:       both" in s
+
+    def test_summary_legacy_include_inference_true(self, ar1_data):
+        """Legacy include_inference=True should still work with deprecation warning."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            s = result.summary(include_inference=True)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) >= 1
+        assert "std err" in s
+        assert "P>|z|" in s

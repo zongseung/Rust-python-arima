@@ -104,7 +104,7 @@
   - `n`회 할당 → 1회 할당으로 축소 (n=파라미터 수)
   - `transform_params()` 호출 횟수는 변경 없음 (n회, 구조상 필수)
 
-## 5) [Low] 일부 경로에서 objective 평가 시 `StateSpace` 재구성 반복 — **미착수** 🔲
+## 5) [Low] 일부 경로에서 objective 평가 시 `StateSpace` 재구성 반복 — **해결됨** ✅
 
 - 증상
   - 동일 파라미터 평가에서도 경로에 따라 `StateSpace::new`가 반복 호출됨.
@@ -120,7 +120,14 @@
 - 권장 조치
   - `lbfgs`/`nelder-mead` 경로에도 fused evaluation 또는 캐시 레이어 도입 검토.
   - 최소한 transform/StateSpace 생성 비용 계측(log/benchmark) 후 핫패스 우선 최적화.
-- **미착수 사유**: argmin `CostFunction`/`Gradient` 트레잇 인터페이스가 cost와 gradient를 별도 호출하는 구조이므로, fused evaluation 적용에는 argmin 커스텀 solver 또는 내부 캐시 레이어가 필요. Low 우선순위로 후속 작업 대상.
+- **완료 내용**
+  - `SarimaxObjective`에 `RefCell<Option<CachedEval>>` 단일 엔트리 캐시 도입
+  - `Gradient::gradient()`: fused eval (`eval_negloglike_with_gradient`) 호출 → cost + gradient 동시 캐시
+  - `CostFunction::cost()`: 동일 파라미터 요청 시 캐시 히트 → StateSpace 재구성 0회
+  - 효과: L-BFGS 경로에서 반복당 StateSpace 구성 2회 → 1회로 감소
+  - Nelder-Mead는 `cost()`만 호출하므로 불필요한 gradient 계산 없음 (캐시 비활성 상태)
+  - `Clone` 구현: 복제 시 캐시 초기화 (스레드 안전성 유지)
+  - 109 Rust + 186 Python 테스트 통과 확인
 
 ---
 
@@ -129,7 +136,7 @@
 1. ~~`MAX_N_EXOG` + score safety guard 추가 (안정성/운영 리스크 즉시 완화)~~ ✅ 완료
 2. ~~`py.allow_threads` 적용 (서버/파이프라인 동시성 개선)~~ ✅ 완료 (`py.detach` — PyO3 0.28 API)
 3. ~~복사/할당 최적화 (`fit`, `loglike` 핫패스부터)~~ ⚠️ 부분 완료 (GIL 해제에 의한 1차 개선, 내부 이중 복사는 구조적 한계)
-4. ~~Jacobian/StateSpace 반복 비용 최적화~~ ✅/🔲 (Jacobian 버퍼 재사용 완료, StateSpace 캐시는 미착수)
+4. ~~Jacobian/StateSpace 반복 비용 최적화~~ ✅ 완료 (Jacobian 버퍼 재사용 + L-BFGS 경로 CachedEval 캐시)
 
 ---
 
@@ -138,6 +145,6 @@
 | 파일 | 변경 내용 |
 |------|-----------|
 | `src/lib.rs` | `MAX_N_EXOG=100` 추가, `build_config()` 검증, 7개 PyO3 함수 `py.detach()` GIL 해제 |
-| `src/optimizer.rs` | `apply_transform_jacobian()` 버퍼 재사용 |
+| `src/optimizer.rs` | `apply_transform_jacobian()` 버퍼 재사용, `CachedEval` 캐시 도입 (L-BFGS 경로 fused eval 캐시) |
 
-테스트: 109 Rust + 176 Python 모두 통과 (2026-02-22)
+테스트: 109 Rust + 186 Python 모두 통과 (2026-02-22)
