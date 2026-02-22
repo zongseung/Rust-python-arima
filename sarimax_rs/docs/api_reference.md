@@ -238,9 +238,11 @@ Return parameter summary as a machine-readable dict.
 - All modes: `name`, `coef`, `inference_status`, `inference_message`
 - `"none"`: `std_err`, `z`, `p_value`, `ci_lower`, `ci_upper` (all `NaN`)
 - `"hessian"` / `"statsmodels"`: `std_err`, `z`, `p_value`, `ci_lower`, `ci_upper`
-- `"both"`: all of the above plus `hessian_std_err`, `hessian_z`, `hessian_p_value`, `hessian_ci_lower`, `hessian_ci_upper`, `sm_std_err`, `sm_z`, `sm_p_value`, `sm_ci_lower`, `sm_ci_upper`, `delta_std_err`, `delta_ci_lower`, `delta_ci_upper`, `inference_status_hessian`, `inference_status_sm`
+- `"both"`: all of the above plus `hessian_std_err`, `hessian_z`, `hessian_p_value`, `hessian_ci_lower`, `hessian_ci_upper`, `sm_std_err`, `sm_z`, `sm_p_value`, `sm_ci_lower`, `sm_ci_upper`, `delta_std_err`, `delta_ci_lower`, `delta_ci_upper`, `inference_status_hessian`, `inference_status_sm`. The `summary()` output shows dual p-value columns (`hess_p`, `sm_p`) so the source of each p-value is unambiguous.
 
-**Backward compatibility:** `include_inference=True` maps to `inference="hessian"`, `include_inference=False` maps to `inference="none"`. Using `include_inference` emits a `DeprecationWarning`.
+**Backward compatibility:** `include_inference=True` maps to `inference="hessian"`, `include_inference=False` maps to `inference="none"`. Using `include_inference` emits a `DeprecationWarning`. When both `inference` and `include_inference` are specified, `inference` takes precedence (with a `DeprecationWarning`); invalid `inference` values always raise `ValueError`.
+
+**Cache policy:** Inference results are cached per `(mode, alpha, params_fingerprint)`. The cache auto-invalidates when `result.params` changes, ensuring recomputation with updated parameter values.
 
 ```python
 result = model.fit()

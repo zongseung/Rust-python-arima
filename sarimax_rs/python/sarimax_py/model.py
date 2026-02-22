@@ -165,6 +165,21 @@ def _compute_numerical_hessian(loglike_fn, params):
     return H
 
 
+_VALID_INFERENCE_MODES = ("none", "hessian", "statsmodels", "both")
+
+
+def _validate_inference_mode(mode):
+    """Validate inference mode string against the allowed set.
+
+    Raises ValueError if mode is not in _VALID_INFERENCE_MODES.
+    """
+    if mode not in _VALID_INFERENCE_MODES:
+        raise ValueError(
+            f"inference must be one of {_VALID_INFERENCE_MODES}, got {mode!r}"
+        )
+    return mode
+
+
 def _resolve_inference_mode(inference=None, include_inference=None):
     """Resolve inference mode from new enum or legacy bool parameter.
 
@@ -187,15 +202,10 @@ def _resolve_inference_mode(inference=None, include_inference=None):
             DeprecationWarning,
             stacklevel=3,
         )
-        return inference
+        return _validate_inference_mode(inference)
 
     if inference is not None:
-        valid = ("none", "hessian", "statsmodels", "both")
-        if inference not in valid:
-            raise ValueError(
-                f"inference must be one of {valid}, got {inference!r}"
-            )
-        return inference
+        return _validate_inference_mode(inference)
 
     if include_inference is not None:
         import warnings
@@ -212,7 +222,9 @@ def _resolve_inference_mode(inference=None, include_inference=None):
 
 
 def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
-                                   exog=None, n_params_rs=None):
+                                   exog=None, n_params_rs=None,
+                                   enforce_stationarity=True,
+                                   enforce_invertibility=True):
     """Compute inference statistics using statsmodels as reference.
 
     Parameters
@@ -224,6 +236,10 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
     exog : np.ndarray or None
     n_params_rs : int or None
         Number of non-sigma2 params in sarimax_rs (for alignment).
+    enforce_stationarity : bool
+        Pass through to statsmodels SARIMAX.
+    enforce_invertibility : bool
+        Pass through to statsmodels SARIMAX.
 
     Returns
     -------
@@ -248,7 +264,8 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
         model_sm = SARIMAX(
             endog, order=order, seasonal_order=seasonal_order,
             exog=exog,
-            enforce_stationarity=True, enforce_invertibility=True,
+            enforce_stationarity=enforce_stationarity,
+            enforce_invertibility=enforce_invertibility,
         )
         res_sm = model_sm.fit(disp=False)
 
@@ -553,6 +570,9 @@ class SARIMAXResult:
         k = len(self.params)
         nan_arr = lambda: np.full(k, np.nan)  # noqa: E731
 
+        # Parameter fingerprint for cache invalidation on param mutation
+        params_sig = tuple(np.round(self.params, 12))
+
         result = dict(
             name=names,
             coef=self.params.copy(),
@@ -567,7 +587,7 @@ class SARIMAXResult:
             return result
 
         if mode == "hessian":
-            cache_key = ("hessian", alpha)
+            cache_key = ("hessian", alpha, params_sig)
             if cache_key not in self._inference_cache:
                 self._inference_cache[cache_key] = _compute_inference(
                     self._loglike_fn, self.params, alpha=alpha,
@@ -576,7 +596,7 @@ class SARIMAXResult:
             return result
 
         if mode == "statsmodels":
-            cache_key = ("statsmodels", alpha)
+            cache_key = ("statsmodels", alpha, params_sig)
             if cache_key not in self._inference_cache:
                 self._inference_cache[cache_key] = _compute_statsmodels_inference(
                     self.model.endog,
@@ -585,6 +605,8 @@ class SARIMAXResult:
                     alpha=alpha,
                     exog=self.model.exog,
                     n_params_rs=k,
+                    enforce_stationarity=self.model.enforce_stationarity,
+                    enforce_invertibility=self.model.enforce_invertibility,
                 )
             sm = self._inference_cache[cache_key]
             result.update(
@@ -600,7 +622,7 @@ class SARIMAXResult:
 
         # mode == "both"
         # Hessian
-        hess_key = ("hessian", alpha)
+        hess_key = ("hessian", alpha, params_sig)
         if hess_key not in self._inference_cache:
             self._inference_cache[hess_key] = _compute_inference(
                 self._loglike_fn, self.params, alpha=alpha,
@@ -608,7 +630,7 @@ class SARIMAXResult:
         hess = self._inference_cache[hess_key]
 
         # statsmodels
-        sm_key = ("statsmodels", alpha)
+        sm_key = ("statsmodels", alpha, params_sig)
         if sm_key not in self._inference_cache:
             self._inference_cache[sm_key] = _compute_statsmodels_inference(
                 self.model.endog,
@@ -617,6 +639,8 @@ class SARIMAXResult:
                 alpha=alpha,
                 exog=self.model.exog,
                 n_params_rs=k,
+                enforce_stationarity=self.model.enforce_stationarity,
+                enforce_invertibility=self.model.enforce_invertibility,
             )
         sm = self._inference_cache[sm_key]
 
@@ -771,16 +795,17 @@ class SARIMAXResult:
                 f"{'':>16s} {'coef':>10s} "
                 f"{'hess_se':>9s} {'sm_se':>9s} {'d_se':>9s} "
                 f"{'hess_z':>8s} {'sm_z':>8s} "
-                f"{'P>|z|':>8s}"
+                f"{'hess_p':>8s} {'sm_p':>8s}"
             )
             lines.append(header)
-            lines.append("-" * 90)
+            lines.append("-" * 98)
             hse = ps.get("hessian_std_err", np.full(len(names), np.nan))
             sse = ps.get("sm_std_err", np.full(len(names), np.nan))
             dse = ps.get("delta_std_err", np.full(len(names), np.nan))
             hz = ps.get("hessian_z", np.full(len(names), np.nan))
             sz = ps.get("sm_z", np.full(len(names), np.nan))
-            pval = ps.get("p_value", np.full(len(names), np.nan))
+            hpval = ps.get("hessian_p_value", np.full(len(names), np.nan))
+            spval = ps.get("sm_p_value", np.full(len(names), np.nan))
             for i, name in enumerate(names):
                 def _f(v, fmt=".4f"):
                     return f"{v:{fmt}}" if np.isfinite(v) else "NaN"
@@ -788,7 +813,7 @@ class SARIMAXResult:
                     f"{name:>16s} {coefs[i]:>10.4f} "
                     f"{_f(hse[i]):>9s} {_f(sse[i]):>9s} {_f(dse[i]):>9s} "
                     f"{_f(hz[i], '.3f'):>8s} {_f(sz[i], '.3f'):>8s} "
-                    f"{_f(pval[i], '.3f'):>8s}"
+                    f"{_f(hpval[i], '.3f'):>8s} {_f(spval[i], '.3f'):>8s}"
                 )
         elif has_inf:
             # Single inference source (hessian or statsmodels)

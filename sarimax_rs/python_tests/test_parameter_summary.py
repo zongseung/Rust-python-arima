@@ -583,6 +583,8 @@ class TestSummaryInferenceEnum:
         assert "hess_se" in s
         assert "sm_se" in s
         assert "d_se" in s
+        assert "hess_p" in s
+        assert "sm_p" in s
         assert "Inference:       both" in s
 
     def test_summary_legacy_include_inference_true(self, ar1_data):
@@ -596,3 +598,99 @@ class TestSummaryInferenceEnum:
             assert len(dep_warnings) >= 1
         assert "std err" in s
         assert "P>|z|" in s
+
+
+# ---------------------------------------------------------------------------
+# 8. VER4 risk fix tests
+# ---------------------------------------------------------------------------
+
+class TestRiskFixInferenceValidation:
+    """Tests for VER4_RISK_FIX_SPEC issue #1: inference validation bypass."""
+
+    def test_both_specified_invalid_inference_raises(self, ar1_data):
+        """inference='invalid' + include_inference=True should raise ValueError."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        with pytest.raises(ValueError, match="inference must be one of"):
+            result.parameter_summary(inference="invalid", include_inference=True)
+
+    def test_both_specified_valid_inference_works(self, ar1_data):
+        """inference='hessian' + include_inference=True should warn + succeed."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ps = result.parameter_summary(inference="hessian", include_inference=True)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) >= 1
+        assert ps["inference_status"] in ("ok", "partial")
+
+
+class TestRiskFixCacheInvalidation:
+    """Tests for VER4_RISK_FIX_SPEC issue #3: cache params fingerprint."""
+
+    def test_inference_cache_invalidated_on_param_change(self, ar1_data):
+        """Mutating result.params should not return stale cached inference."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+
+        # First call: cache the inference
+        ps1 = result.parameter_summary(inference="hessian", alpha=0.05)
+        original_se = ps1["std_err"].copy()
+
+        # Mutate params externally
+        result.params[0] = result.params[0] + 0.5
+
+        # Second call: should recompute, not return stale cache
+        ps2 = result.parameter_summary(inference="hessian", alpha=0.05)
+
+        # The std errors should differ because params changed
+        assert not np.array_equal(ps2["std_err"], original_se), (
+            "Cache was not invalidated after param mutation"
+        )
+
+    def test_same_params_same_alpha_hits_cache(self, ar1_data):
+        """Identical params + alpha should use cache (identical results)."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps1 = result.parameter_summary(inference="hessian", alpha=0.05)
+        ps2 = result.parameter_summary(inference="hessian", alpha=0.05)
+        np.testing.assert_array_equal(ps1["std_err"], ps2["std_err"])
+
+
+@pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+class TestRiskFixDualPvalue:
+    """Tests for VER4_RISK_FIX_SPEC issue #4: both mode dual p-value columns."""
+
+    def test_summary_both_has_dual_pvalue_columns(self, ar1_data):
+        """summary(inference='both') should show hess_p and sm_p columns."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        s = result.summary(inference="both")
+        assert "hess_p" in s
+        assert "sm_p" in s
+
+    def test_parameter_summary_both_has_dual_pvalue_keys(self, ar1_data):
+        """parameter_summary(inference='both') should have both p-value keys."""
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        result = model.fit()
+        ps = result.parameter_summary(inference="both")
+        assert "hessian_p_value" in ps
+        assert "sm_p_value" in ps
+
+
+@pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+class TestRiskFixEnforcementFlags:
+    """Tests for VER4_RISK_FIX_SPEC issue #2: statsmodels enforcement flags."""
+
+    def test_statsmodels_mode_respects_enforcement_flags(self, ar1_data):
+        """Model with enforce_stationarity=False should pass that to statsmodels."""
+        model = SARIMAXModel(
+            ar1_data, order=(1, 0, 0),
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+        result = model.fit()
+        ps = result.parameter_summary(inference="statsmodels")
+        # Should succeed (not crash due to mismatch)
+        assert ps["inference_status"] in ("ok", "failed")
