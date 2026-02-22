@@ -31,6 +31,7 @@ const MAX_PP: usize = 4;
 const MAX_QQ: usize = 4;
 const MAX_DD: usize = 2;
 const MAX_S: usize = 365;
+const MAX_N_EXOG: usize = 100;
 
 // ---------------------------------------------------------------------------
 // Shared helpers (eliminate boilerplate across PyO3 functions)
@@ -185,6 +186,12 @@ fn build_config(
             s, MAX_S
         )));
     }
+    if n_exog > MAX_N_EXOG {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "n_exog={} exceeds maximum {}",
+            n_exog, MAX_N_EXOG
+        )));
+    }
     if (pp > 0 || dd > 0 || qq > 0) && s < 2 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "seasonal order (P,D,Q) > 0 requires seasonal period s >= 2",
@@ -266,7 +273,7 @@ fn version() -> &'static str {
 #[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true,
                     enforce_stationarity=true, enforce_invertibility=true))]
 fn sarimax_loglike<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
@@ -292,14 +299,18 @@ fn sarimax_loglike<'py>(
         concentrate_scale,
     )?;
 
-    let sarimax_params = SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
 
-    let ss =
-        StateSpace::new(&config, &sarimax_params, endog, exog_cols.as_deref()).map_err(to_pyerr)?;
-    let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
-    let output = kalman::kalman_loglike(endog, &ss, &init, concentrate_scale).map_err(to_pyerr)?;
-
-    Ok(output.loglike)
+    py.detach(move || {
+        let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
+        let ss = StateSpace::new(&config, &sarimax_params, &endog, exog_cols.as_deref())?;
+        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let output = kalman::kalman_loglike(&endog, &ss, &init, concentrate_scale)?;
+        Ok(output.loglike)
+    })
+    .map_err(to_pyerr)
 }
 
 /// Fit a SARIMAX model via MLE (L-BFGS-B default, with Nelder-Mead fallback).
@@ -337,9 +348,26 @@ fn sarimax_fit<'py>(
         concentrate_scale,
     )?;
 
-    let sp = start_params.as_ref().map(|a| a.as_slice()).transpose()?;
+    let sp_owned: Option<Vec<f64>> = start_params
+        .as_ref()
+        .map(|a| a.as_slice().map(|s| s.to_vec()))
+        .transpose()?;
+    let method_owned = method.map(|s| s.to_string());
 
-    let result = optimizer::fit(endog, &config, sp, method, maxiter, exog_cols.as_deref())
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+
+    let result = py
+        .detach(move || {
+            optimizer::fit(
+                &endog,
+                &config,
+                sp_owned.as_deref(),
+                method_owned.as_deref(),
+                maxiter,
+                exog_cols.as_deref(),
+            )
+        })
         .map_err(to_pyerr)?;
 
     let dict = PyDict::new(py);
@@ -432,18 +460,25 @@ fn sarimax_forecast<'py>(
     }
 
     let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
-    let sarimax_params = SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
 
-    let result = forecast::forecast_pipeline(
-        endog,
-        &config,
-        &sarimax_params,
-        steps,
-        alpha,
-        exog_cols.as_deref(),
-        future_exog_cols.as_deref(),
-    )
-    .map_err(to_pyerr)?;
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
+
+    let result = py
+        .detach(move || {
+            let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
+            forecast::forecast_pipeline(
+                &endog,
+                &config,
+                &sarimax_params,
+                steps,
+                alpha,
+                exog_cols.as_deref(),
+                future_exog_cols.as_deref(),
+            )
+        })
+        .map_err(to_pyerr)?;
 
     let dict = PyDict::new(py);
     dict.set_item("mean", result.mean)?;
@@ -476,11 +511,17 @@ fn sarimax_residuals<'py>(
         validate_finite_cols(cols, "exog")?;
     }
     let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
-    let sarimax_params = SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
 
-    let result =
-        forecast::residuals_pipeline(endog, &config, &sarimax_params, exog_cols.as_deref())
-            .map_err(to_pyerr)?;
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
+
+    let result = py
+        .detach(move || {
+            let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
+            forecast::residuals_pipeline(&endog, &config, &sarimax_params, exog_cols.as_deref())
+        })
+        .map_err(to_pyerr)?;
 
     let dict = PyDict::new(py);
     dict.set_item("residuals", result.residuals)?;
@@ -520,10 +561,12 @@ fn sarimax_batch_loglike<'py>(
         concentrate_scale,
     )?;
 
-    let params_flat = params.as_slice()?;
-    let sarimax_params = SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
+    let params_flat = params.as_slice()?.to_vec();
+    let sarimax_params = SarimaxParams::from_flat(&params_flat, &config).map_err(to_pyerr)?;
 
-    let results = batch::batch_loglike(&series, &config, &sarimax_params, exog_vecs.as_deref());
+    // Release GIL for Rayon parallel computation
+    let results =
+        py.detach(|| batch::batch_loglike(&series, &config, &sarimax_params, exog_vecs.as_deref()));
 
     let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
     for r in results {
@@ -576,7 +619,17 @@ fn sarimax_batch_fit<'py>(
         concentrate_scale,
     )?;
 
-    let results = batch::batch_fit(&series, &config, method, maxiter, exog_vecs.as_deref());
+    // Release GIL for Rayon parallel computation
+    let method_owned = method.map(|s| s.to_string());
+    let results = py.detach(|| {
+        batch::batch_fit(
+            &series,
+            &config,
+            method_owned.as_deref(),
+            maxiter,
+            exog_vecs.as_deref(),
+        )
+    });
 
     let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
     for r in results {
@@ -693,15 +746,18 @@ fn sarimax_batch_forecast<'py>(
         .map(|a| a.as_slice().map(|s| s.to_vec()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let results = batch::batch_forecast(
-        &series,
-        &config,
-        &params_vecs,
-        steps,
-        alpha,
-        exog_vecs.as_deref(),
-        future_exog_vecs.as_deref(),
-    );
+    // Release GIL for Rayon parallel computation
+    let results = py.detach(|| {
+        batch::batch_forecast(
+            &series,
+            &config,
+            &params_vecs,
+            steps,
+            alpha,
+            exog_vecs.as_deref(),
+            future_exog_vecs.as_deref(),
+        )
+    });
 
     let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
     for r in results {

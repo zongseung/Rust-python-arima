@@ -311,10 +311,14 @@ fn apply_transform_jacobian(
     let c_base = transform_params(unconstrained, config).map_err(|e| e.to_string())?;
     let mut grad = vec![0.0; n];
 
+    // Reuse buffer across iterations instead of allocating per-parameter
+    let mut u_pert = unconstrained.to_vec();
+
     for i in 0..n {
-        let mut u_pert = unconstrained.to_vec();
-        u_pert[i] += eps;
+        let orig = u_pert[i];
+        u_pert[i] = orig + eps;
         let c_pert = transform_params(&u_pert, config).map_err(|e| e.to_string())?;
+        u_pert[i] = orig; // reset for next iteration
 
         // grad[i] = Σ_j score[j] * ∂c_j/∂u_i
         for j in 0..n {
