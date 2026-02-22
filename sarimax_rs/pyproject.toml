@@ -27,3 +27,6 @@ module-name = "sarimax_rs"
 
 [tool.pytest.ini_options]
 testpaths = ["python_tests"]
+markers = [
+    "nightly: marks tests as nightly-only (deselect with '-m \"not nightly\"')",
+]

@@ -113,6 +113,9 @@ pub struct FitResult {
     pub scale: f64,
     pub n_obs: usize,
     pub n_params: usize,
+    /// Number of optimizer iterations (for L-BFGS, Nelder-Mead) or
+    /// function evaluations (for L-BFGS-B, where the crate does not
+    /// expose an iteration counter).
     pub n_iter: u64,
     pub converged: bool,
     pub method: String,

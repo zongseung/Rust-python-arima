@@ -107,7 +107,8 @@ fn parse_and_validate_exog_list(
         if el.len() != series_len {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "exog_list length ({}) must match series_list length ({})",
-                el.len(), series_len
+                el.len(),
+                series_len
             )));
         }
         let exog_vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
@@ -117,7 +118,9 @@ fn parse_and_validate_exog_list(
             if cols.len() != n_exog {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "exog at index {} has {} columns but expected {} (from first series)",
-                    i, cols.len(), n_exog
+                    i,
+                    cols.len(),
+                    n_exog
                 )));
             }
         }
@@ -142,37 +145,44 @@ fn build_config(
     // Individual order bounds (DoS prevention)
     if p > MAX_P {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "AR order p={} exceeds maximum {}", p, MAX_P
+            "AR order p={} exceeds maximum {}",
+            p, MAX_P
         )));
     }
     if q > MAX_Q {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "MA order q={} exceeds maximum {}", q, MAX_Q
+            "MA order q={} exceeds maximum {}",
+            q, MAX_Q
         )));
     }
     if d > MAX_D {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "differencing order d={} exceeds maximum {}", d, MAX_D
+            "differencing order d={} exceeds maximum {}",
+            d, MAX_D
         )));
     }
     if pp > MAX_PP {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "seasonal AR order P={} exceeds maximum {}", pp, MAX_PP
+            "seasonal AR order P={} exceeds maximum {}",
+            pp, MAX_PP
         )));
     }
     if qq > MAX_QQ {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "seasonal MA order Q={} exceeds maximum {}", qq, MAX_QQ
+            "seasonal MA order Q={} exceeds maximum {}",
+            qq, MAX_QQ
         )));
     }
     if dd > MAX_DD {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "seasonal differencing D={} exceeds maximum {}", dd, MAX_DD
+            "seasonal differencing D={} exceeds maximum {}",
+            dd, MAX_DD
         )));
     }
     if s > MAX_S {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "seasonal period s={} exceeds maximum {}", s, MAX_S
+            "seasonal period s={} exceeds maximum {}",
+            s, MAX_S
         )));
     }
     if (pp > 0 || dd > 0 || qq > 0) && s < 2 {
@@ -647,7 +657,8 @@ fn sarimax_batch_forecast<'py>(
             if el.len() != series_list.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "exog_forecast_list length ({}) must match series_list length ({})",
-                    el.len(), series_list.len()
+                    el.len(),
+                    series_list.len()
                 )));
             }
             let vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
@@ -656,7 +667,9 @@ fn sarimax_batch_forecast<'py>(
                 if cols.len() != n_exog {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "exog_forecast at index {} has {} columns but expected {}",
-                        i, cols.len(), n_exog
+                        i,
+                        cols.len(),
+                        n_exog
                     )));
                 }
                 for (j, col) in cols.iter().enumerate() {

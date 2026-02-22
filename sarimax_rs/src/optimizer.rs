@@ -5,7 +5,7 @@
 //! - Negative log-likelihood objective function for argmin
 //! - `fit()` function: the main entry point for model fitting
 
-use argmin::core::{CostFunction, Executor, Gradient, State};
+use argmin::core::{CostFunction, Executor, Gradient, State, TerminationReason};
 use argmin::solver::linesearch::MoreThuenteLineSearch;
 use argmin::solver::neldermead::NelderMead;
 use argmin::solver::quasinewton::LBFGS;
@@ -391,8 +391,8 @@ fn run_lbfgs(
     maxiter: u64,
 ) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
     let linesearch = MoreThuenteLineSearch::new();
-    let solver = LBFGS::new(linesearch, 10)  // memory=10 (scipy default)
-        .with_tolerance_grad(1e-5)           // match scipy pgtol default
+    let solver = LBFGS::new(linesearch, 10) // memory=10 (scipy default)
+        .with_tolerance_grad(1e-5) // match scipy pgtol default
         .map_err(|e| e.to_string())?
         .with_tolerance_cost(1e-9)
         .map_err(|e| e.to_string())?;
@@ -413,7 +413,9 @@ fn run_lbfgs(
         .clone();
     let best_cost = state.get_best_cost();
     let n_iter = state.get_iter();
-    let converged = state.get_termination_status().terminated();
+    let term_reason = state.get_termination_reason();
+    let converged = term_reason == Some(&TerminationReason::SolverConverged)
+        || term_reason == Some(&TerminationReason::TargetCostReached);
 
     Ok((best_param, best_cost, n_iter, converged))
 }
@@ -462,7 +464,9 @@ fn run_nelder_mead(
         .clone();
     let best_cost = state.get_best_cost();
     let n_iter = state.get_iter();
-    let converged = state.get_termination_status().terminated();
+    let term_reason = state.get_termination_reason();
+    let converged = term_reason == Some(&TerminationReason::SolverConverged)
+        || term_reason == Some(&TerminationReason::TargetCostReached);
 
     Ok((best_param, best_cost, n_iter, converged))
 }
@@ -535,14 +539,32 @@ fn run_lbfgsb(
     objective: &SarimaxObjective,
     init_params: Vec<f64>,
     bounds_vec: Vec<(Option<f64>, Option<f64>)>,
-    _maxiter: u64,
+    maxiter: u64,
 ) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
     let n = init_params.len();
     let obj = objective.clone();
     let eval_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let eval_count_inner = eval_count.clone();
+    let hit_limit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hit_limit_inner = hit_limit.clone();
 
     let evaluate = move |x: &[f64], g: &mut [f64]| -> anyhow::Result<f64> {
+        let count = eval_count_inner.load(std::sync::atomic::Ordering::Relaxed);
+
+        // Enforce maxiter: the lbfgsb crate doesn't support it natively,
+        // so we stop producing useful gradients after the limit is reached,
+        // which causes the optimizer to terminate.
+        if count >= maxiter {
+            hit_limit_inner.store(true, std::sync::atomic::Ordering::Relaxed);
+            for g_i in g.iter_mut() {
+                *g_i = 0.0;
+            }
+            // Return current cost with zero gradient to trigger convergence
+            return match obj.eval_negloglike(x) {
+                Ok(c) if c.is_finite() => Ok(c),
+                _ => Ok(f64::MAX / 2.0),
+            };
+        }
         eval_count_inner.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // Fused function + gradient: builds StateSpace & KalmanInit only once
@@ -601,7 +623,18 @@ fn run_lbfgsb(
     let cost = state.fx();
     let n_eval = eval_count.load(std::sync::atomic::Ordering::Relaxed);
 
-    Ok((x, cost, n_eval, true))
+    // Determine convergence: minimize() returning Ok means the Fortran code
+    // terminated normally (either via gradient tolerance pgtol OR function
+    // value tolerance factr). If we hit our eval limit, report not converged.
+    let converged = !hit_limit.load(std::sync::atomic::Ordering::Relaxed);
+
+    Ok((x, cost, n_eval, converged))
+}
+
+fn consume_budget(remaining: &mut u64, total_work: &mut u64, n: u64) {
+    let used = n.min(*remaining);
+    *total_work = total_work.saturating_add(used);
+    *remaining = remaining.saturating_sub(used);
 }
 
 // ---------------------------------------------------------------------------
@@ -758,40 +791,46 @@ pub fn fit(
             // Multi-start L-BFGS-B with grid search and NM refinement.
             // More robust but slower — use when accuracy matters more than speed.
             let bounds = compute_bounds(config);
+            let mut remaining = maxiter;
+            let mut total_work: u64 = 0;
 
             let initial_result = match run_lbfgsb(
                 &objective,
                 unconstrained_start.clone(),
                 bounds.clone(),
-                maxiter,
+                remaining,
             ) {
-                Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgsb-multi".to_string())),
+                Ok((p, c, n, conv)) => {
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    Some((p, c, conv, "lbfgsb-multi".to_string()))
+                }
                 Err(_) => None,
             };
 
             let mut best = initial_result;
 
-            let mut try_update =
-                |p: Vec<f64>, c: f64, n: u64, conv: bool, method_name: &str| match &best {
-                    Some((_, best_cost, _, _, _)) if c < *best_cost => {
-                        best = Some((p, c, n, conv, method_name.to_string()));
-                    }
-                    None => {
-                        best = Some((p, c, n, conv, method_name.to_string()));
-                    }
-                    _ => {}
-                };
+            let mut try_update = |p: Vec<f64>, c: f64, conv: bool, method_name: &str| match &best {
+                Some((_, best_cost, _, _)) if c < *best_cost => {
+                    best = Some((p, c, conv, method_name.to_string()));
+                }
+                None => {
+                    best = Some((p, c, conv, method_name.to_string()));
+                }
+                _ => {}
+            };
 
-            if n_restarts > 0 {
+            if n_restarts > 0 && remaining > 0 {
                 // 1. Zero-start
                 let zeros = vec![0.0; n_params_total];
-                if let Ok((p, c, n, conv)) = run_lbfgsb(&objective, zeros, bounds.clone(), maxiter)
+                if let Ok((p, c, n, conv)) =
+                    run_lbfgsb(&objective, zeros, bounds.clone(), remaining)
                 {
-                    try_update(p, c, n, conv, "lbfgsb-multi");
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    try_update(p, c, conv, "lbfgsb-multi");
                 }
 
                 // 2. Seasonal MA grid (NM, gradient-free for boundary avoidance)
-                if config.enforce_invertibility && config.order.qq > 0 {
+                if config.enforce_invertibility && config.order.qq > 0 && remaining > 0 {
                     let kt = config.trend.k_trend();
                     let n_exog = config.n_exog;
                     let ma_start = kt + n_exog + config.order.p;
@@ -799,6 +838,9 @@ pub fn fit(
 
                     let grid_vals = [-0.3, -0.6, -0.9];
                     for &ma_val in &grid_vals {
+                        if remaining == 0 {
+                            break;
+                        }
                         let mut grid_constrained = vec![0.0; n_params_total];
                         for i in 0..config.order.q {
                             grid_constrained[ma_start + i] = ma_val;
@@ -808,9 +850,10 @@ pub fn fit(
                         }
                         if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
                             if let Ok((p, c, n, conv)) =
-                                run_nelder_mead(objective.clone(), grid_uncons, maxiter)
+                                run_nelder_mead(objective.clone(), grid_uncons, remaining)
                             {
-                                try_update(p, c, n, conv, "lbfgsb-multi+nm");
+                                consume_budget(&mut remaining, &mut total_work, n);
+                                try_update(p, c, conv, "lbfgsb-multi+nm");
                             }
                         }
                     }
@@ -819,6 +862,9 @@ pub fn fit(
                 // 3. LCG perturbations
                 let mut rng_state: u64 = 12345;
                 for _ in 0..n_restarts {
+                    if remaining == 0 {
+                        break;
+                    }
                     let mut perturbed = unconstrained_start.clone();
                     for v in perturbed.iter_mut() {
                         rng_state = rng_state
@@ -829,43 +875,58 @@ pub fn fit(
                         *v += u * scale;
                     }
                     if let Ok((p, c, n, conv)) =
-                        run_lbfgsb(&objective, perturbed, bounds.clone(), maxiter)
+                        run_lbfgsb(&objective, perturbed, bounds.clone(), remaining)
                     {
-                        try_update(p, c, n, conv, "lbfgsb-multi");
+                        consume_budget(&mut remaining, &mut total_work, n);
+                        try_update(p, c, conv, "lbfgsb-multi");
                     }
                 }
             }
 
             match best {
-                Some((best_p, best_c, best_n, _best_conv, method_name)) => {
-                    if n_params_total >= 2 {
-                        match run_nelder_mead(objective.clone(), best_p.clone(), maxiter / 2) {
-                            Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => (
-                                nm_p,
-                                nm_c,
-                                best_n + nm_n,
-                                nm_conv,
-                                format!("{}+nm", method_name),
-                            ),
-                            _ => (best_p, best_c, best_n, true, method_name),
+                Some((best_p, best_c, best_conv, method_name)) => {
+                    if n_params_total >= 2 && remaining > 0 {
+                        match run_nelder_mead(objective.clone(), best_p.clone(), remaining) {
+                            Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
+                                consume_budget(&mut remaining, &mut total_work, nm_n);
+                                (
+                                    nm_p,
+                                    nm_c,
+                                    total_work,
+                                    nm_conv,
+                                    format!("{}+nm", method_name),
+                                )
+                            }
+                            Ok((_, _, nm_n, _)) => {
+                                consume_budget(&mut remaining, &mut total_work, nm_n);
+                                (best_p, best_c, total_work, best_conv, method_name)
+                            }
+                            Err(_) => (best_p, best_c, total_work, best_conv, method_name),
                         }
                     } else {
-                        (best_p, best_c, best_n, true, method_name)
+                        (best_p, best_c, total_work, best_conv, method_name)
                     }
                 }
                 None => {
                     let (p, c, n, conv) =
-                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                        run_nelder_mead(objective.clone(), unconstrained_start, remaining)
                             .map_err(|e| SarimaxError::OptimizationFailed(e))?;
-                    (p, c, n, conv, "nelder-mead (fallback)".to_string())
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    (p, c, total_work, conv, "nelder-mead (fallback)".to_string())
                 }
             }
         }
         "lbfgs" => {
+            let mut remaining = maxiter;
+            let mut total_work: u64 = 0;
+
             // Initial L-BFGS run
             let initial_result =
-                match run_lbfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
-                    Ok((p, c, n, conv)) => Some((p, c, n, conv, "lbfgs".to_string())),
+                match run_lbfgs(objective.clone(), unconstrained_start.clone(), remaining) {
+                    Ok((p, c, n, conv)) => {
+                        consume_budget(&mut remaining, &mut total_work, n);
+                        Some((p, c, conv, "lbfgs".to_string()))
+                    }
                     Err(_) => None,
                 };
 
@@ -873,25 +934,26 @@ pub fn fit(
             let mut best = initial_result;
 
             // Helper to update best with a new result
-            let mut try_update = |p: Vec<f64>, c: f64, n: u64, conv: bool| match &best {
-                Some((_, best_cost, _, _, _)) if c < *best_cost => {
-                    best = Some((p, c, n, conv, "lbfgs".to_string()));
+            let mut try_update = |p: Vec<f64>, c: f64, conv: bool| match &best {
+                Some((_, best_cost, _, _)) if c < *best_cost => {
+                    best = Some((p, c, conv, "lbfgs".to_string()));
                 }
                 None => {
-                    best = Some((p, c, n, conv, "lbfgs".to_string()));
+                    best = Some((p, c, conv, "lbfgs".to_string()));
                 }
                 _ => {}
             };
 
-            if n_restarts > 0 {
+            if n_restarts > 0 && remaining > 0 {
                 // 1. Try starting from zeros in unconstrained space
                 let zeros = vec![0.0; n_params_total];
-                if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), zeros, maxiter) {
-                    try_update(p, c, n, conv);
+                if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), zeros, remaining) {
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    try_update(p, c, conv);
                 }
 
                 // 2. For seasonal MA models with enforced invertibility, try Nelder-Mead from grid starts
-                if config.enforce_invertibility && config.order.qq > 0 {
+                if config.enforce_invertibility && config.order.qq > 0 && remaining > 0 {
                     let kt = config.trend.k_trend();
                     let n_exog = config.n_exog;
                     let ma_start = kt + n_exog + config.order.p;
@@ -900,6 +962,9 @@ pub fn fit(
                     // NM from grid of constrained MA/SMA starts (gradient-free avoids boundary traps)
                     let grid_vals = [-0.3, -0.6, -0.9];
                     for &ma_val in &grid_vals {
+                        if remaining == 0 {
+                            break;
+                        }
                         let mut grid_constrained = vec![0.0; n_params_total];
                         for i in 0..config.order.q {
                             grid_constrained[ma_start + i] = ma_val;
@@ -909,9 +974,10 @@ pub fn fit(
                         }
                         if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
                             if let Ok((p, c, n, conv)) =
-                                run_nelder_mead(objective.clone(), grid_uncons, maxiter)
+                                run_nelder_mead(objective.clone(), grid_uncons, remaining)
                             {
-                                try_update(p, c, n, conv);
+                                consume_budget(&mut remaining, &mut total_work, n);
+                                try_update(p, c, conv);
                             }
                         }
                     }
@@ -920,6 +986,9 @@ pub fn fit(
                 // 3. Deterministic LCG perturbations
                 let mut rng_state: u64 = 12345;
                 for _ in 0..n_restarts {
+                    if remaining == 0 {
+                        break;
+                    }
                     let mut perturbed = unconstrained_start.clone();
                     for v in perturbed.iter_mut() {
                         rng_state = rng_state
@@ -929,32 +998,40 @@ pub fn fit(
                         let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
                         *v += u * scale;
                     }
-                    if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), perturbed, maxiter) {
-                        try_update(p, c, n, conv);
+                    if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), perturbed, remaining)
+                    {
+                        consume_budget(&mut remaining, &mut total_work, n);
+                        try_update(p, c, conv);
                     }
                 }
             }
 
             match best {
-                Some((best_p, best_c, best_n, _best_conv, _)) => {
+                Some((best_p, best_c, best_conv, _)) => {
                     // NM refinement for models with 2+ params
-                    if n_params_total >= 2 {
-                        match run_nelder_mead(objective.clone(), best_p.clone(), maxiter / 2) {
+                    if n_params_total >= 2 && remaining > 0 {
+                        match run_nelder_mead(objective.clone(), best_p.clone(), remaining) {
                             Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
-                                (nm_p, nm_c, best_n + nm_n, nm_conv, "lbfgs+nm".to_string())
+                                consume_budget(&mut remaining, &mut total_work, nm_n);
+                                (nm_p, nm_c, total_work, nm_conv, "lbfgs+nm".to_string())
                             }
-                            _ => (best_p, best_c, best_n, true, "lbfgs".to_string()),
+                            Ok((_, _, nm_n, _)) => {
+                                consume_budget(&mut remaining, &mut total_work, nm_n);
+                                (best_p, best_c, total_work, best_conv, "lbfgs".to_string())
+                            }
+                            Err(_) => (best_p, best_c, total_work, best_conv, "lbfgs".to_string()),
                         }
                     } else {
-                        (best_p, best_c, best_n, true, "lbfgs".to_string())
+                        (best_p, best_c, total_work, best_conv, "lbfgs".to_string())
                     }
                 }
                 None => {
                     // All L-BFGS attempts failed, fallback to Nelder-Mead
                     let (p, c, n, conv) =
-                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                        run_nelder_mead(objective.clone(), unconstrained_start, remaining)
                             .map_err(|e| SarimaxError::OptimizationFailed(e))?;
-                    (p, c, n, conv, "nelder-mead (fallback)".to_string())
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    (p, c, total_work, conv, "nelder-mead (fallback)".to_string())
                 }
             }
         }
@@ -1281,5 +1358,96 @@ mod tests {
 
         assert!(result.loglike.is_finite());
         assert!(result.params[0].is_finite());
+    }
+
+    #[test]
+    fn test_zero_maxiter_not_converged_for_lbfgs_and_nm() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["ar1"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 0, false, false);
+
+        let lbfgs = fit(&data, &config, None, Some("lbfgs"), Some(0), None).unwrap();
+        assert_eq!(lbfgs.n_iter, 0, "lbfgs with maxiter=0 should not run");
+        assert!(
+            !lbfgs.converged,
+            "lbfgs with maxiter=0 must report not converged"
+        );
+
+        let nm = fit(&data, &config, None, Some("nelder-mead"), Some(0), None).unwrap();
+        assert_eq!(nm.n_iter, 0, "nelder-mead with maxiter=0 should not run");
+        assert!(
+            !nm.converged,
+            "nelder-mead with maxiter=0 must report not converged"
+        );
+    }
+
+    #[test]
+    fn test_zero_maxiter_not_converged_for_lbfgsb_multi() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 1, false, false);
+        let result = fit(&data, &config, None, Some("lbfgsb-multi"), Some(0), None).unwrap();
+
+        assert_eq!(
+            result.n_iter, 0,
+            "lbfgsb-multi with maxiter=0 should not consume budget"
+        );
+        assert!(
+            !result.converged,
+            "lbfgsb-multi with maxiter=0 must report not converged"
+        );
+    }
+
+    #[test]
+    fn test_multistart_respects_global_maxiter_budget() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["arma11"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+
+        let config = make_config(1, 0, 1, false, false);
+        let maxiter = 5_u64;
+
+        let lbfgs = fit(&data, &config, None, Some("lbfgs"), Some(maxiter), None).unwrap();
+        assert!(
+            lbfgs.n_iter <= maxiter,
+            "lbfgs n_iter={} exceeds maxiter={}",
+            lbfgs.n_iter,
+            maxiter
+        );
+
+        let lbfgsb_multi = fit(
+            &data,
+            &config,
+            None,
+            Some("lbfgsb-multi"),
+            Some(maxiter),
+            None,
+        )
+        .unwrap();
+        assert!(
+            lbfgsb_multi.n_iter <= maxiter,
+            "lbfgsb-multi n_iter={} exceeds maxiter={}",
+            lbfgsb_multi.n_iter,
+            maxiter
+        );
     }
 }
