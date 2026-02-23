@@ -31,17 +31,24 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install build tools
-        run: pip install maturin numpy pytest
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install deps
+        run: |
+          uv venv .venv
+          uv pip install numpy pytest
 
       - name: Build wheel (release)
-        run: maturin build --release --out dist/
+        run: |
+          uv pip install maturin
+          CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out dist/
 
       - name: Install wheel
-        run: pip install --force-reinstall dist/sarimax_rs-*.whl
+        run: uv pip install --force-reinstall dist/sarimax_rs-*.whl
 
       - name: Run smoke tests
-        run: python -m pytest python_tests/test_wheel_smoke.py -v --tb=short
+        run: .venv/bin/python -m pytest python_tests/test_wheel_smoke.py -v --tb=short
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
