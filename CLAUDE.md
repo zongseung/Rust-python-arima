@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 All commands run from `sarimax_rs/`.
 
 ```bash
-# Rust unit tests (89 tests across all modules)
+# Rust unit tests (140 tests across all modules)
 cargo test --all-targets
 
 # Build Python wheel (development)
@@ -55,7 +55,7 @@ Python (PyO3) → params.rs (unpack/transform) → polynomial.rs (lag expansion)
 - **params.rs** — `SarimaxParams` struct, flat vector ↔ struct conversion, Monahan/Jones constrained transform for stationarity/invertibility
 - **state_space.rs** — Builds Harvey representation matrices. State dimension = `k_states_diff(d + s*D) + k_order(max(p+sP, q+sQ+1))`
 - **kalman.rs** — `kalman_loglike()` (concentrated/full) and `kalman_filter()` (full state history). Joseph form covariance update
-- **optimizer.rs** — MLE via L-BFGS (primary) with Nelder-Mead fallback. Finite-difference gradients (center diff, eps=1e-7)
+- **optimizer.rs** — MLE via L-BFGS-B (primary) with Nelder-Mead fallback. CSS pre-optimization, DARE initialization, multi-start with near-cancellation filtering (P6), finite-difference gradients (center diff, eps=1e-7)
 - **forecast.rs** — `forecast_pipeline()` and `residuals_pipeline()`. Z-score via Abramowitz & Stegun approximation
 - **batch.rs** — `batch_fit()` / `batch_forecast()` using `rayon::par_iter()`. Error isolation per series
 - **polynomial.rs** — `reduced_ar` / `reduced_ma` via polynomial multiplication for seasonal lag expansion
@@ -73,10 +73,10 @@ JSON files in `tests/fixtures/` contain statsmodels reference outputs for ground
 ## Constraints & Limitations
 
 - Seasonal differencing D must be 0 or 1
-- Exogenous variables (exog) raise `NotImplementedError`
+- Exogenous variables (exog) supported: `[exog_coeffs, ar(p), ma(q), sar(P), sma(Q)]` param layout with exog
 - No Hessian/information matrix — standard errors not available
 - Forecast steps capped at 10,000
-- Flat param vector layout: `[ar(p), ma(q), sar(P), sma(Q)]`
+- Flat param vector layout: `[ar(p), ma(q), sar(P), sma(Q)]` (without exog) or `[exog(k), ar(p), ma(q), sar(P), sma(Q)]` (with exog)
 - `concentrate_scale=true` by default (sigma² concentrated out of likelihood)
 
 ## Key Dependencies

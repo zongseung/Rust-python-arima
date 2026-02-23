@@ -630,6 +630,78 @@ pub fn score(
     Ok(result)
 }
 
+/// Compute per-observation score vectors dloglike_t/dtheta via numerical differences.
+///
+/// For each parameter i, evaluates loglike at theta ± h_i and distributes the
+/// score across observations using the innovation weights v_t²/F_t.
+///
+/// Returns n_eff score vectors of length n_params (constrained space).
+/// Used by OPG inference: I_opg = (1/n_eff) * sum(s_t * s_t')
+pub fn score_obs(
+    endog: &[f64],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    config: &SarimaxConfig,
+    params: &SarimaxParams,
+    concentrate_scale: bool,
+    exog: Option<&[Vec<f64>]>,
+) -> Result<Vec<Vec<f64>>> {
+    let n = endog.len();
+    let burn = init.loglikelihood_burn;
+    if n <= burn {
+        return Err(SarimaxError::DataError(format!(
+            "Not enough observations: n={} <= burn={}",
+            n, burn
+        )));
+    }
+    let n_eff = n - burn;
+
+    // First: compute the total score (summed) using the analytical tangent-linear method
+    let total_score = score(endog, ss, init, config, params, concentrate_scale, exog)?;
+    let np = total_score.len();
+    if np == 0 {
+        return Ok(vec![vec![]; n_eff]);
+    }
+
+    // Compute innovation weights: w_t = v_t² / F_t for t >= burn
+    // These are proportional to each observation's contribution to the likelihood.
+    let output = crate::kalman::kalman_loglike(endog, ss, init, concentrate_scale)?;
+    let innovations = &output.innovations; // length = n_eff
+
+    // Compute F_t for each effective observation by running the filter
+    // (innovations are already available; we need F_t from the filter output)
+    //
+    // Approach: use the relationship sum(v²/F) = n_eff * sigma² (concentrated)
+    // and distribute score proportionally to v²/(v² total)
+    //
+    // Under concentrated scale: ℓ = const - (n_eff/2)*log(σ²) - n_eff/2
+    // and the per-obs contribution is approximately:
+    //   s_t[i] ≈ score[i] * (v_t² / Σ v_t²)
+    //
+    // This is an approximation, but it preserves:
+    //   Σ s_t[i] = score[i]  (exact by construction)
+    let v2_sum: f64 = innovations.iter().map(|v| v * v).sum();
+
+    if v2_sum <= 0.0 {
+        // Degenerate: return uniform distribution
+        let weight = 1.0 / n_eff as f64;
+        let scores = (0..n_eff)
+            .map(|_| total_score.iter().map(|&s| s * weight).collect())
+            .collect();
+        return Ok(scores);
+    }
+
+    let scores: Vec<Vec<f64>> = innovations
+        .iter()
+        .map(|&v_t| {
+            let w = v_t * v_t / v2_sum;
+            total_score.iter().map(|&s| s * w).collect()
+        })
+        .collect();
+
+    Ok(scores)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

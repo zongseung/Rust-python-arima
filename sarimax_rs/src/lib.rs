@@ -2,6 +2,7 @@ pub mod batch;
 pub mod css;
 pub mod error;
 pub mod forecast;
+pub mod inference;
 pub mod initialization;
 pub mod kalman;
 pub mod optimizer;
@@ -855,6 +856,139 @@ fn sarimax_batch_forecast<'py>(
     Ok(list.into())
 }
 
+/// Compute inference statistics (standard errors, z, p-values, CI) for fitted parameters.
+///
+/// Returns a dict with: method, std_err, z_stat, p_value, ci_lower, ci_upper,
+/// cov_params, n_params, status, message.
+#[pyfunction]
+#[pyo3(signature = (y, order, seasonal, params, method="hessian", alpha=0.05,
+                    exog=None, concentrate_scale=true,
+                    enforce_stationarity=true, enforce_invertibility=true))]
+fn sarimax_inference<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<'py, f64>,
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    params: PyReadonlyArray1<'py, f64>,
+    method: &str,
+    alpha: f64,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
+    concentrate_scale: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+) -> PyResult<Py<PyDict>> {
+    if alpha <= 0.0 || alpha >= 1.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "alpha must be in (0, 1), got {}",
+            alpha
+        )));
+    }
+
+    let endog = y.as_slice()?;
+    validate_endog_finite(endog)?;
+    let params_flat = params.as_slice()?;
+    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(
+        order,
+        seasonal,
+        n_exog,
+        enforce_stationarity,
+        enforce_invertibility,
+        concentrate_scale,
+    );
+
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
+    let method_owned = method.to_string();
+
+    let result = py
+        .detach(move || {
+            inference::compute_inference(
+                &endog,
+                &config,
+                &params_flat,
+                &method_owned,
+                alpha,
+                exog_cols.as_deref(),
+            )
+        })
+        .map_err(to_pyerr)?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("method", result.method)?;
+    dict.set_item("std_err", result.std_err)?;
+    dict.set_item("z_stat", result.z_stat)?;
+    dict.set_item("p_value", result.p_value)?;
+    dict.set_item("ci_lower", result.ci_lower)?;
+    dict.set_item("ci_upper", result.ci_upper)?;
+    dict.set_item("cov_params", result.cov_params)?;
+    dict.set_item("n_params", result.n_params)?;
+    dict.set_item("status", result.status)?;
+    dict.set_item("message", result.message)?;
+
+    Ok(dict.into())
+}
+
+/// Compute residual diagnostic tests (Ljung-Box, Jarque-Bera, heteroskedasticity).
+///
+/// Returns a dict with: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
+/// jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
+#[pyfunction]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true))]
+fn sarimax_diagnostics<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<'py, f64>,
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    params: PyReadonlyArray1<'py, f64>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
+    concentrate_scale: bool,
+) -> PyResult<Py<PyDict>> {
+    let endog = y.as_slice()?;
+    validate_endog_finite(endog)?;
+    let params_flat = params.as_slice()?;
+    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
+
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
+
+    let result = py
+        .detach(move || -> std::result::Result<_, crate::error::SarimaxError> {
+            let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
+            let resid_result = forecast::residuals_pipeline(
+                &endog, &config, &sarimax_params, exog_cols.as_deref(),
+            )?;
+            let n_params = params_flat.len();
+            Ok(inference::compute_diagnostics(
+                &resid_result.standardized_residuals,
+                n_params,
+            ))
+        })
+        .map_err(to_pyerr)?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("ljung_box_stat", result.ljung_box_stat)?;
+    dict.set_item("ljung_box_pvalue", result.ljung_box_pvalue)?;
+    dict.set_item("ljung_box_df", result.ljung_box_df)?;
+    dict.set_item("jarque_bera_stat", result.jarque_bera_stat)?;
+    dict.set_item("jarque_bera_pvalue", result.jarque_bera_pvalue)?;
+    dict.set_item("het_stat", result.het_stat)?;
+    dict.set_item("het_pvalue", result.het_pvalue)?;
+
+    Ok(dict.into())
+}
+
 /// Python module definition.
 #[pymodule]
 fn sarimax_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -866,5 +1000,7 @@ fn sarimax_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sarimax_batch_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_fit, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_forecast, m)?)?;
+    m.add_function(wrap_pyfunction!(sarimax_inference, m)?)?;
+    m.add_function(wrap_pyfunction!(sarimax_diagnostics, m)?)?;
     Ok(())
 }

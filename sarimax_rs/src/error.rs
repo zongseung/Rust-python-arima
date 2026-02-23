@@ -25,6 +25,9 @@ pub enum SarimaxError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("inference computation failed: {0}")]
+    InferenceFailed(String),
 }
 
 pub type Result<T> = std::result::Result<T, SarimaxError>;

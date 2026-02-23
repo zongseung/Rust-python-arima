@@ -165,7 +165,7 @@ def _compute_numerical_hessian(loglike_fn, params):
     return H
 
 
-_VALID_INFERENCE_MODES = ("none", "hessian", "statsmodels", "both")
+_VALID_INFERENCE_MODES = ("none", "hessian", "statsmodels", "both", "rust_hessian", "opg")
 
 
 def _validate_inference_mode(mode):
@@ -377,6 +377,71 @@ def _compute_inference(loglike_fn, params, alpha=0.05):
         inference_status=status,
         inference_message=message,
     )
+
+
+def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=0.05,
+                            exog=None, enforce_stationarity=True,
+                            enforce_invertibility=True):
+    """Compute inference using the Rust sarimax_inference function.
+
+    Parameters
+    ----------
+    endog : np.ndarray
+    order : tuple (p, d, q)
+    seasonal_order : tuple (P, D, Q, s)
+    params : np.ndarray
+    method : str
+        "hessian" or "opg".
+    alpha : float
+    exog : np.ndarray or None
+    enforce_stationarity : bool
+    enforce_invertibility : bool
+
+    Returns
+    -------
+    dict with keys: std_err, z, p_value, ci_lower, ci_upper,
+                    cov_params, inference_status, inference_message
+    """
+    k = len(params)
+    nan_arr = np.full(k, np.nan)
+
+    try:
+        kwargs = dict(
+            method=method,
+            alpha=alpha,
+            enforce_stationarity=enforce_stationarity,
+            enforce_invertibility=enforce_invertibility,
+        )
+        if exog is not None:
+            kwargs["exog"] = exog
+
+        result = sarimax_rs.sarimax_inference(
+            endog, order, seasonal_order,
+            np.array(params, dtype=np.float64),
+            **kwargs,
+        )
+
+        return dict(
+            std_err=np.array(result["std_err"]),
+            z=np.array(result["z_stat"]),
+            p_value=np.array(result["p_value"]),
+            ci_lower=np.array(result["ci_lower"]),
+            ci_upper=np.array(result["ci_upper"]),
+            cov_params=np.array(result["cov_params"]).reshape(k, k) if k > 0 else np.array([]),
+            inference_status=result["status"],
+            inference_message=result["message"],
+        )
+    except Exception as e:
+        return dict(
+            std_err=nan_arr.copy(),
+            z=nan_arr.copy(),
+            p_value=nan_arr.copy(),
+            ci_lower=nan_arr.copy(),
+            ci_upper=nan_arr.copy(),
+            cov_params=np.full((k, k), np.nan) if k > 0 else np.array([]),
+            inference_status="failed",
+            inference_message=str(e),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +660,24 @@ class SARIMAXResult:
             result.update(self._inference_cache[cache_key])
             return result
 
+        if mode in ("rust_hessian", "opg"):
+            rust_method = "hessian" if mode == "rust_hessian" else "opg"
+            cache_key = (mode, alpha, params_sig)
+            if cache_key not in self._inference_cache:
+                self._inference_cache[cache_key] = _compute_rust_inference(
+                    self.model.endog,
+                    self.model.order,
+                    self.model.seasonal_order,
+                    self.params,
+                    method=rust_method,
+                    alpha=alpha,
+                    exog=self.model.exog,
+                    enforce_stationarity=self.model.enforce_stationarity,
+                    enforce_invertibility=self.model.enforce_invertibility,
+                )
+            result.update(self._inference_cache[cache_key])
+            return result
+
         if mode == "statsmodels":
             cache_key = ("statsmodels", alpha, params_sig)
             if cache_key not in self._inference_cache:
@@ -751,6 +834,26 @@ class SARIMAXResult:
             )
             self._resid = np.array(result["standardized_residuals"])
         return self._resid
+
+    def diagnostics(self):
+        """Compute residual diagnostic tests.
+
+        Returns
+        -------
+        dict
+            Keys: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
+                  jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
+        """
+        kwargs = {}
+        if self.model.exog is not None:
+            kwargs["exog"] = self.model.exog
+        return sarimax_rs.sarimax_diagnostics(
+            self.model.endog,
+            self.model.order,
+            self.model.seasonal_order,
+            self.params,
+            **kwargs,
+        )
 
     def summary(self, alpha=0.05, include_inference=None, inference=None):
         """Return a summary string of the model fit.
