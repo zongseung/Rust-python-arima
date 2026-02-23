@@ -117,6 +117,68 @@ impl StateSpace {
         })
     }
 
+    /// Update parameter-dependent matrices in-place.
+    ///
+    /// During optimization, only the ARMA parameters change between iterations.
+    /// This method updates T (companion column), R (MA coefficients), Q (sigma2),
+    /// and intercepts in-place, avoiding the full matrix reconstruction cost of
+    /// `StateSpace::new()`.
+    ///
+    /// Config-dependent structure (diff blocks, seasonal shifts, connections,
+    /// superdiagonal ones) remains unchanged.
+    pub fn update_params(
+        &mut self,
+        config: &SarimaxConfig,
+        params: &SarimaxParams,
+        endog: &[f64],
+        exog: Option<&[Vec<f64>]>,
+    ) {
+        let order = &config.order;
+        let sd = order.k_states_diff();
+        let ko = order.k_order();
+        let n = endog.len();
+
+        // 1. Update ARMA companion first column in T: T[sd+i, sd] = -reduced_ar[i+1]
+        let red_ar = reduced_ar(params, order);
+        for i in 0..ko {
+            let idx = i + 1;
+            self.transition[(sd + i, sd)] = if idx < red_ar.len() {
+                -red_ar[idx]
+            } else {
+                0.0
+            };
+        }
+
+        // 2. Update MA coefficients in R: R[sd+i, 0] = reduced_ma[i]
+        let red_ma = reduced_ma(params, order);
+        for i in 1..ko {
+            self.selection[(sd + i, 0)] = if i < red_ma.len() {
+                red_ma[i]
+            } else {
+                0.0
+            };
+        }
+
+        // 3. Update Q: sigma2
+        self.state_cov[(0, 0)] = if config.concentrate_scale {
+            1.0
+        } else {
+            params.sigma2.unwrap_or(1.0)
+        };
+
+        // 4. Update obs_intercept (d_t = exog * beta)
+        self.obs_intercept = Self::build_obs_intercept(n, params, exog);
+
+        // 5. Update state_intercept (trend contribution)
+        self.state_intercept = Self::build_state_intercept(
+            n,
+            self.k_states,
+            self.k_states_diff,
+            config,
+            params,
+        );
+    }
+
     /// Build the transition matrix T.
     ///
     /// Structure for SARIMA(p,d,q)(P,D,Q,s):
@@ -517,6 +579,62 @@ mod tests {
         let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
 
         assert!((ss.state_cov[(0, 0)] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_update_params_ar1() {
+        // Build SS with one set of params, then update in-place
+        let config = make_config(1, 0, 0);
+        let params1 = make_params(&[0.5], &[]);
+        let endog = vec![0.0; 10];
+        let mut ss = StateSpace::new(&config, &params1, &endog, None).unwrap();
+        assert!((ss.transition[(0, 0)] - 0.5).abs() < 1e-10);
+
+        // Update to new AR coefficient
+        let params2 = make_params(&[0.8], &[]);
+        ss.update_params(&config, &params2, &endog, None);
+        assert!((ss.transition[(0, 0)] - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_update_params_arma11() {
+        let config = make_config(1, 0, 1);
+        let params1 = make_params(&[0.4], &[0.3]);
+        let endog = vec![0.0; 10];
+        let mut ss = StateSpace::new(&config, &params1, &endog, None).unwrap();
+
+        // Verify initial values
+        assert!((ss.transition[(0, 0)] - 0.4).abs() < 1e-10);
+        assert!((ss.selection[(1, 0)] - 0.3).abs() < 1e-10);
+
+        // Update to new params
+        let params2 = make_params(&[0.9], &[-0.5]);
+        ss.update_params(&config, &params2, &endog, None);
+        assert!((ss.transition[(0, 0)] - 0.9).abs() < 1e-10);
+        assert!((ss.selection[(1, 0)] - (-0.5)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_update_params_matches_new() {
+        // Verify that update_params produces the same result as building from scratch
+        let config = make_seasonal_config(1, 1, 1, 1, 0, 1, 12);
+        let params1 = make_seasonal_params(&[0.5], &[0.3], &[0.2], &[-0.6]);
+        let endog = vec![0.0; 300];
+        let mut ss = StateSpace::new(&config, &params1, &endog, None).unwrap();
+
+        let params2 = make_seasonal_params(&[0.9], &[-0.4], &[0.1], &[-0.8]);
+        ss.update_params(&config, &params2, &endog, None);
+
+        // Build fresh SS with params2 for comparison
+        let ss_fresh = StateSpace::new(&config, &params2, &endog, None).unwrap();
+
+        // Compare T, R, Q
+        let t_diff = (&ss.transition - &ss_fresh.transition).norm();
+        let r_diff = (&ss.selection - &ss_fresh.selection).norm();
+        let q_diff = (&ss.state_cov - &ss_fresh.state_cov).norm();
+        assert!(t_diff < 1e-12, "T mismatch after update_params: {}", t_diff);
+        assert!(r_diff < 1e-12, "R mismatch after update_params: {}", r_diff);
+        assert!(q_diff < 1e-12, "Q mismatch after update_params: {}", q_diff);
     }
 
     #[test]

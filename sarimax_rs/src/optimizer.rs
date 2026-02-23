@@ -12,6 +12,9 @@ use argmin::solver::quasinewton::LBFGS;
 
 use std::cell::RefCell;
 
+use rayon::prelude::*;
+
+use crate::css;
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::kalman_loglike;
@@ -173,6 +176,9 @@ struct SarimaxObjective {
     /// Single-entry cache: stores the last fused (cost, gradient) evaluation.
     /// Populated by `gradient()`, consumed by `cost()` at the same params.
     cache: RefCell<Option<CachedEval>>,
+    /// Cached StateSpace: reused across optimizer iterations via in-place
+    /// update_params() to avoid reallocating k×k matrices every evaluation.
+    ss_cache: RefCell<Option<StateSpace>>,
 }
 
 impl Clone for SarimaxObjective {
@@ -182,11 +188,32 @@ impl Clone for SarimaxObjective {
             config: self.config.clone(),
             exog: self.exog.clone(),
             cache: RefCell::new(None), // cloned objectives start with empty cache
+            ss_cache: RefCell::new(None), // cloned objectives build fresh SS
         }
     }
 }
 
 impl SarimaxObjective {
+    /// Take cached StateSpace (updating in-place) or build a new one.
+    fn take_or_build_ss(
+        &self,
+        sparams: &SarimaxParams,
+    ) -> std::result::Result<StateSpace, String> {
+        match self.ss_cache.borrow_mut().take() {
+            Some(mut ss) => {
+                ss.update_params(&self.config, sparams, &self.endog, self.exog.as_deref());
+                Ok(ss)
+            }
+            None => StateSpace::new(&self.config, sparams, &self.endog, self.exog.as_deref())
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Return StateSpace to cache for reuse by the next evaluation.
+    fn return_ss(&self, ss: StateSpace) {
+        *self.ss_cache.borrow_mut() = Some(ss);
+    }
+
     /// Evaluate negative log-likelihood for given unconstrained parameters.
     /// Used by L-BFGS-B which minimizes directly.
     fn eval_negloglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
@@ -201,13 +228,14 @@ impl SarimaxObjective {
         let sparams =
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
-        let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
-            .map_err(|e| e.to_string())?;
-
+        let ss = self.take_or_build_ss(&sparams)?;
         let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
 
-        let output = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale)
-            .map_err(|e| e.to_string())?;
+        let result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);
+        // Always return SS to cache (even on error, the matrices are still valid)
+        self.return_ss(ss);
+
+        let output = result.map_err(|e| e.to_string())?;
 
         if output.loglike.is_finite() {
             Ok(output.loglike)
@@ -232,13 +260,11 @@ impl SarimaxObjective {
         let sparams =
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
-        let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
-            .map_err(|e| e.to_string())?;
-
+        let ss = self.take_or_build_ss(&sparams)?;
         let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
 
         // Score in constrained space: ∂ll/∂θ_constrained
-        let score_constrained = score::score(
+        let score_result = score::score(
             &self.endog,
             &ss,
             &init,
@@ -246,8 +272,10 @@ impl SarimaxObjective {
             &sparams,
             self.config.concentrate_scale,
             self.exog.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        self.return_ss(ss);
+
+        let score_constrained = score_result.map_err(|e| e.to_string())?;
 
         // Chain rule: ∂(-ll)/∂u = -J' · ∂ll/∂θ
         // where J[j,i] = ∂θ_j / ∂u_i (Jacobian of transform_params)
@@ -272,22 +300,28 @@ impl SarimaxObjective {
         let sparams =
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
-        let ss = StateSpace::new(&self.config, &sparams, &self.endog, self.exog.as_deref())
-            .map_err(|e| e.to_string())?;
-
+        let ss = self.take_or_build_ss(&sparams)?;
         let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
 
         // 1. Log-likelihood (forward KF)
-        let output = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale)
-            .map_err(|e| e.to_string())?;
+        let kf_result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);
+
+        let output = match kf_result {
+            Ok(o) => o,
+            Err(e) => {
+                self.return_ss(ss);
+                return Err(e.to_string());
+            }
+        };
 
         if !output.loglike.is_finite() {
+            self.return_ss(ss);
             return Err("non-finite log-likelihood".to_string());
         }
         let negll = -output.loglike;
 
         // 2. Score (tangent linear KF, reuses ss and init)
-        let score_constrained = score::score(
+        let score_result = score::score(
             &self.endog,
             &ss,
             &init,
@@ -295,8 +329,10 @@ impl SarimaxObjective {
             &sparams,
             self.config.concentrate_scale,
             self.exog.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        self.return_ss(ss);
+
+        let score_constrained = score_result.map_err(|e| e.to_string())?;
 
         // 3. Chain rule: ∂(-ll)/∂u = -J' · ∂ll/∂θ
         let grad = apply_transform_jacobian(&score_constrained, unconstrained, &self.config)?;
@@ -417,6 +453,37 @@ impl Gradient for SarimaxObjective {
         }
 
         Ok(grad)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CSS pre-optimization objective
+// ---------------------------------------------------------------------------
+
+/// CSS-based objective for fast Nelder-Mead pre-optimization.
+///
+/// CSS is O(n·(p'+q')) per evaluation vs O(n·k³) for KF.
+/// Used as a pre-optimization step to find better MLE starting parameters.
+struct CssObjective {
+    endog: Vec<f64>,
+    config: SarimaxConfig,
+}
+
+impl CostFunction for CssObjective {
+    type Param = Vec<f64>;
+    type Output = f64;
+
+    fn cost(&self, unconstrained: &Vec<f64>) -> std::result::Result<f64, argmin::core::Error> {
+        match transform_params(unconstrained, &self.config) {
+            Ok(constrained) => match SarimaxParams::from_flat(&constrained, &self.config) {
+                Ok(sparams) => {
+                    let ll = css::css_loglike(&self.endog, &self.config, &sparams);
+                    Ok(if ll.is_finite() { -ll } else { f64::MAX / 2.0 })
+                }
+                Err(_) => Ok(f64::MAX / 2.0),
+            },
+            Err(_) => Ok(f64::MAX / 2.0),
+        }
     }
 }
 
@@ -917,9 +984,10 @@ where
     }
 }
 
-/// Multi-start L-BFGS-B with grid search and NM refinement.
+/// Multi-start L-BFGS-B with grid search, parallel restarts, and NM refinement.
 ///
-/// More robust but slower -- use when accuracy matters more than speed.
+/// Uses rayon to parallelize LCG perturbation restarts. Each thread gets its
+/// own SarimaxObjective with independent StateSpace cache.
 fn fit_lbfgsb_multi(
     objective: &SarimaxObjective,
     unconstrained_start: &[f64],
@@ -928,15 +996,109 @@ fn fit_lbfgsb_multi(
     n_restarts: usize,
 ) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
     let bounds = compute_bounds(config);
-    fit_multistart(
-        objective,
-        unconstrained_start,
-        config,
-        maxiter,
-        n_restarts,
-        "lbfgsb-multi",
-        |start, budget| run_lbfgsb(objective, start, bounds.clone(), budget),
-    )
+    let n_params_total = unconstrained_start.len();
+    let mut remaining = maxiter;
+    let mut total_work: u64 = 0;
+
+    // Initial run (sequential)
+    let mut best: Option<(Vec<f64>, f64, bool, String)> =
+        match run_lbfgsb(objective, unconstrained_start.to_vec(), bounds.clone(), remaining) {
+            Ok((p, c, n, conv)) => {
+                consume_budget(&mut remaining, &mut total_work, n);
+                Some((p, c, conv, "lbfgsb-multi".to_string()))
+            }
+            Err(_) => None,
+        };
+
+    if n_restarts > 0 && remaining > 0 {
+        // 1. Zero-start (sequential)
+        let zeros = vec![0.0; n_params_total];
+        if let Ok((p, c, n, conv)) = run_lbfgsb(objective, zeros, bounds.clone(), remaining) {
+            consume_budget(&mut remaining, &mut total_work, n);
+            try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
+        }
+
+        // 2. Grid MA initialization (sequential NM, gradient-free)
+        grid_ma_initialization(
+            objective,
+            config,
+            n_params_total,
+            &mut remaining,
+            &mut total_work,
+            &mut best,
+            "lbfgsb-multi+nm",
+        );
+
+        // 3. LCG perturbations — PARALLEL via rayon
+        let perturbations = lcg_perturbed_starts(unconstrained_start, n_restarts, &remaining);
+        if perturbations.len() >= 2 && remaining > 0 {
+            let per_start_budget = remaining / perturbations.len() as u64;
+            if per_start_budget > 0 {
+                // Pre-clone data for thread-safe parallel execution.
+                // Each rayon thread gets its own SarimaxObjective (with fresh caches).
+                let endog_shared = &objective.endog;
+                let config_shared = &objective.config;
+                let exog_shared = &objective.exog;
+                let bounds_shared = &bounds;
+
+                let results: Vec<_> = perturbations
+                    .into_par_iter()
+                    .filter_map(|start| {
+                        let obj = SarimaxObjective {
+                            endog: endog_shared.clone(),
+                            config: config_shared.clone(),
+                            exog: exog_shared.clone(),
+                            cache: RefCell::new(None),
+                            ss_cache: RefCell::new(None),
+                        };
+                        run_lbfgsb(&obj, start, bounds_shared.clone(), per_start_budget).ok()
+                    })
+                    .collect();
+
+                let par_work: u64 = results.iter().map(|(_, _, n, _)| n).sum();
+                total_work = total_work.saturating_add(par_work);
+                remaining = remaining.saturating_sub(par_work);
+
+                for (p, c, _, conv) in results {
+                    try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
+                }
+            }
+        } else {
+            // Single perturbation or no budget: run sequentially
+            for perturbed in perturbations {
+                if remaining == 0 {
+                    break;
+                }
+                if let Ok((p, c, n, conv)) =
+                    run_lbfgsb(objective, perturbed, bounds.clone(), remaining)
+                {
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
+                }
+            }
+        }
+    }
+
+    // NM refinement
+    match best {
+        Some((best_p, best_c, best_conv, method_name)) => Ok(nm_refinement(
+            objective,
+            best_p,
+            best_c,
+            best_conv,
+            method_name,
+            n_params_total,
+            &mut remaining,
+            &mut total_work,
+        )),
+        None => {
+            let (p, c, n, conv) =
+                run_nelder_mead(objective.clone(), unconstrained_start.to_vec(), remaining)
+                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+            consume_budget(&mut remaining, &mut total_work, n);
+            Ok((p, c, total_work, conv, "nelder-mead (fallback)".to_string()))
+        }
+    }
 }
 
 /// Multi-start L-BFGS (argmin) with grid search and NM refinement.
@@ -1131,6 +1293,83 @@ fn fit_lbfgsb_single(
 }
 
 // ---------------------------------------------------------------------------
+// CSS pre-optimization helpers
+// ---------------------------------------------------------------------------
+
+/// Evaluate KF log-likelihood at constrained parameters. Returns NEG_INFINITY on error.
+fn eval_kf_loglike_constrained(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    constrained: &[f64],
+    exog: Option<&[Vec<f64>]>,
+) -> f64 {
+    let sparams = match SarimaxParams::from_flat(constrained, config) {
+        Ok(p) => p,
+        Err(_) => return f64::NEG_INFINITY,
+    };
+    let ss = match StateSpace::new(config, &sparams, endog, exog) {
+        Ok(s) => s,
+        Err(_) => return f64::NEG_INFINITY,
+    };
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    match kalman_loglike(endog, &ss, &init, config.concentrate_scale) {
+        Ok(out) if out.loglike.is_finite() => out.loglike,
+        _ => f64::NEG_INFINITY,
+    }
+}
+
+/// Run CSS pre-optimization via Nelder-Mead in unconstrained space.
+///
+/// CSS is O(n·(p'+q')) per evaluation, ~100x faster than KF for large k.
+/// Returns updated constrained parameters only if they improve KF loglike.
+fn run_css_optimization(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    constrained_start: &[f64],
+    maxiter: u64,
+) -> Option<Vec<f64>> {
+    let unconstrained_start = untransform_params(constrained_start, config).ok()?;
+    let n = unconstrained_start.len();
+    if n == 0 {
+        return None;
+    }
+
+    let obj = CssObjective {
+        endog: endog.to_vec(),
+        config: config.clone(),
+    };
+
+    // Build simplex: initial point + n perturbations
+    let mut simplex = vec![unconstrained_start.clone()];
+    for i in 0..n {
+        let mut vertex = unconstrained_start.clone();
+        let delta = if vertex[i].abs() > 0.1 {
+            vertex[i] * 0.05
+        } else {
+            0.025
+        };
+        vertex[i] += delta;
+        simplex.push(vertex);
+    }
+
+    let solver = NelderMead::new(simplex)
+        .with_sd_tolerance(1e-4)
+        .ok()?;
+
+    let result = Executor::new(obj, solver)
+        .configure(
+            |state: argmin::core::IterState<Vec<f64>, (), (), (), (), f64>| {
+                state.max_iters(maxiter)
+            },
+        )
+        .run()
+        .ok()?;
+
+    let best_unconstrained = result.state().get_best_param()?.clone();
+    transform_params(&best_unconstrained, config).ok()
+}
+
+// ---------------------------------------------------------------------------
 // Public fit() entry point
 // ---------------------------------------------------------------------------
 
@@ -1155,7 +1394,7 @@ pub fn fit(
     let method = method.unwrap_or("lbfgsb");
 
     // 1. Validate + compute start params
-    let constrained_start = validate_and_get_start_params(endog, config, start_params, exog)?;
+    let mut constrained_start = validate_and_get_start_params(endog, config, start_params, exog)?;
 
     // 2. Fast paths (AR-only, maxiter=0)
     if let Some(r) = try_ar_fast_path(endog, config, &constrained_start, exog, method, start_params.is_some())? {
@@ -1165,6 +1404,29 @@ pub fn fit(
         return build_zero_iter_result(endog, config, &constrained_start, exog, method);
     }
 
+    // 2.5. CSS pre-optimization: for seasonal models with MA terms,
+    // run fast CSS Nelder-Mead to find a better starting point before MLE.
+    // KF cross-validation prevents CSS from worsening the starting point.
+    // Restricted to seasonal models (s >= 2) where the large state dimension
+    // makes CSS pre-optimization most beneficial and least likely to mislead.
+    if start_params.is_none() {
+        let is_seasonal = config.order.s >= 2;
+        let has_seasonal_ma = config.order.qq > 0;
+        let benefit_from_css = is_seasonal
+            && has_seasonal_ma
+            && (config.order.q + config.order.qq >= 2
+                || config.order.s >= 4);
+        if benefit_from_css {
+            if let Some(css_params) = run_css_optimization(endog, config, &constrained_start, 100) {
+                let css_kf_ll = eval_kf_loglike_constrained(endog, config, &css_params, exog);
+                let orig_kf_ll = eval_kf_loglike_constrained(endog, config, &constrained_start, exog);
+                if css_kf_ll > orig_kf_ll {
+                    constrained_start = css_params;
+                }
+            }
+        }
+    }
+
     // 3. Transform to unconstrained space + build objective
     let unconstrained_start = untransform_params(&constrained_start, config)?;
     let objective = SarimaxObjective {
@@ -1172,6 +1434,7 @@ pub fn fit(
         config: config.clone(),
         exog: exog.map(|e| e.to_vec()),
         cache: RefCell::new(None),
+        ss_cache: RefCell::new(None),
     };
     let n_restarts = compute_n_restarts(unconstrained_start.len(), config);
 
@@ -1280,6 +1543,7 @@ mod tests {
             config,
             exog: None,
             cache: RefCell::new(None),
+            ss_cache: RefCell::new(None),
         };
 
         let cost = obj.cost(&vec![0.5]).unwrap();
@@ -1303,6 +1567,7 @@ mod tests {
             config,
             exog: None,
             cache: RefCell::new(None),
+            ss_cache: RefCell::new(None),
         };
 
         let grad = obj.gradient(&vec![0.5]).unwrap();

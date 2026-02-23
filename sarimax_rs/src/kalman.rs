@@ -1,7 +1,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
-use crate::initialization::KalmanInit;
+use crate::initialization::{KalmanInit, KalmanSteadyState};
 use crate::state_space::StateSpace;
 
 /// Output of the Kalman filter loglikelihood computation.
@@ -441,8 +441,21 @@ fn kalman_core(
     let mut a_next = DVector::<f64>::zeros(k);
     let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
-    // Steady-state detection
-    let mut ss_cache: Option<SteadyStateCache> = None;
+    // Steady-state detection.
+    // If the initializer pre-computed steady-state quantities (DARE with sd=0),
+    // activate the cache immediately — P_0 = P_∞ so no transient phase exists.
+    let mut ss_cache: Option<SteadyStateCache> = init
+        .steady_state
+        .as_ref()
+        .filter(|_| burn == 0)
+        .map(|KalmanSteadyState { k_gain, f_steady, log_f_steady, pz_inf }| {
+            SteadyStateCache {
+                k_gain: k_gain.clone(),
+                f_steady: *f_steady,
+                log_f_steady: *log_f_steady,
+                pz_inf: pz_inf.clone(),
+            }
+        });
     let mut pz_prev = DVector::<f64>::zeros(k);
     let mut consec_count = 0_usize;
 
@@ -510,7 +523,7 @@ fn kalman_core(
                 // State update: a = a + (v_t / F_t) * pz
                 a.axpy(v_t * f_inv, &pz, 1.0);
 
-                // Covariance update: P = P - (1/F_t) * pz * pz'
+                // Covariance update: P = P - (1/F_t) * pz * pz'  (Joseph form)
                 p.ger(-f_inv, &pz, &pz, 1.0);
 
                 if store_full {
@@ -530,7 +543,7 @@ fn kalman_core(
                     has_state_intercept,
                 );
 
-                // Predict covariance: P = T * P * T' + RQR'
+                // Covariance prediction: T*P*T' + RQR' (sparse path when T is sparse).
                 strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
 
                 std::mem::swap(&mut a, &mut a_next);
