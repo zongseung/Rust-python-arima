@@ -38,15 +38,31 @@ fn expected_param_len(config: &SarimaxConfig) -> usize {
         + if config.concentrate_scale { 0 } else { 1 }
 }
 
-/// Transform constrained parameters to unconstrained space for optimization.
+/// Direction of parameter transformation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransformDirection {
+    /// Constrained → unconstrained (for optimization)
+    ToUnconstrained,
+    /// Unconstrained → constrained (recover model params)
+    ToConstrained,
+}
+
+/// Shared implementation for both transform and untransform.
 ///
 /// Layout: `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`
-pub fn untransform_params(constrained: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+///
+/// The only difference between the two directions is which `params::` helper
+/// is called for each AR/MA block and for variance.
+fn transform_params_inner(
+    input: &[f64],
+    config: &SarimaxConfig,
+    direction: TransformDirection,
+) -> Result<Vec<f64>> {
     let expected = expected_param_len(config);
-    if constrained.len() != expected {
+    if input.len() != expected {
         return Err(SarimaxError::ParamLengthMismatch {
             expected,
-            got: constrained.len(),
+            got: input.len(),
         });
     }
 
@@ -57,115 +73,82 @@ pub fn untransform_params(constrained: &[f64], config: &SarimaxConfig) -> Result
     let pp = config.order.pp;
     let qq = config.order.qq;
 
-    let mut out = Vec::with_capacity(constrained.len());
+    let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
 
     // Trend + exog: pass through
-    out.extend_from_slice(&constrained[i..i + kt + n_exog]);
+    out.extend_from_slice(&input[i..i + kt + n_exog]);
     i += kt + n_exog;
 
     // AR coefficients
     if config.enforce_stationarity && p > 0 {
-        out.extend(params::unconstrain_stationary(&constrained[i..i + p]));
+        out.extend(match direction {
+            TransformDirection::ToUnconstrained => params::unconstrain_stationary(&input[i..i + p]),
+            TransformDirection::ToConstrained => params::constrain_stationary(&input[i..i + p]),
+        });
     } else {
-        out.extend_from_slice(&constrained[i..i + p]);
+        out.extend_from_slice(&input[i..i + p]);
     }
     i += p;
 
     // MA coefficients
     if config.enforce_invertibility && q > 0 {
-        out.extend(params::unconstrain_invertible(&constrained[i..i + q]));
+        out.extend(match direction {
+            TransformDirection::ToUnconstrained => params::unconstrain_invertible(&input[i..i + q]),
+            TransformDirection::ToConstrained => params::constrain_invertible(&input[i..i + q]),
+        });
     } else {
-        out.extend_from_slice(&constrained[i..i + q]);
+        out.extend_from_slice(&input[i..i + q]);
     }
     i += q;
 
     // Seasonal AR
     if config.enforce_stationarity && pp > 0 {
-        out.extend(params::unconstrain_stationary(&constrained[i..i + pp]));
+        out.extend(match direction {
+            TransformDirection::ToUnconstrained => {
+                params::unconstrain_stationary(&input[i..i + pp])
+            }
+            TransformDirection::ToConstrained => params::constrain_stationary(&input[i..i + pp]),
+        });
     } else {
-        out.extend_from_slice(&constrained[i..i + pp]);
+        out.extend_from_slice(&input[i..i + pp]);
     }
     i += pp;
 
     // Seasonal MA
     if config.enforce_invertibility && qq > 0 {
-        out.extend(params::unconstrain_invertible(&constrained[i..i + qq]));
+        out.extend(match direction {
+            TransformDirection::ToUnconstrained => {
+                params::unconstrain_invertible(&input[i..i + qq])
+            }
+            TransformDirection::ToConstrained => params::constrain_invertible(&input[i..i + qq]),
+        });
     } else {
-        out.extend_from_slice(&constrained[i..i + qq]);
+        out.extend_from_slice(&input[i..i + qq]);
     }
     i += qq;
 
     // sigma2
-    if !config.concentrate_scale && i < constrained.len() {
-        out.push(params::unconstrain_variance(constrained[i])?);
+    if !config.concentrate_scale && i < input.len() {
+        out.push(match direction {
+            TransformDirection::ToUnconstrained => params::unconstrain_variance(input[i])?,
+            TransformDirection::ToConstrained => params::constrain_variance(input[i]),
+        });
     }
 
     Ok(out)
 }
 
+/// Transform constrained parameters to unconstrained space for optimization.
+///
+/// Layout: `[trend | exog | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`
+pub fn untransform_params(constrained: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
+    transform_params_inner(constrained, config, TransformDirection::ToUnconstrained)
+}
+
 /// Transform unconstrained parameters back to constrained space.
 pub fn transform_params(unconstrained: &[f64], config: &SarimaxConfig) -> Result<Vec<f64>> {
-    let expected = expected_param_len(config);
-    if unconstrained.len() != expected {
-        return Err(SarimaxError::ParamLengthMismatch {
-            expected,
-            got: unconstrained.len(),
-        });
-    }
-
-    let kt = config.trend.k_trend();
-    let n_exog = config.n_exog;
-    let p = config.order.p;
-    let q = config.order.q;
-    let pp = config.order.pp;
-    let qq = config.order.qq;
-
-    let mut out = Vec::with_capacity(unconstrained.len());
-    let mut i = 0;
-
-    // Trend + exog: pass through
-    out.extend_from_slice(&unconstrained[i..i + kt + n_exog]);
-    i += kt + n_exog;
-
-    // AR
-    if config.enforce_stationarity && p > 0 {
-        out.extend(params::constrain_stationary(&unconstrained[i..i + p]));
-    } else {
-        out.extend_from_slice(&unconstrained[i..i + p]);
-    }
-    i += p;
-
-    // MA
-    if config.enforce_invertibility && q > 0 {
-        out.extend(params::constrain_invertible(&unconstrained[i..i + q]));
-    } else {
-        out.extend_from_slice(&unconstrained[i..i + q]);
-    }
-    i += q;
-
-    // Seasonal AR
-    if config.enforce_stationarity && pp > 0 {
-        out.extend(params::constrain_stationary(&unconstrained[i..i + pp]));
-    } else {
-        out.extend_from_slice(&unconstrained[i..i + pp]);
-    }
-    i += pp;
-
-    // Seasonal MA
-    if config.enforce_invertibility && qq > 0 {
-        out.extend(params::constrain_invertible(&unconstrained[i..i + qq]));
-    } else {
-        out.extend_from_slice(&unconstrained[i..i + qq]);
-    }
-    i += qq;
-
-    // sigma2
-    if !config.concentrate_scale && i < unconstrained.len() {
-        out.push(params::constrain_variance(unconstrained[i]));
-    }
-
-    Ok(out)
+    transform_params_inner(unconstrained, config, TransformDirection::ToConstrained)
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +677,460 @@ fn consume_budget(remaining: &mut u64, total_work: &mut u64, n: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-start helpers (shared by lbfgsb-multi and lbfgs methods)
+// ---------------------------------------------------------------------------
+
+/// Seasonal MA grid initialization via Nelder-Mead.
+///
+/// For models with enforced invertibility and seasonal MA terms, tries
+/// NM optimization from a grid of constrained MA/SMA starting points.
+/// Gradient-free NM avoids boundary traps near invertibility constraints.
+///
+/// Returns updated `(best, remaining, total_work)` via mutable references.
+fn grid_ma_initialization(
+    objective: &SarimaxObjective,
+    config: &SarimaxConfig,
+    n_params_total: usize,
+    remaining: &mut u64,
+    total_work: &mut u64,
+    best: &mut Option<(Vec<f64>, f64, bool, String)>,
+    method_label: &str,
+) {
+    if !config.enforce_invertibility || config.order.qq == 0 || *remaining == 0 {
+        return;
+    }
+
+    let kt = config.trend.k_trend();
+    let n_exog = config.n_exog;
+    let ma_start = kt + n_exog + config.order.p;
+    let sma_start = ma_start + config.order.q + config.order.pp;
+
+    let grid_vals = [-0.3, -0.6, -0.9];
+    for &ma_val in &grid_vals {
+        if *remaining == 0 {
+            break;
+        }
+        let mut grid_constrained = vec![0.0; n_params_total];
+        for i in 0..config.order.q {
+            grid_constrained[ma_start + i] = ma_val;
+        }
+        for i in 0..config.order.qq {
+            grid_constrained[sma_start + i] = ma_val;
+        }
+        if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
+            if let Ok((p, c, n, conv)) =
+                run_nelder_mead(objective.clone(), grid_uncons, *remaining)
+            {
+                consume_budget(remaining, total_work, n);
+                try_update_best(best, p, c, conv, method_label);
+            }
+        }
+    }
+}
+
+/// Generate LCG-perturbed starting points and optimize each.
+///
+/// Uses a deterministic linear congruential generator (LCG) seeded at 12345
+/// for reproducible multi-start perturbations of the unconstrained start.
+fn lcg_perturbed_starts(
+    unconstrained_start: &[f64],
+    n_restarts: usize,
+    remaining: &u64,
+) -> Vec<Vec<f64>> {
+    let mut starts = Vec::with_capacity(n_restarts);
+    let mut rng_state: u64 = 12345;
+
+    for _ in 0..n_restarts {
+        if *remaining == 0 {
+            break;
+        }
+        let mut perturbed = unconstrained_start.to_vec();
+        for v in perturbed.iter_mut() {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
+            let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
+            *v += u * scale;
+        }
+        starts.push(perturbed);
+    }
+    starts
+}
+
+/// Update `best` if `(p, c)` is better (lower cost) than the current best.
+fn try_update_best(
+    best: &mut Option<(Vec<f64>, f64, bool, String)>,
+    p: Vec<f64>,
+    c: f64,
+    conv: bool,
+    method_name: &str,
+) {
+    match best {
+        Some((_, best_cost, _, _)) if c < *best_cost => {
+            *best = Some((p, c, conv, method_name.to_string()));
+        }
+        None => {
+            *best = Some((p, c, conv, method_name.to_string()));
+        }
+        _ => {}
+    }
+}
+
+/// NM refinement: try polishing the best solution with Nelder-Mead.
+///
+/// Returns the final `(params, cost, total_work, converged, method_name)` tuple.
+fn nm_refinement(
+    objective: &SarimaxObjective,
+    best_p: Vec<f64>,
+    best_c: f64,
+    best_conv: bool,
+    method_name: String,
+    n_params_total: usize,
+    remaining: &mut u64,
+    total_work: &mut u64,
+) -> (Vec<f64>, f64, u64, bool, String) {
+    if n_params_total >= 2 && *remaining > 0 {
+        match run_nelder_mead(objective.clone(), best_p.clone(), *remaining) {
+            Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
+                consume_budget(remaining, total_work, nm_n);
+                (nm_p, nm_c, *total_work, nm_conv, format!("{}+nm", method_name))
+            }
+            Ok((_, _, nm_n, _)) => {
+                consume_budget(remaining, total_work, nm_n);
+                (best_p, best_c, *total_work, best_conv, method_name)
+            }
+            Err(_) => (best_p, best_c, *total_work, best_conv, method_name),
+        }
+    } else {
+        (best_p, best_c, *total_work, best_conv, method_name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Method-specific dispatch functions
+// ---------------------------------------------------------------------------
+
+/// Determine number of multi-start restarts based on model complexity.
+fn compute_n_restarts(n_params_total: usize, config: &SarimaxConfig) -> usize {
+    let has_seasonal = config.order.pp > 0 || config.order.qq > 0;
+    if n_params_total >= 4 {
+        3
+    } else if n_params_total >= 3 || has_seasonal {
+        2
+    } else if n_params_total >= 2 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Generic multi-start optimizer with grid search and NM refinement.
+///
+/// Implements the shared orchestration logic for both L-BFGS-B and L-BFGS
+/// multi-start strategies. The `runner` closure encapsulates the specific
+/// optimizer (strategy pattern), taking `(start_params, maxiter)` and
+/// returning `(best_params, cost, n_evals, converged)`.
+fn fit_multistart<F>(
+    objective: &SarimaxObjective,
+    unconstrained_start: &[f64],
+    config: &SarimaxConfig,
+    maxiter: u64,
+    n_restarts: usize,
+    method_label: &str,
+    runner: F,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError>
+where
+    F: Fn(Vec<f64>, u64) -> std::result::Result<(Vec<f64>, f64, u64, bool), String>,
+{
+    let n_params_total = unconstrained_start.len();
+    let mut remaining = maxiter;
+    let mut total_work: u64 = 0;
+
+    // Initial optimizer run
+    let mut best: Option<(Vec<f64>, f64, bool, String)> =
+        match runner(unconstrained_start.to_vec(), remaining) {
+            Ok((p, c, n, conv)) => {
+                consume_budget(&mut remaining, &mut total_work, n);
+                Some((p, c, conv, method_label.to_string()))
+            }
+            Err(_) => None,
+        };
+
+    if n_restarts > 0 && remaining > 0 {
+        // 1. Zero-start
+        let zeros = vec![0.0; n_params_total];
+        if let Ok((p, c, n, conv)) = runner(zeros, remaining) {
+            consume_budget(&mut remaining, &mut total_work, n);
+            try_update_best(&mut best, p, c, conv, method_label);
+        }
+
+        // 2. Seasonal MA grid (NM, gradient-free for boundary avoidance)
+        let grid_label = if method_label.contains("lbfgsb") {
+            format!("{}+nm", method_label)
+        } else {
+            method_label.to_string()
+        };
+        grid_ma_initialization(
+            objective,
+            config,
+            n_params_total,
+            &mut remaining,
+            &mut total_work,
+            &mut best,
+            &grid_label,
+        );
+
+        // 3. LCG perturbations
+        let perturbations =
+            lcg_perturbed_starts(unconstrained_start, n_restarts, &remaining);
+        for perturbed in perturbations {
+            if remaining == 0 {
+                break;
+            }
+            if let Ok((p, c, n, conv)) = runner(perturbed, remaining) {
+                consume_budget(&mut remaining, &mut total_work, n);
+                try_update_best(&mut best, p, c, conv, method_label);
+            }
+        }
+    }
+
+    match best {
+        Some((best_p, best_c, best_conv, method_name)) => Ok(nm_refinement(
+            objective,
+            best_p,
+            best_c,
+            best_conv,
+            method_name,
+            n_params_total,
+            &mut remaining,
+            &mut total_work,
+        )),
+        None => {
+            // All optimizer attempts failed, fallback to Nelder-Mead
+            let (p, c, n, conv) =
+                run_nelder_mead(objective.clone(), unconstrained_start.to_vec(), remaining)
+                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+            consume_budget(&mut remaining, &mut total_work, n);
+            Ok((p, c, total_work, conv, "nelder-mead (fallback)".to_string()))
+        }
+    }
+}
+
+/// Multi-start L-BFGS-B with grid search and NM refinement.
+///
+/// More robust but slower -- use when accuracy matters more than speed.
+fn fit_lbfgsb_multi(
+    objective: &SarimaxObjective,
+    unconstrained_start: &[f64],
+    config: &SarimaxConfig,
+    maxiter: u64,
+    n_restarts: usize,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+    let bounds = compute_bounds(config);
+    fit_multistart(
+        objective,
+        unconstrained_start,
+        config,
+        maxiter,
+        n_restarts,
+        "lbfgsb-multi",
+        |start, budget| run_lbfgsb(objective, start, bounds.clone(), budget),
+    )
+}
+
+/// Multi-start L-BFGS (argmin) with grid search and NM refinement.
+fn fit_lbfgs_argmin(
+    objective: &SarimaxObjective,
+    unconstrained_start: &[f64],
+    config: &SarimaxConfig,
+    maxiter: u64,
+    n_restarts: usize,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+    let obj = objective.clone();
+    fit_multistart(
+        objective,
+        unconstrained_start,
+        config,
+        maxiter,
+        n_restarts,
+        "lbfgs",
+        |start, budget| run_lbfgs(obj.clone(), start, budget),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Fast paths (pure AR, maxiter=0)
+// ---------------------------------------------------------------------------
+
+/// Try pure AR fast path: for high-order non-seasonal pure AR models with
+/// concentrated scale, Burg AR coefficients are asymptotically MLE-equivalent.
+fn try_ar_fast_path(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    constrained_start: &[f64],
+    exog: Option<&[Vec<f64>]>,
+    method: &str,
+    start_params_provided: bool,
+) -> Result<Option<FitResult>> {
+    let is_pure_ar_fast = config.order.p >= 3
+        && config.order.q == 0
+        && config.order.qq == 0
+        && config.order.pp == 0
+        && config.trend.k_trend() == 0
+        && config.n_exog == 0
+        && config.concentrate_scale
+        && !start_params_provided;
+
+    if !is_pure_ar_fast || method != "lbfgsb" {
+        return Ok(None);
+    }
+
+    let test_params = SarimaxParams::from_flat(constrained_start, config)?;
+    let test_ss = StateSpace::new(config, &test_params, endog, exog)?;
+    let test_init = KalmanInit::from_config(&test_ss, config, KalmanInit::default_kappa());
+    let test_output = kalman_loglike(endog, &test_ss, &test_init, config.concentrate_scale)?;
+
+    if test_output.loglike.is_finite() {
+        let n_params = SarimaxParams::n_estimated_params(config);
+        Ok(Some(
+            FitResult {
+                params: constrained_start.to_vec(),
+                loglike: test_output.loglike,
+                scale: test_output.scale,
+                n_obs: endog.len(),
+                n_params,
+                n_iter: 0,
+                converged: true,
+                method: "burg-direct".to_string(),
+                aic: 0.0,
+                bic: 0.0,
+            }
+            .with_information_criteria(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Build result for maxiter=0: no optimization, return start params as-is.
+fn build_zero_iter_result(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    constrained_start: &[f64],
+    exog: Option<&[Vec<f64>]>,
+    method: &str,
+) -> Result<FitResult> {
+    let sp = SarimaxParams::from_flat(constrained_start, config)?;
+    let ss = StateSpace::new(config, &sp, endog, exog)?;
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
+    let n_params = SarimaxParams::n_estimated_params(config);
+    Ok(FitResult {
+        params: constrained_start.to_vec(),
+        loglike: output.loglike,
+        scale: output.scale,
+        n_obs: endog.len(),
+        n_params,
+        n_iter: 0,
+        converged: false,
+        method: method.to_string(),
+        aic: 0.0,
+        bic: 0.0,
+    }
+    .with_information_criteria())
+}
+
+/// Build final FitResult from optimized unconstrained parameters.
+fn build_fit_result(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    best_unconstrained: &[f64],
+    n_iter: u64,
+    converged: bool,
+    used_method: String,
+    exog: Option<&[Vec<f64>]>,
+) -> Result<FitResult> {
+    let final_constrained = transform_params(best_unconstrained, config)?;
+    let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
+    let ss = StateSpace::new(config, &final_params, endog, exog)?;
+    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
+    let n_params = SarimaxParams::n_estimated_params(config);
+
+    Ok(FitResult {
+        params: final_constrained,
+        loglike: output.loglike,
+        scale: output.scale,
+        n_obs: endog.len(),
+        n_params,
+        n_iter,
+        converged,
+        method: used_method,
+        aic: 0.0,
+        bic: 0.0,
+    }
+    .with_information_criteria())
+}
+
+// ---------------------------------------------------------------------------
+// Validation + start param helpers
+// ---------------------------------------------------------------------------
+
+/// Validate observations length and resolve starting parameters.
+///
+/// Returns constrained start parameters, either from the caller or computed
+/// via Hannan-Rissanen / Burg initialization.
+fn validate_and_get_start_params(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    start_params: Option<&[f64]>,
+    exog: Option<&[Vec<f64>]>,
+) -> Result<Vec<f64>> {
+    let min_obs = expected_param_len(config).max(config.order.k_states().saturating_add(1));
+    if endog.len() <= min_obs {
+        return Err(SarimaxError::DataError(format!(
+            "Not enough observations: n={} <= minimum required {} for model order",
+            endog.len(),
+            min_obs
+        )));
+    }
+
+    match start_params {
+        Some(sp) => {
+            let expected_len = expected_param_len(config);
+            if sp.len() != expected_len {
+                return Err(SarimaxError::ParamLengthMismatch {
+                    expected: expected_len,
+                    got: sp.len(),
+                });
+            }
+            Ok(sp.to_vec())
+        }
+        None => compute_start_params(endog, config, exog),
+    }
+}
+
+/// Single-run L-BFGS-B with Nelder-Mead fallback.
+fn fit_lbfgsb_single(
+    objective: &SarimaxObjective,
+    unconstrained_start: Vec<f64>,
+    config: &SarimaxConfig,
+    maxiter: u64,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+    let bounds = compute_bounds(config);
+    match run_lbfgsb(objective, unconstrained_start.clone(), bounds, maxiter) {
+        Ok((p, c, n, conv)) => Ok((p, c, n, conv, "lbfgsb".to_string())),
+        Err(_) => {
+            let (p, c, n, conv) =
+                run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+            Ok((p, c, n, conv, "nelder-mead (fallback)".to_string()))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public fit() entry point
 // ---------------------------------------------------------------------------
 
@@ -716,129 +1153,29 @@ pub fn fit(
 ) -> Result<FitResult> {
     let maxiter = maxiter.unwrap_or(500);
     let method = method.unwrap_or("lbfgsb");
-    let min_obs = expected_param_len(config).max(config.order.k_states().saturating_add(1));
-    if endog.len() <= min_obs {
-        return Err(SarimaxError::DataError(format!(
-            "Not enough observations: n={} <= minimum required {} for model order",
-            endog.len(),
-            min_obs
-        )));
+
+    // 1. Validate + compute start params
+    let constrained_start = validate_and_get_start_params(endog, config, start_params, exog)?;
+
+    // 2. Fast paths (AR-only, maxiter=0)
+    if let Some(r) = try_ar_fast_path(endog, config, &constrained_start, exog, method, start_params.is_some())? {
+        return Ok(r);
     }
-
-    // 1. Get starting parameters
-    let constrained_start = match start_params {
-        Some(sp) => {
-            // Validate start_params length before use
-            let expected_len = config.trend.k_trend()
-                + config.n_exog
-                + config.order.p
-                + config.order.q
-                + config.order.pp
-                + config.order.qq
-                + if config.concentrate_scale { 0 } else { 1 };
-            if sp.len() != expected_len {
-                return Err(SarimaxError::ParamLengthMismatch {
-                    expected: expected_len,
-                    got: sp.len(),
-                });
-            }
-            sp.to_vec()
-        }
-        None => compute_start_params(endog, config, exog)?,
-    };
-
-    // 1b. Pure AR fast path: for high-order non-seasonal pure AR models with
-    //     concentrated scale, Burg AR coefficients are asymptotically
-    //     MLE-equivalent. Skip the optimizer and return directly.
-    //     Evidence: PERF_DIAGNOSIS.md Phase 2 shows AR(5) 4.5x and AR(8) 5.0x
-    //     excess iterations — per-eval is 10-12x faster but wasted by iterations.
-    //     Restrictions:
-    //     - p >= 3 (AR(1)/AR(2) already fast; avoids n_iter=0 for simple models)
-    //     - No MA (q=0, Q=0): MA estimation requires optimizer
-    //     - No seasonal AR (P=0): seasonal AR interaction needs optimization
-    //     - concentrate_scale=true: sigma2 concentrated out, no need to estimate
-    //     - No user-provided start_params: trust our Burg estimates
-    //     - No trend, no exog: these require optimization
-    let is_pure_ar_fast = config.order.p >= 3
-        && config.order.q == 0
-        && config.order.qq == 0
-        && config.order.pp == 0
-        && config.trend.k_trend() == 0
-        && config.n_exog == 0
-        && config.concentrate_scale
-        && start_params.is_none();
-
-    if is_pure_ar_fast && method == "lbfgsb" {
-        let test_params = SarimaxParams::from_flat(&constrained_start, config)?;
-        let test_ss = StateSpace::new(config, &test_params, endog, exog)?;
-        let test_init = KalmanInit::from_config(&test_ss, config, KalmanInit::default_kappa());
-        let test_output = kalman_loglike(endog, &test_ss, &test_init, config.concentrate_scale)?;
-
-        if test_output.loglike.is_finite() {
-            let n_params = SarimaxParams::n_estimated_params(config);
-            return Ok(FitResult {
-                params: constrained_start,
-                loglike: test_output.loglike,
-                scale: test_output.scale,
-                n_obs: endog.len(),
-                n_params,
-                n_iter: 0,
-                converged: true,
-                method: "burg-direct".to_string(),
-                aic: 0.0,
-                bic: 0.0,
-            }
-            .with_information_criteria());
-        }
-        // If loglike is not finite, fall through to optimizer
-    }
-
-    // 1c. Early return for maxiter=0: no optimization, return start params as-is
     if maxiter == 0 {
-        let sp = SarimaxParams::from_flat(&constrained_start, config)?;
-        let ss = StateSpace::new(config, &sp, endog, exog)?;
-        let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-        let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
-        let n_params = SarimaxParams::n_estimated_params(config);
-        return Ok(FitResult {
-            params: constrained_start,
-            loglike: output.loglike,
-            scale: output.scale,
-            n_obs: endog.len(),
-            n_params,
-            n_iter: 0,
-            converged: false,
-            method: method.to_string(),
-            aic: 0.0,
-            bic: 0.0,
-        }
-        .with_information_criteria());
+        return build_zero_iter_result(endog, config, &constrained_start, exog, method);
     }
 
-    // 2. Transform to unconstrained space
+    // 3. Transform to unconstrained space + build objective
     let unconstrained_start = untransform_params(&constrained_start, config)?;
-
     let objective = SarimaxObjective {
         endog: endog.to_vec(),
         config: config.clone(),
         exog: exog.map(|e| e.to_vec()),
         cache: RefCell::new(None),
     };
+    let n_restarts = compute_n_restarts(unconstrained_start.len(), config);
 
-    // Determine number of restarts based on model complexity
-    let n_params_total = unconstrained_start.len();
-    let has_seasonal = config.order.pp > 0 || config.order.qq > 0;
-    let n_restarts = if n_params_total >= 4 {
-        3
-    } else if n_params_total >= 3 || has_seasonal {
-        2
-    } else if n_params_total >= 2 {
-        1
-    } else {
-        0
-    };
-
-    // 3. Run optimization
+    // 4. Match method → dispatch to extracted function
     let (best_unconstrained, _best_cost, n_iter, converged, used_method) = match method {
         "nelder-mead" | "nm" => {
             let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
@@ -851,270 +1188,12 @@ pub fn fit(
                 .map_err(|e| SarimaxError::OptimizationFailed(e))?;
             (p, c, n, conv, "lbfgsb-strict".to_string())
         }
-        "lbfgsb" => {
-            // Single L-BFGS-B run matching statsmodels/scipy behavior.
-            // NM fallback only if L-BFGS-B fails entirely.
-            let bounds = compute_bounds(config);
-            match run_lbfgsb(&objective, unconstrained_start.clone(), bounds, maxiter) {
-                Ok((p, c, n, conv)) => {
-                    (p, c, n, conv, "lbfgsb".to_string())
-                }
-                Err(e) => {
-                    // L-BFGS-B failed → fallback to Nelder-Mead
-                    let (p, c, n, conv) =
-                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                            .map_err(|e| SarimaxError::OptimizationFailed(e))?;
-                    (p, c, n, conv, "nelder-mead (fallback)".to_string())
-                }
-            }
-        }
+        "lbfgsb" => fit_lbfgsb_single(&objective, unconstrained_start, config, maxiter)?,
         "lbfgsb-multi" => {
-            // Multi-start L-BFGS-B with grid search and NM refinement.
-            // More robust but slower — use when accuracy matters more than speed.
-            let bounds = compute_bounds(config);
-            let mut remaining = maxiter;
-            let mut total_work: u64 = 0;
-
-            let initial_result = match run_lbfgsb(
-                &objective,
-                unconstrained_start.clone(),
-                bounds.clone(),
-                remaining,
-            ) {
-                Ok((p, c, n, conv)) => {
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    Some((p, c, conv, "lbfgsb-multi".to_string()))
-                }
-                Err(_) => None,
-            };
-
-            let mut best = initial_result;
-
-            let mut try_update = |p: Vec<f64>, c: f64, conv: bool, method_name: &str| match &best {
-                Some((_, best_cost, _, _)) if c < *best_cost => {
-                    best = Some((p, c, conv, method_name.to_string()));
-                }
-                None => {
-                    best = Some((p, c, conv, method_name.to_string()));
-                }
-                _ => {}
-            };
-
-            if n_restarts > 0 && remaining > 0 {
-                // 1. Zero-start
-                let zeros = vec![0.0; n_params_total];
-                if let Ok((p, c, n, conv)) =
-                    run_lbfgsb(&objective, zeros, bounds.clone(), remaining)
-                {
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    try_update(p, c, conv, "lbfgsb-multi");
-                }
-
-                // 2. Seasonal MA grid (NM, gradient-free for boundary avoidance)
-                if config.enforce_invertibility && config.order.qq > 0 && remaining > 0 {
-                    let kt = config.trend.k_trend();
-                    let n_exog = config.n_exog;
-                    let ma_start = kt + n_exog + config.order.p;
-                    let sma_start = ma_start + config.order.q + config.order.pp;
-
-                    let grid_vals = [-0.3, -0.6, -0.9];
-                    for &ma_val in &grid_vals {
-                        if remaining == 0 {
-                            break;
-                        }
-                        let mut grid_constrained = vec![0.0; n_params_total];
-                        for i in 0..config.order.q {
-                            grid_constrained[ma_start + i] = ma_val;
-                        }
-                        for i in 0..config.order.qq {
-                            grid_constrained[sma_start + i] = ma_val;
-                        }
-                        if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
-                            if let Ok((p, c, n, conv)) =
-                                run_nelder_mead(objective.clone(), grid_uncons, remaining)
-                            {
-                                consume_budget(&mut remaining, &mut total_work, n);
-                                try_update(p, c, conv, "lbfgsb-multi+nm");
-                            }
-                        }
-                    }
-                }
-
-                // 3. LCG perturbations
-                let mut rng_state: u64 = 12345;
-                for _ in 0..n_restarts {
-                    if remaining == 0 {
-                        break;
-                    }
-                    let mut perturbed = unconstrained_start.clone();
-                    for v in perturbed.iter_mut() {
-                        rng_state = rng_state
-                            .wrapping_mul(6364136223846793005)
-                            .wrapping_add(1442695040888963407);
-                        let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
-                        let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
-                        *v += u * scale;
-                    }
-                    if let Ok((p, c, n, conv)) =
-                        run_lbfgsb(&objective, perturbed, bounds.clone(), remaining)
-                    {
-                        consume_budget(&mut remaining, &mut total_work, n);
-                        try_update(p, c, conv, "lbfgsb-multi");
-                    }
-                }
-            }
-
-            match best {
-                Some((best_p, best_c, best_conv, method_name)) => {
-                    if n_params_total >= 2 && remaining > 0 {
-                        match run_nelder_mead(objective.clone(), best_p.clone(), remaining) {
-                            Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
-                                consume_budget(&mut remaining, &mut total_work, nm_n);
-                                (
-                                    nm_p,
-                                    nm_c,
-                                    total_work,
-                                    nm_conv,
-                                    format!("{}+nm", method_name),
-                                )
-                            }
-                            Ok((_, _, nm_n, _)) => {
-                                consume_budget(&mut remaining, &mut total_work, nm_n);
-                                (best_p, best_c, total_work, best_conv, method_name)
-                            }
-                            Err(_) => (best_p, best_c, total_work, best_conv, method_name),
-                        }
-                    } else {
-                        (best_p, best_c, total_work, best_conv, method_name)
-                    }
-                }
-                None => {
-                    let (p, c, n, conv) =
-                        run_nelder_mead(objective.clone(), unconstrained_start, remaining)
-                            .map_err(|e| SarimaxError::OptimizationFailed(e))?;
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    (p, c, total_work, conv, "nelder-mead (fallback)".to_string())
-                }
-            }
+            fit_lbfgsb_multi(&objective, &unconstrained_start, config, maxiter, n_restarts)?
         }
         "lbfgs" => {
-            let mut remaining = maxiter;
-            let mut total_work: u64 = 0;
-
-            // Initial L-BFGS run
-            let initial_result =
-                match run_lbfgs(objective.clone(), unconstrained_start.clone(), remaining) {
-                    Ok((p, c, n, conv)) => {
-                        consume_budget(&mut remaining, &mut total_work, n);
-                        Some((p, c, conv, "lbfgs".to_string()))
-                    }
-                    Err(_) => None,
-                };
-
-            // Multi-start: try perturbed starting points for complex models
-            let mut best = initial_result;
-
-            // Helper to update best with a new result
-            let mut try_update = |p: Vec<f64>, c: f64, conv: bool| match &best {
-                Some((_, best_cost, _, _)) if c < *best_cost => {
-                    best = Some((p, c, conv, "lbfgs".to_string()));
-                }
-                None => {
-                    best = Some((p, c, conv, "lbfgs".to_string()));
-                }
-                _ => {}
-            };
-
-            if n_restarts > 0 && remaining > 0 {
-                // 1. Try starting from zeros in unconstrained space
-                let zeros = vec![0.0; n_params_total];
-                if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), zeros, remaining) {
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    try_update(p, c, conv);
-                }
-
-                // 2. For seasonal MA models with enforced invertibility, try Nelder-Mead from grid starts
-                if config.enforce_invertibility && config.order.qq > 0 && remaining > 0 {
-                    let kt = config.trend.k_trend();
-                    let n_exog = config.n_exog;
-                    let ma_start = kt + n_exog + config.order.p;
-                    let sma_start = ma_start + config.order.q + config.order.pp;
-
-                    // NM from grid of constrained MA/SMA starts (gradient-free avoids boundary traps)
-                    let grid_vals = [-0.3, -0.6, -0.9];
-                    for &ma_val in &grid_vals {
-                        if remaining == 0 {
-                            break;
-                        }
-                        let mut grid_constrained = vec![0.0; n_params_total];
-                        for i in 0..config.order.q {
-                            grid_constrained[ma_start + i] = ma_val;
-                        }
-                        for i in 0..config.order.qq {
-                            grid_constrained[sma_start + i] = ma_val;
-                        }
-                        if let Ok(grid_uncons) = untransform_params(&grid_constrained, config) {
-                            if let Ok((p, c, n, conv)) =
-                                run_nelder_mead(objective.clone(), grid_uncons, remaining)
-                            {
-                                consume_budget(&mut remaining, &mut total_work, n);
-                                try_update(p, c, conv);
-                            }
-                        }
-                    }
-                }
-
-                // 3. Deterministic LCG perturbations
-                let mut rng_state: u64 = 12345;
-                for _ in 0..n_restarts {
-                    if remaining == 0 {
-                        break;
-                    }
-                    let mut perturbed = unconstrained_start.clone();
-                    for v in perturbed.iter_mut() {
-                        rng_state = rng_state
-                            .wrapping_mul(6364136223846793005)
-                            .wrapping_add(1442695040888963407);
-                        let u = ((rng_state >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
-                        let scale = if v.abs() > 0.1 { v.abs() * 0.5 } else { 0.1 };
-                        *v += u * scale;
-                    }
-                    if let Ok((p, c, n, conv)) = run_lbfgs(objective.clone(), perturbed, remaining)
-                    {
-                        consume_budget(&mut remaining, &mut total_work, n);
-                        try_update(p, c, conv);
-                    }
-                }
-            }
-
-            match best {
-                Some((best_p, best_c, best_conv, _)) => {
-                    // NM refinement for models with 2+ params
-                    if n_params_total >= 2 && remaining > 0 {
-                        match run_nelder_mead(objective.clone(), best_p.clone(), remaining) {
-                            Ok((nm_p, nm_c, nm_n, nm_conv)) if nm_c < best_c => {
-                                consume_budget(&mut remaining, &mut total_work, nm_n);
-                                (nm_p, nm_c, total_work, nm_conv, "lbfgs+nm".to_string())
-                            }
-                            Ok((_, _, nm_n, _)) => {
-                                consume_budget(&mut remaining, &mut total_work, nm_n);
-                                (best_p, best_c, total_work, best_conv, "lbfgs".to_string())
-                            }
-                            Err(_) => (best_p, best_c, total_work, best_conv, "lbfgs".to_string()),
-                        }
-                    } else {
-                        (best_p, best_c, total_work, best_conv, "lbfgs".to_string())
-                    }
-                }
-                None => {
-                    // All L-BFGS attempts failed, fallback to Nelder-Mead
-                    let (p, c, n, conv) =
-                        run_nelder_mead(objective.clone(), unconstrained_start, remaining)
-                            .map_err(|e| SarimaxError::OptimizationFailed(e))?;
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    (p, c, total_work, conv, "nelder-mead (fallback)".to_string())
-                }
-            }
+            fit_lbfgs_argmin(&objective, &unconstrained_start, config, maxiter, n_restarts)?
         }
         _ => {
             return Err(SarimaxError::OptimizationFailed(format!(
@@ -1124,32 +1203,8 @@ pub fn fit(
         }
     };
 
-    // 4. Transform back to constrained space
-    let final_constrained = transform_params(&best_unconstrained, config)?;
-
-    // 5. Evaluate final log-likelihood
-    let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
-    let ss = StateSpace::new(config, &final_params, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-    let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
-
-    let n_params = SarimaxParams::n_estimated_params(config);
-
-    let result = FitResult {
-        params: final_constrained,
-        loglike: output.loglike,
-        scale: output.scale,
-        n_obs: endog.len(),
-        n_params,
-        n_iter,
-        converged,
-        method: used_method,
-        aic: 0.0,
-        bic: 0.0,
-    }
-    .with_information_criteria();
-
-    Ok(result)
+    // 5. Build result
+    build_fit_result(endog, config, &best_unconstrained, n_iter, converged, used_method, exog)
 }
 
 // ---------------------------------------------------------------------------

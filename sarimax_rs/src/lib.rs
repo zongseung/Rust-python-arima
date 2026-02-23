@@ -99,8 +99,13 @@ fn validate_batch_finite(series_list: &[PyReadonlyArray1<'_, f64>]) -> PyResult<
     Ok(result)
 }
 
-/// Parse and validate exog_list for batch operations.
-fn parse_and_validate_exog_list(
+/// Parse and validate a batch exog list: matching lengths, finite values, consistent column counts.
+///
+/// Converts numpy arrays to column-major Vecs and validates:
+/// - `exog_list` length matches `series_len`
+/// - All values are finite
+/// - All series have the same number of exog columns
+fn parse_and_validate_batch_exog(
     exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
     series_len: usize,
 ) -> PyResult<(Option<Vec<Vec<Vec<f64>>>>, usize)> {
@@ -131,18 +136,68 @@ fn parse_and_validate_exog_list(
     }
 }
 
-/// Build SarimaxConfig from Python-facing tuples and flags.
-fn build_config(
-    order: (usize, usize, usize),
-    seasonal: (usize, usize, usize, usize),
+/// Parse and validate a batch forecast exog list (future_exog for batch forecasting).
+///
+/// Validates:
+/// - Length matches `series_len`
+/// - All values are finite
+/// - Column counts match `n_exog`
+/// - Each column has at least `steps` rows
+fn parse_and_validate_batch_forecast_exog(
+    exog_forecast_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
+    series_len: usize,
     n_exog: usize,
-    enforce_stationarity: bool,
-    enforce_invertibility: bool,
-    concentrate_scale: bool,
-) -> PyResult<SarimaxConfig> {
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
+    steps: usize,
+) -> PyResult<Option<Vec<Vec<Vec<f64>>>>> {
+    match exog_forecast_list {
+        Some(ref el) => {
+            if el.len() != series_len {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "exog_forecast_list length ({}) must match series_list length ({})",
+                    el.len(),
+                    series_len
+                )));
+            }
+            let vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
+            for (i, cols) in vecs.iter().enumerate() {
+                validate_finite_cols(cols, &format!("exog_forecast_list[{}]", i))?;
+                if cols.len() != n_exog {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "exog_forecast at index {} has {} columns but expected {}",
+                        i,
+                        cols.len(),
+                        n_exog
+                    )));
+                }
+                for (j, col) in cols.iter().enumerate() {
+                    if col.len() < steps {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "exog_forecast_list[{}] column {} has {} rows but {} forecast steps requested",
+                            i, j, col.len(), steps
+                        )));
+                    }
+                }
+            }
+            Ok(Some(vecs))
+        }
+        None => Ok(None),
+    }
+}
 
+/// Validate model order bounds and check for arithmetic overflow.
+///
+/// Consolidates all bounds checking (p, q, d, P, D, Q, s, n_exog) and
+/// overflow checking (checked_add/checked_mul chains) into one place.
+fn validate_order(
+    p: usize,
+    d: usize,
+    q: usize,
+    pp: usize,
+    dd: usize,
+    qq: usize,
+    s: usize,
+    n_exog: usize,
+) -> PyResult<()> {
     // Individual order bounds (DoS prevention)
     if p > MAX_P {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -198,6 +253,7 @@ fn build_config(
         ));
     }
 
+    // Overflow checking for state-space dimensions
     let k_ar = p
         .checked_add(s.checked_mul(pp).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err("order overflow while computing k_ar")
@@ -235,7 +291,41 @@ fn build_config(
         )));
     }
 
-    Ok(SarimaxConfig {
+    Ok(())
+}
+
+/// Validate single-series exog columns: finite values and consistent length.
+fn validate_exog(exog_cols: &Option<Vec<Vec<f64>>>) -> PyResult<()> {
+    if let Some(ref cols) = exog_cols {
+        validate_finite_cols(cols, "exog")?;
+    }
+    Ok(())
+}
+
+/// Validate batch exog list: matching lengths, finite values, consistent column counts.
+fn validate_batch_exog(
+    exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
+    series_len: usize,
+) -> PyResult<(Option<Vec<Vec<Vec<f64>>>>, usize)> {
+    parse_and_validate_batch_exog(exog_list, series_len)
+}
+
+/// Build SarimaxConfig from Python-facing tuples and flags.
+///
+/// Assumes `validate_order()` has already been called to verify bounds
+/// and overflow safety.
+fn build_config(
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    n_exog: usize,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+    concentrate_scale: bool,
+) -> SarimaxConfig {
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+
+    SarimaxConfig {
         order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
         n_exog,
         trend: Trend::None,
@@ -244,7 +334,7 @@ fn build_config(
         concentrate_scale,
         simple_differencing: false,
         measurement_error: false,
-    })
+    }
 }
 
 /// Map internal SarimaxError to appropriate Python exception type.
@@ -287,9 +377,10 @@ fn sarimax_loglike<'py>(
     validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    if let Some(ref cols) = exog_cols {
-        validate_finite_cols(cols, "exog")?;
-    }
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
     let config = build_config(
         order,
         seasonal,
@@ -297,7 +388,7 @@ fn sarimax_loglike<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-    )?;
+    );
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -336,9 +427,10 @@ fn sarimax_fit<'py>(
     let endog = y.as_slice()?;
     validate_endog_finite(endog)?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    if let Some(ref cols) = exog_cols {
-        validate_finite_cols(cols, "exog")?;
-    }
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
     let config = build_config(
         order,
         seasonal,
@@ -346,7 +438,7 @@ fn sarimax_fit<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-    )?;
+    );
 
     let sp_owned: Option<Vec<f64>> = start_params
         .as_ref()
@@ -421,9 +513,7 @@ fn sarimax_forecast<'py>(
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
     let future_exog_cols = future_exog.as_ref().map(|e| numpy2d_to_cols(e));
-    if let Some(ref cols) = exog_cols {
-        validate_finite_cols(cols, "exog")?;
-    }
+    validate_exog(&exog_cols)?;
     if let Some(ref cols) = future_exog_cols {
         validate_finite_cols(cols, "future_exog")?;
     }
@@ -459,7 +549,10 @@ fn sarimax_forecast<'py>(
         ));
     }
 
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -507,10 +600,11 @@ fn sarimax_residuals<'py>(
     validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    if let Some(ref cols) = exog_cols {
-        validate_finite_cols(cols, "exog")?;
-    }
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -550,8 +644,11 @@ fn sarimax_batch_loglike<'py>(
     enforce_invertibility: bool,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
 
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
     let config = build_config(
         order,
         seasonal,
@@ -559,7 +656,7 @@ fn sarimax_batch_loglike<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-    )?;
+    );
 
     let params_flat = params.as_slice()?.to_vec();
     let sarimax_params = SarimaxParams::from_flat(&params_flat, &config).map_err(to_pyerr)?;
@@ -608,8 +705,11 @@ fn sarimax_batch_fit<'py>(
     exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
 
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
     let config = build_config(
         order,
         seasonal,
@@ -617,7 +717,7 @@ fn sarimax_batch_fit<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-    )?;
+    );
 
     // Release GIL for Rayon parallel computation
     let method_owned = method.map(|s| s.to_string());
@@ -702,44 +802,18 @@ fn sarimax_batch_forecast<'py>(
     }
 
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = parse_and_validate_exog_list(&exog_list, series_list.len())?;
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
+    let future_exog_vecs = parse_and_validate_batch_forecast_exog(
+        &exog_forecast_list,
+        series_list.len(),
+        n_exog,
+        steps,
+    )?;
 
-    // Validate exog_forecast_list separately (has additional steps-length check)
-    let future_exog_vecs: Option<Vec<Vec<Vec<f64>>>> = match exog_forecast_list {
-        Some(ref el) => {
-            if el.len() != series_list.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog_forecast_list length ({}) must match series_list length ({})",
-                    el.len(),
-                    series_list.len()
-                )));
-            }
-            let vecs: Vec<Vec<Vec<f64>>> = el.iter().map(|e| numpy2d_to_cols(e)).collect();
-            for (i, cols) in vecs.iter().enumerate() {
-                validate_finite_cols(cols, &format!("exog_forecast_list[{}]", i))?;
-                if cols.len() != n_exog {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "exog_forecast at index {} has {} columns but expected {}",
-                        i,
-                        cols.len(),
-                        n_exog
-                    )));
-                }
-                for (j, col) in cols.iter().enumerate() {
-                    if col.len() < steps {
-                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                            "exog_forecast_list[{}] column {} has {} rows but {} forecast steps requested",
-                            i, j, col.len(), steps
-                        )));
-                    }
-                }
-            }
-            Some(vecs)
-        }
-        None => None,
-    };
-
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
 
     let params_vecs: Vec<Vec<f64>> = params_list
         .iter()

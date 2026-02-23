@@ -1,0 +1,83 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # 03:00 UTC daily
+  workflow_dispatch:  # manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tier-b-tests:
+    name: Tier B Matrix Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install deps
+        run: |
+          uv venv .venv
+          uv pip install numpy pytest statsmodels scipy pandas
+
+      - name: Build wheel and install
+        run: |
+          uv pip install maturin
+          CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
+          uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+
+      - name: Run Tier B nightly tests
+        run: .venv/bin/python -m pytest python_tests/test_matrix_tier_b.py -v --tb=short
+
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install deps
+        run: |
+          uv venv .venv
+          uv pip install numpy pytest statsmodels scipy pandas
+
+      - name: Build wheel (release) and install
+        run: |
+          uv pip install maturin
+          CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
+          uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+
+      - name: Run Rust benchmarks
+        run: cargo bench --bench bench_fit -- --output-format bencher | tee bench_results.txt
+
+      - name: Run Python benchmark comparison
+        run: .venv/bin/python python_tests/bench_comparison.py | tee python_bench_results.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            bench_results.txt
+            python_bench_results.txt

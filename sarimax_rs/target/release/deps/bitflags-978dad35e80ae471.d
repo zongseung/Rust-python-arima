@@ -1,0 +1,7 @@
+/Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/sarimax_rs/target/release/deps/bitflags-978dad35e80ae471.d: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2/src/lib.rs
+
+/Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/sarimax_rs/target/release/deps/libbitflags-978dad35e80ae471.rlib: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2/src/lib.rs
+
+/Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/sarimax_rs/target/release/deps/libbitflags-978dad35e80ae471.rmeta: /Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2/src/lib.rs
+
+/Users/ijongseung/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2/src/lib.rs:

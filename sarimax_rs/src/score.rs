@@ -1,21 +1,24 @@
 //! Analytical gradient (score vector) via tangent linear Kalman filter.
 //!
-//! Computes ∂loglike/∂θ for each parameter θ in a single forward pass,
+//! Computes dloglike/dtheta for each parameter theta in a single forward pass,
 //! avoiding the O(n_params+1) cost of numerical differentiation.
 //!
 //! Mathematical basis: Harvey (1989) score formula with concentrated scale.
 //!
 //! Concentrated log-likelihood:
-//!   ll_c = -n/2·ln(2π) - n/2·ln(σ²) - n/2 - 1/2·Σ ln(F_t)
-//!   where σ² = (1/n_eff)·Σ(v_t²/F_t)
+//!   ll_c = -n/2*ln(2pi) - n/2*ln(sigma2) - n/2 - 1/2*Sum ln(F_t)
+//!   where sigma2 = (1/n_eff)*Sum(v_t^2/F_t)
 //!
 //! Score:
-//!   ∂ll_c/∂θ_i = -(1/σ²)·Σ(v/F)·∂v/∂θ + 1/2·Σ[v²/(σ²F²) - 1/F]·∂F/∂θ
+//!   dll_c/dtheta_i = -(1/sigma2)*Sum(v/F)*dv/dtheta + 1/2*Sum[v^2/(sigma2*F^2) - 1/F]*dF/dtheta
 
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
+use crate::kalman::{
+    check_convergence, SparseT, SparseZ, STEADY_STATE_MIN_STEPS,
+};
 use crate::params::SarimaxParams;
 use crate::polynomial::{
     make_ar_poly, make_ma_poly, make_seasonal_ar_poly, make_seasonal_ma_poly, polymul,
@@ -30,11 +33,11 @@ use crate::types::{SarimaxConfig, Trend};
 /// Precomputed derivatives of system matrices w.r.t. each constrained parameter.
 struct SystemDerivatives {
     n_params: usize,
-    /// dT[i]: sparse (row, col, val) entries for ∂T/∂θ_i.
+    /// dT[i]: sparse (row, col, val) entries for dT/dtheta_i.
     dt: Vec<Vec<(usize, usize, f64)>>,
-    /// dRQR[i]: ∂(R·Q·R')/∂θ_i as full k×k matrix.
+    /// dRQR[i]: d(R*Q*R')/dtheta_i as full k x k matrix.
     drqr: Vec<Option<DMatrix<f64>>>,
-    /// dd[i]: obs intercept derivative per time step. Exog param j → x_j[t].
+    /// dd[i]: obs intercept derivative per time step. Exog param j -> x_j[t].
     dd: Vec<Vec<f64>>,
     /// dc[i]: state intercept derivative per time step. Trend params only.
     dc: Vec<Vec<f64>>,
@@ -118,7 +121,7 @@ fn precompute_derivatives(
         param_idx += 1;
     }
 
-    // ---- AR parameters phi_j → dT ----
+    // ---- AR parameters phi_j -> dT ----
     for j in 0..p {
         let mut d_ar = vec![0.0; p + 1];
         d_ar[j + 1] = -1.0;
@@ -137,7 +140,7 @@ fn precompute_derivatives(
         param_idx += 1;
     }
 
-    // ---- MA parameters theta_j → dR → dRQR ----
+    // ---- MA parameters theta_j -> dR -> dRQR ----
     for j in 0..q {
         let mut d_ma = vec![0.0; q + 1];
         d_ma[j + 1] = 1.0;
@@ -159,7 +162,7 @@ fn precompute_derivatives(
         param_idx += 1;
     }
 
-    // ---- Seasonal AR parameters Phi_j → dT ----
+    // ---- Seasonal AR parameters Phi_j -> dT ----
     for j in 0..pp {
         let len = pp * s + 1;
         let mut d_sar = vec![0.0; len];
@@ -179,7 +182,7 @@ fn precompute_derivatives(
         param_idx += 1;
     }
 
-    // ---- Seasonal MA parameters Theta_j → dR → dRQR ----
+    // ---- Seasonal MA parameters Theta_j -> dR -> dRQR ----
     for j in 0..qq {
         let len = qq * s + 1;
         let mut d_sma = vec![0.0; len];
@@ -202,7 +205,7 @@ fn precompute_derivatives(
         param_idx += 1;
     }
 
-    // ---- Sigma2 (non-concentrated) → dQ → dRQR ----
+    // ---- Sigma2 (non-concentrated) -> dQ -> dRQR ----
     if !config.concentrate_scale && param_idx < n_params {
         let mut d_rqr = DMatrix::<f64>::zeros(k, k);
         let r_col = r_mat.column(0);
@@ -227,7 +230,7 @@ fn precompute_derivatives(
 // Score computation
 // ---------------------------------------------------------------------------
 
-/// Compute the score vector ∂loglike/∂θ using the tangent linear Kalman filter.
+/// Compute the score vector dloglike/dtheta using the tangent linear Kalman filter.
 ///
 /// Returns gradient w.r.t. **constrained** parameters.
 pub fn score(
@@ -265,25 +268,10 @@ pub fn score(
     let t_mat_t = t_mat.transpose();
     let has_state_intercept = ss.state_intercept.len() == n * k;
 
-    // Sparse T for O(nnz×k) dp predict instead of O(k³) dense gemm.
-    // Same pattern as kalman.rs — SARIMA companion matrices are very sparse.
-    let sparse_t: Vec<(usize, usize, f64)> = {
-        let mut entries = Vec::new();
-        for i in 0..k {
-            for j in 0..k {
-                let v = t_mat[(i, j)];
-                if v != 0.0 {
-                    entries.push((i, j, v));
-                }
-            }
-        }
-        entries
-    };
-    let use_sparse_t = sparse_t.len() < k * k / 2;
-
-    let sparse_z: Vec<(usize, f64)> = (0..k)
-        .filter_map(|i| if z[i] != 0.0 { Some((i, z[i])) } else { None })
-        .collect();
+    // Build shared sparse representations from kalman.rs
+    let sparse_t = SparseT::from_dense(t_mat, k);
+    let use_sparse_t = sparse_t.is_sparse();
+    let sparse_z = SparseZ::from_dense(z, k);
 
     // Standard KF state
     let mut a = init.initial_state.clone();
@@ -310,23 +298,21 @@ pub fn score(
     let mut temp2 = DMatrix::<f64>::zeros(k, k);
 
     // Score accumulators
-    let mut sum_v_dv = vec![0.0; np]; // Σ (v/F)·dv
-    let mut sum_v2f2_df = vec![0.0; np]; // Σ (v²/F²)·dF
-    let mut sum_inv_f_df = vec![0.0; np]; // Σ (1/F)·dF
-    let mut sum_v2_f = 0.0; // Σ v²/F  (for σ²)
+    let mut sum_v_dv = vec![0.0; np]; // Sum (v/F)*dv
+    let mut sum_v2f2_df = vec![0.0; np]; // Sum (v^2/F^2)*dF
+    let mut sum_inv_f_df = vec![0.0; np]; // Sum (1/F)*dF
+    let mut sum_v2_f = 0.0; // Sum v^2/F  (for sigma^2)
 
     // Steady-state detection for tangent linear filter.
     // Once pz = P*Z converges, dpz = dP*Z and dF = Z'*dP*Z also converge.
     // After convergence we freeze dp, dpz_buf, df_buf and skip the expensive
-    // O(k²×np) dP update and O(k³×np) dP predict steps.
-    const SCORE_SS_TOL: f64 = 1e-9;
-    const SCORE_SS_MIN_STEPS: usize = 5;
-    const SCORE_SS_CONSEC: usize = 3;
+    // O(k^2*np) dP update and O(k^3*np) dP predict steps.
+    // Uses the same constants and check_convergence() from kalman.rs.
     let mut pz_prev = DVector::<f64>::zeros(k);
     let mut ss_converged = false;
     let mut ss_consec = 0_usize;
     let mut f_inv_steady = 0.0;
-    // Cached steady-state Kalman gain: K_∞ = T * pz_∞ / F_∞
+    // Cached steady-state Kalman gain: K_inf = T * pz_inf / F_inf
     let mut k_gain = DVector::<f64>::zeros(k);
 
     for t in 0..n {
@@ -336,7 +322,7 @@ pub fn score(
         } else {
             0.0
         };
-        let v_t = endog[t] - sparse_z_dot(&sparse_z, a.as_slice()) - d_t;
+        let v_t = endog[t] - sparse_z.dot(&a) - d_t;
 
         if ss_converged {
             // ---- STEADY-STATE PATH: P, dP, dpz, dF are frozen ----
@@ -349,7 +335,7 @@ pub fn score(
                 } else {
                     0.0
                 };
-                dv_buf[i] = -dd_i_t - sparse_z_dot(&sparse_z, da[i].as_slice());
+                dv_buf[i] = -dd_i_t - sparse_z.dot(&da[i]);
 
                 // dpz_buf[i] and df_buf[i] are frozen from convergence point
                 if t >= burn {
@@ -363,14 +349,14 @@ pub fn score(
                 sum_v2_f += v_t * v_t * f_inv;
             }
 
-            // Standard KF update (steady-state): a_{t|t} = a + K_∞ * v_t / F
+            // Standard KF update (steady-state): a_{t|t} = a + K_inf * v_t / F
             // Actually: a_{t|t} = a + (v/F)*pz
             // Then predict: a_{t+1|t} = T * a_{t|t} + c
-            // Combined: a_{t+1|t} = T*a + T*(v/F)*pz + c = T*a + v*K_∞ + c
-            // where K_∞ = T*pz/F (precomputed)
+            // Combined: a_{t+1|t} = T*a + T*(v/F)*pz + c = T*a + v*K_inf + c
+            // where K_inf = T*pz/F (precomputed)
 
             // Tangent linear update + predict for da (combined, no dP update):
-            // da_{t|t}_i = da_i + (dv_i/F - v*dF_i/F²)*pz + (v/F)*dpz_i
+            // da_{t|t}_i = da_i + (dv_i/F - v*dF_i/F^2)*pz + (v/F)*dpz_i
             // da_{t+1|t}_i = dT_i * a_{t|t} + T * da_{t|t}_i + dc_i
             for i in 0..np {
                 let coeff1 = dv_buf[i] * f_inv - v_t * df_buf[i] * f_inv * f_inv;
@@ -386,7 +372,7 @@ pub fn score(
 
                 // Predict step for da
                 sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
-                // Add K_∞ * v contribution to state before computing dT*a
+                // Add K_inf * v contribution to state before computing dT*a
                 // Actually a_{t|t} = a + (v/F)*pz, so dT*a_{t|t} uses the updated a
                 // But we need a_{t|t} not a_{t+1|t} for dT:
                 // For now, use pre-update a + correction
@@ -423,8 +409,8 @@ pub fn score(
         }
 
         // ---- NON-STEADY-STATE PATH (full computation) ----
-        sparse_z_mvp(&sparse_z, &p, k, &mut pz);
-        let f_t: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
+        sparse_z.p_mul_z_into(&p, &mut pz, k);
+        let f_t = sparse_z.z_dot_pz(&pz);
 
         if f_t <= 0.0 {
             if t >= burn {
@@ -442,21 +428,8 @@ pub fn score(
                 }
             }
             if use_sparse_t {
-                let p_data = p.as_slice();
-                let tmp = temp_kk.as_mut_slice();
-                for v in tmp.iter_mut() { *v = 0.0; }
-                for &(i, l, val) in &sparse_t {
-                    for j in 0..k { tmp[i + j * k] += val * p_data[l + j * k]; }
-                }
-                let tmp_data = temp_kk.as_slice();
-                let p_out = p.as_mut_slice();
-                let rqr_data = rqr.as_slice();
-                p_out.copy_from_slice(rqr_data);
-                for &(j, l, val) in &sparse_t {
-                    let col_l = l * k;
-                    let col_j = j * k;
-                    for i in 0..k { p_out[col_j + i] += val * tmp_data[col_l + i]; }
-                }
+                sparse_t.t_mul_p_into(&p, &mut temp_kk);
+                sparse_t.temp_tt_plus_rqr_into(&temp_kk, &rqr, &mut p);
             } else {
                 temp_kk.gemm(1.0, t_mat, &p, 0.0);
                 p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
@@ -508,9 +481,9 @@ pub fn score(
             } else {
                 0.0
             };
-            dv_buf[i] = -dd_i_t - sparse_z_dot(&sparse_z, da[i].as_slice());
-            sparse_z_mvp(&sparse_z, &dp[i], k, &mut dpz_buf[i]);
-            df_buf[i] = sparse_z.iter().map(|&(idx, v)| v * dpz_buf[i][idx]).sum();
+            dv_buf[i] = -dd_i_t - sparse_z.dot(&da[i]);
+            sparse_z.p_mul_z_into(&dp[i], &mut dpz_buf[i], k);
+            df_buf[i] = sparse_z.z_dot_pz(&dpz_buf[i]);
 
             if t >= burn {
                 sum_v_dv[i] += v_t * f_inv * dv_buf[i];
@@ -600,21 +573,8 @@ pub fn score(
             }
         }
         if use_sparse_t {
-            let p_data = p.as_slice();
-            let tmp = temp_kk.as_mut_slice();
-            for v in tmp.iter_mut() { *v = 0.0; }
-            for &(i, l, val) in &sparse_t {
-                for j in 0..k { tmp[i + j * k] += val * p_data[l + j * k]; }
-            }
-            let tmp_data = temp_kk.as_slice();
-            let p_out = p.as_mut_slice();
-            let rqr_data = rqr.as_slice();
-            p_out.copy_from_slice(rqr_data);
-            for &(j, l, val) in &sparse_t {
-                let col_l = l * k;
-                let col_j = j * k;
-                for i in 0..k { p_out[col_j + i] += val * tmp_data[col_l + i]; }
-            }
+            sparse_t.t_mul_p_into(&p, &mut temp_kk);
+            sparse_t.temp_tt_plus_rqr_into(&temp_kk, &rqr, &mut p);
         } else {
             temp_kk.gemm(1.0, t_mat, &p, 0.0);
             p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
@@ -624,35 +584,23 @@ pub fn score(
         // ---- Step 7: Steady-state convergence check (pz-vector based) ----
         // Same criterion as kalman.rs: check if pz = P*Z has converged.
         // Once pz converges, P has converged, so dP also converges.
-        if t >= burn + SCORE_SS_MIN_STEPS {
+        if t >= burn + STEADY_STATE_MIN_STEPS {
             // Recompute pz from the PREDICTED P (just updated above)
-            sparse_z_mvp(&sparse_z, &p, k, &mut pz);
-            let pz_diff_sq: f64 = pz
-                .iter()
-                .zip(pz_prev.iter())
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum();
-            let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
-            let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+            sparse_z.p_mul_z_into(&p, &mut pz, k);
 
-            if pz_diff_sq.sqrt() / pz_norm < SCORE_SS_TOL {
-                ss_consec += 1;
-                if ss_consec >= SCORE_SS_CONSEC {
-                    ss_converged = true;
-                    let f_steady: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
-                    f_inv_steady = 1.0 / f_steady;
-                    // Cache K_∞ = T * pz / F
-                    k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
-                    // dpz_buf and df_buf are already at their steady-state values
-                    // from the last non-steady iteration
-                }
-            } else {
-                ss_consec = 0;
+            if check_convergence(&pz, &pz_prev, &mut ss_consec) {
+                ss_converged = true;
+                let f_steady = sparse_z.z_dot_pz(&pz);
+                f_inv_steady = 1.0 / f_steady;
+                // Cache K_inf = T * pz / F
+                k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
+                // dpz_buf and df_buf are already at their steady-state values
+                // from the last non-steady iteration
             }
             pz_prev.copy_from(&pz);
         } else if t >= burn {
             // Before min_steps, just track pz for comparison
-            sparse_z_mvp(&sparse_z, &p, k, &mut pz);
+            sparse_z.p_mul_z_into(&p, &mut pz, k);
             pz_prev.copy_from(&pz);
         }
 
@@ -664,7 +612,7 @@ pub fn score(
         let s = sum_v2_f / n_eff as f64;
         if s <= 0.0 {
             return Err(SarimaxError::DataError(
-                "concentrated σ² <= 0 in score computation".into(),
+                "concentrated sigma^2 <= 0 in score computation".into(),
             ));
         }
         s
@@ -672,7 +620,7 @@ pub fn score(
         ss.state_cov[(0, 0)]
     };
 
-    // score_i = -(1/σ²)·Σ(v/F)·dv + (1/(2σ²))·Σ(v²/F²)·dF - (1/2)·Σ(1/F)·dF
+    // score_i = -(1/sigma^2)*Sum(v/F)*dv + (1/(2*sigma^2))*Sum(v^2/F^2)*dF - (1/2)*Sum(1/F)*dF
     let result: Vec<f64> = (0..np)
         .map(|i| {
             -sum_v_dv[i] / sigma2_hat + 0.5 * sum_v2f2_df[i] / sigma2_hat - 0.5 * sum_inv_f_df[i]
@@ -686,26 +634,7 @@ pub fn score(
 // Helpers
 // ---------------------------------------------------------------------------
 
-#[inline]
-fn sparse_z_dot(sparse_z: &[(usize, f64)], x: &[f64]) -> f64 {
-    sparse_z.iter().map(|&(i, v)| v * x[i]).sum()
-}
-
-#[inline]
-fn sparse_z_mvp(sparse_z: &[(usize, f64)], p: &DMatrix<f64>, k: usize, result: &mut DVector<f64>) {
-    let p_data = p.as_slice();
-    let res = result.as_mut_slice();
-    for v in res[..k].iter_mut() {
-        *v = 0.0;
-    }
-    for &(j, zv) in sparse_z {
-        let col_start = j * k;
-        for r in 0..k {
-            res[r] += zv * p_data[col_start + r];
-        }
-    }
-}
-
+/// Sparse dT * vector multiply (score-specific: dT is per-parameter derivative).
 #[inline]
 fn sparse_dt_vec(dt: &[(usize, usize, f64)], x: &[f64], k: usize, result: &mut DVector<f64>) {
     let res = result.as_mut_slice();
@@ -720,15 +649,15 @@ fn sparse_dt_vec(dt: &[(usize, usize, f64)], x: &[f64], k: usize, result: &mut D
 /// Compute dP prediction step:
 ///   dP_next = dT*P*T' + T*dP*T' + T*P*dT' + dRQR
 ///
-/// When `use_sparse_t` is true, uses sparse T representation (O(nnz×k) per term)
-/// instead of dense gemm (O(k³)), matching the kalman.rs sparse predict pattern.
+/// When `use_sparse_t` is true, uses sparse T representation (O(nnz*k) per term)
+/// instead of dense gemm (O(k^3)), matching the kalman.rs sparse predict pattern.
 /// `p_upd` and `dp_upd` must be the UPDATED (post-observation) values.
 fn compute_dp_predict(
     dt_sparse: &[(usize, usize, f64)],
     drqr: &Option<DMatrix<f64>>,
     t_mat: &DMatrix<f64>,
     t_mat_t: &DMatrix<f64>,
-    sparse_t: &[(usize, usize, f64)],
+    sparse_t: &SparseT,
     use_sparse_t: bool,
     p_upd: &DMatrix<f64>,
     dp_upd: &DMatrix<f64>,
@@ -746,22 +675,13 @@ fn compute_dp_predict(
 
     // Term: T * dP * T'
     if use_sparse_t {
-        // Sparse path: O(nnz×k) per step — same as kalman.rs
-        // Step 1: temp = sparse_T * dP  — O(nnz × k)
-        let dp_data = dp_upd.as_slice();
-        let tmp = temp.as_mut_slice();
-        for v in tmp.iter_mut() {
-            *v = 0.0;
-        }
-        for &(i, l, val) in sparse_t {
-            for j in 0..k {
-                tmp[i + j * k] += val * dp_data[l + j * k];
-            }
-        }
-        // Step 2: result += temp * T'  — O(nnz × k)
+        // Sparse path: O(nnz*k) per step -- same as kalman.rs
+        // Step 1: temp = sparse_T * dP  -- O(nnz * k)
+        sparse_t.t_mul_p_into(dp_upd, temp);
+        // Step 2: result += temp * T'  -- O(nnz * k)
         let tmp_data = temp.as_slice();
         let res = result.as_mut_slice();
-        for &(j, l, val) in sparse_t {
+        for &(j, l, val) in &sparse_t.entries {
             let col_l = l * k;
             let col_j = j * k;
             for i in 0..k {
@@ -769,7 +689,7 @@ fn compute_dp_predict(
             }
         }
     } else {
-        // Dense path: O(k³) — used when T is not sparse enough
+        // Dense path: O(k^3) -- used when T is not sparse enough
         temp.gemm(1.0, t_mat, dp_upd, 0.0);
         result.gemm(1.0, temp, t_mat_t, 1.0);
     }
@@ -779,7 +699,7 @@ fn compute_dp_predict(
     }
 
     // Term: dT * P * T'
-    // Compute temp2 = dT * P (sparse dT × dense P)
+    // Compute temp2 = dT * P (sparse dT x dense P)
     temp2.fill(0.0);
     let p_data = p_upd.as_slice();
     let tmp2 = temp2.as_mut_slice();
@@ -793,7 +713,7 @@ fn compute_dp_predict(
         // result += temp2 * T' (sparse)
         let tmp2_data = temp2.as_slice();
         let res = result.as_mut_slice();
-        for &(j, l, val) in sparse_t {
+        for &(j, l, val) in &sparse_t.entries {
             let col_l = l * k;
             let col_j = j * k;
             for i in 0..k {
@@ -806,19 +726,10 @@ fn compute_dp_predict(
 
     // Term: T * P * dT'
     if use_sparse_t {
-        // Compute temp = sparse_T * P  — O(nnz × k)
-        let p_data2 = p_upd.as_slice();
-        let tmp = temp.as_mut_slice();
-        for v in tmp.iter_mut() {
-            *v = 0.0;
-        }
-        for &(i, l, val) in sparse_t {
-            for j in 0..k {
-                tmp[i + j * k] += val * p_data2[l + j * k];
-            }
-        }
+        // Compute temp = sparse_T * P  -- O(nnz * k)
+        sparse_t.t_mul_p_into(p_upd, temp);
     } else {
-        // Compute temp = T * P  — O(k³)
+        // Compute temp = T * P  -- O(k^3)
         temp.gemm(1.0, t_mat, p_upd, 0.0);
     }
     // result += temp * dT'
@@ -885,7 +796,7 @@ mod tests {
                 - eval_loglike(endog, config, &p_minus, exog))
                 / (2.0 * h2);
 
-            // Richardson extrapolation: (4*g_{h/2} - g_h) / 3 → O(h^4)
+            // Richardson extrapolation: (4*g_{h/2} - g_h) / 3 -> O(h^4)
             grad[i] = (4.0 * g_h2 - g_h) / 3.0;
         }
         grad
@@ -1086,7 +997,7 @@ mod tests {
             .collect();
 
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
-        // params: [ar, ma, sar, sma] — well within stationary/invertible region
+        // params: [ar, ma, sar, sma] -- well within stationary/invertible region
         let params_flat = vec![0.5, 0.3, 0.2, -0.4];
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();

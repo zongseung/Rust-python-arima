@@ -44,36 +44,335 @@ pub struct KalmanFilterOutput {
 ///
 /// We check pz convergence (k-vector) because F_t = Z'*pz (scalar) can
 /// converge while pz changes in directions orthogonal to Z, leading to
-/// incorrect cached K_∞ = T*pz/F. Error analysis shows the loglike
-/// error from a converged-but-imprecise K_∞ is O(ε * n²) due to
+/// incorrect cached K_inf = T*pz/F. Error analysis shows the loglike
+/// error from a converged-but-imprecise K_inf is O(eps * n^2) due to
 /// compounding through the state recursion (unit-root states integrate
-/// the error), so ε must be tight.
+/// the error), so eps must be tight.
 ///
 /// At 1e-9, loglike error stays below ~1e-5 for n=1000.
 /// For models where pz converges slowly, steady-state won't trigger
-/// and the sparse T·P·T' path provides the primary speedup instead.
-const STEADY_STATE_TOL: f64 = 1e-9;
+/// and the sparse T*P*T' path provides the primary speedup instead.
+pub(crate) const STEADY_STATE_TOL: f64 = 1e-9;
 
 /// Minimum steps past burn-in before checking for convergence.
-const STEADY_STATE_MIN_STEPS: usize = 5;
+pub(crate) const STEADY_STATE_MIN_STEPS: usize = 5;
 
 /// Number of consecutive converged pz values required.
-const STEADY_STATE_CONSEC: usize = 3;
+pub(crate) const STEADY_STATE_CONSEC: usize = 3;
 
 // ---------------------------------------------------------------------------
-// Core Kalman filter with steady-state acceleration
+// Sparse T representation for optimized matrix operations
 // ---------------------------------------------------------------------------
 
-/// Unified Kalman filter core with optional steady-state detection.
+/// Sparse representation of the transition matrix T.
+///
+/// SARIMA companion matrices are very sparse (e.g. 31/729 = 4% for k=27).
+/// This enables sparse T*a (O(nnz)), T*P (O(nnz*k)), and T*P*T' (O(nnz*k)).
+pub(crate) struct SparseT {
+    pub(crate) entries: Vec<(usize, usize, f64)>,
+    pub(crate) k: usize,
+}
+
+impl SparseT {
+    /// Build sparse T from a dense matrix. Always succeeds (used for steady-state
+    /// which always needs sparse entries regardless of density).
+    pub(crate) fn from_dense(t: &DMatrix<f64>, k: usize) -> Self {
+        let mut entries = Vec::new();
+        for i in 0..k {
+            for j in 0..k {
+                let v = t[(i, j)];
+                if v != 0.0 {
+                    entries.push((i, j, v));
+                }
+            }
+        }
+        SparseT { entries, k }
+    }
+
+    /// Check if T is sparse enough to warrant sparse operations (< 50% density).
+    pub(crate) fn is_sparse(&self) -> bool {
+        self.entries.len() < self.k * self.k / 2
+    }
+
+    /// Sparse matrix-vector multiply: result = T * v  (O(nnz))
+    #[inline]
+    pub(crate) fn t_mul_vec_into(&self, v: &DVector<f64>, result: &mut DVector<f64>) {
+        let v_s = v.as_slice();
+        let r_s = result.as_mut_slice();
+        for val in r_s.iter_mut() {
+            *val = 0.0;
+        }
+        for &(i, j, t_val) in &self.entries {
+            r_s[i] += t_val * v_s[j];
+        }
+    }
+
+    /// Sparse T*P into temp buffer: temp = T * P  (O(nnz * k))
+    #[inline]
+    pub(crate) fn t_mul_p_into(&self, p: &DMatrix<f64>, temp: &mut DMatrix<f64>) {
+        let k = self.k;
+        let p_data = p.as_slice(); // column-major
+        let tmp = temp.as_mut_slice();
+        for v in tmp.iter_mut() {
+            *v = 0.0;
+        }
+        // temp[i, j] += T[i,l] * P[l,j]
+        // In column-major: temp[i + j*k] += val * p_data[l + j*k]
+        for &(i, l, val) in &self.entries {
+            for j in 0..k {
+                tmp[i + j * k] += val * p_data[l + j * k];
+            }
+        }
+    }
+
+    /// Sparse temp * T' + rqr into P: P = temp * T' + rqr  (O(nnz * k))
+    #[inline]
+    pub(crate) fn temp_tt_plus_rqr_into(
+        &self,
+        temp: &DMatrix<f64>,
+        rqr: &DMatrix<f64>,
+        p: &mut DMatrix<f64>,
+    ) {
+        let k = self.k;
+        let tmp = temp.as_slice();
+        let p_data = p.as_mut_slice();
+        let rqr_data = rqr.as_slice();
+        // Start with RQR'
+        p_data.copy_from_slice(rqr_data);
+        // Accumulate: P[i,j] += temp[i,l] * T[j,l]
+        // Iterate over sparse T entries as (j, l, val)
+        for &(j, l, val) in &self.entries {
+            // Add val * temp[:, l] to P[:, j]
+            let col_l = l * k;
+            let col_j = j * k;
+            for i in 0..k {
+                p_data[col_j + i] += val * tmp[col_l + i];
+            }
+        }
+    }
+}
+
+/// Sparse Z representation for O(nnz_z) dot product operations.
+pub(crate) struct SparseZ {
+    pub(crate) entries: Vec<(usize, f64)>,
+}
+
+impl SparseZ {
+    pub(crate) fn from_dense(z: &DVector<f64>, k: usize) -> Self {
+        let mut entries = Vec::new();
+        for i in 0..k {
+            let v = z[i];
+            if v != 0.0 {
+                entries.push((i, v));
+            }
+        }
+        SparseZ { entries }
+    }
+
+    /// Sparse dot product: Z' * a  (O(nnz_z))
+    #[inline]
+    pub(crate) fn dot(&self, a: &DVector<f64>) -> f64 {
+        let a_s = a.as_slice();
+        self.entries.iter().map(|&(i, v)| v * a_s[i]).sum()
+    }
+
+    /// Sparse P * Z using column access: pz = P * Z  (O(nnz_z * k))
+    #[inline]
+    pub(crate) fn p_mul_z_into(&self, p: &DMatrix<f64>, pz: &mut DVector<f64>, k: usize) {
+        let pz_s = pz.as_mut_slice();
+        let p_data = p.as_slice(); // column-major
+        for v in pz_s.iter_mut() {
+            *v = 0.0;
+        }
+        for &(zi, zv) in &self.entries {
+            // P[:, zi] * zv -> accumulate into pz
+            let col_start = zi * k;
+            for r in 0..k {
+                pz_s[r] += zv * p_data[col_start + r];
+            }
+        }
+    }
+
+    /// Sparse F_t = Z' * pz  (O(nnz_z))
+    #[inline]
+    pub(crate) fn z_dot_pz(&self, pz: &DVector<f64>) -> f64 {
+        self.entries.iter().map(|&(i, v)| v * pz[i]).sum()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kalman filter execution strategy (enum dispatch = zero-cost)
+// ---------------------------------------------------------------------------
+
+/// Kalman filter execution strategy for the non-converged phase.
+///
+/// Uses enum dispatch for zero-cost abstraction. Selects between:
+/// - Dense: Standard nalgebra gemv/gemm for small state dimensions or dense T.
+/// - Sparse: Sparse T*P*T' computation when T density < 50%.
+///
+/// The steady-state (converged) phase is handled separately in the main loop
+/// since it has fundamentally different control flow (no filter update, frozen P).
+enum KalmanStrategy {
+    /// Standard dense matrix operations.
+    Dense,
+    /// Sparse T matrix optimization (T density < 50%).
+    Sparse,
+}
+
+impl KalmanStrategy {
+    /// Compute pz = P*Z and F_t = Z'*pz.
+    #[inline]
+    fn compute_pz_and_f(
+        &self,
+        p: &DMatrix<f64>,
+        z: &DVector<f64>,
+        sparse_z: &SparseZ,
+        sparse_t: &SparseT,
+        pz: &mut DVector<f64>,
+    ) -> f64 {
+        match self {
+            Self::Sparse => {
+                sparse_z.p_mul_z_into(p, pz, sparse_t.k);
+                sparse_z.z_dot_pz(pz)
+            }
+            Self::Dense => {
+                pz.gemv(1.0, p, z, 0.0);
+                z.dot(pz)
+            }
+        }
+    }
+
+    /// Predict state: a_next = T * a_updated + c_t.
+    #[inline]
+    fn predict_state(
+        &self,
+        t_mat: &DMatrix<f64>,
+        sparse_t: &SparseT,
+        state: &DVector<f64>,
+        a_next: &mut DVector<f64>,
+        state_intercept: &[f64],
+        t: usize,
+        k: usize,
+        has_state_intercept: bool,
+    ) {
+        match self {
+            Self::Sparse => {
+                sparse_t.t_mul_vec_into(state, a_next);
+            }
+            Self::Dense => {
+                a_next.gemv(1.0, t_mat, state, 0.0);
+            }
+        }
+        if has_state_intercept {
+            let an_s = a_next.as_mut_slice();
+            let base = t * k;
+            for i in 0..k {
+                an_s[i] += state_intercept[base + i];
+            }
+        }
+    }
+
+    /// Predict covariance: P = T * P_updated * T' + RQR'.
+    #[inline]
+    fn predict_cov(
+        &self,
+        t_mat: &DMatrix<f64>,
+        t_mat_t: &DMatrix<f64>,
+        sparse_t: &SparseT,
+        p: &mut DMatrix<f64>,
+        rqr: &DMatrix<f64>,
+        temp_kk: &mut DMatrix<f64>,
+    ) {
+        match self {
+            Self::Sparse => {
+                sparse_t.t_mul_p_into(p, temp_kk);
+                sparse_t.temp_tt_plus_rqr_into(temp_kk, rqr, p);
+            }
+            Self::Dense => {
+                temp_kk.gemm(1.0, t_mat, p, 0.0);
+                p.gemm(1.0, temp_kk, t_mat_t, 0.0);
+                *p += &*rqr;
+            }
+        }
+    }
+
+    /// Compute K_inf = T * pz for steady-state transition.
+    #[inline]
+    fn compute_k_gain(
+        &self,
+        t_mat: &DMatrix<f64>,
+        sparse_t: &SparseT,
+        pz: &DVector<f64>,
+        k_gain: &mut DVector<f64>,
+    ) {
+        match self {
+            Self::Sparse => {
+                sparse_t.t_mul_vec_into(pz, k_gain);
+            }
+            Self::Dense => {
+                k_gain.gemv(1.0, t_mat, pz, 0.0);
+            }
+        }
+    }
+}
+
+/// Cached steady-state quantities, frozen once P converges.
+struct SteadyStateCache {
+    /// Cached Kalman gain K_inf = T * pz_inf.
+    k_gain: DVector<f64>,
+    /// Cached innovation variance F_inf = Z' * P_inf * Z.
+    f_steady: f64,
+    /// Cached ln(F_inf).
+    log_f_steady: f64,
+    /// Cached pz_inf = P_inf * Z for filtered state computation.
+    pz_inf: DVector<f64>,
+}
+
+/// Check pz-vector based convergence for steady-state detection.
+///
+/// Returns true if convergence criterion is met for STEADY_STATE_CONSEC
+/// consecutive steps.
+#[inline]
+pub(crate) fn check_convergence(
+    pz: &DVector<f64>,
+    pz_prev: &DVector<f64>,
+    consec_count: &mut usize,
+) -> bool {
+    let pz_diff_sq: f64 = pz
+        .iter()
+        .zip(pz_prev.iter())
+        .map(|(a, b)| {
+            let d = a - b;
+            d * d
+        })
+        .sum();
+    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
+    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
+
+    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
+        *consec_count += 1;
+        *consec_count >= STEADY_STATE_CONSEC
+    } else {
+        *consec_count = 0;
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Core Kalman filter with strategy-based dispatch
+// ---------------------------------------------------------------------------
+
+/// Unified Kalman filter core with strategy-based dispatch.
 ///
 /// When `store_full=false`, skips storing innovation_vars and filtered state
 /// (used by `kalman_loglike`). When `store_full=true`, stores everything
 /// needed for forecasting and diagnostics (used by `kalman_filter`).
 ///
-/// **Steady-state optimization**: For time-invariant systems, the predicted
-/// covariance P_{t+1|t} converges to a steady-state P_∞. Once detected,
-/// the Kalman gain K_∞ is cached and the expensive O(k³) covariance
-/// prediction step is skipped for all remaining time steps.
+/// **Strategy selection**: The filter automatically selects the best execution
+/// strategy based on the structure of the transition matrix T:
+/// - Dense: Standard O(k^3) operations for small or dense T.
+/// - Sparse: O(nnz*k) operations when T density < 50%.
+/// - SteadyState: O(nnz) per step once P converges (skips covariance updates).
 ///
 /// **Note on state_intercept (c_t)**: The steady-state optimization is valid
 /// even when state_intercept varies over time (e.g. trend models). Covariance
@@ -113,34 +412,15 @@ fn kalman_core(
     let t_mat_t = t_mat.transpose();
     let has_state_intercept = ss.state_intercept.len() == n * k;
 
-    // Sparse representation of T for O(nnz) operations.
-    // SARIMA companion matrices are very sparse (e.g. 31/729 = 4% for k=27).
-    // This enables sparse T·a (O(nnz)), T·P (O(nnz×k)), and T·P·T' (O(nnz×k)).
-    let sparse_t: Vec<(usize, usize, f64)> = {
-        let mut entries = Vec::new();
-        for i in 0..k {
-            for j in 0..k {
-                let v = t_mat[(i, j)];
-                if v != 0.0 {
-                    entries.push((i, j, v));
-                }
-            }
-        }
-        entries
-    };
-    // Use sparse path when T is significantly sparse (< 50% density).
-    let use_sparse = sparse_t.len() < k * k / 2;
+    // Build sparse representations
+    let sparse_z = SparseZ::from_dense(z, k);
+    let sparse_t = SparseT::from_dense(t_mat, k);
 
-    // Sparse Z for O(nnz_z) dot product (e.g. 3 non-zeros for SARIMA k=27).
-    let sparse_z: Vec<(usize, f64)> = {
-        let mut entries = Vec::new();
-        for i in 0..k {
-            let v = z[i];
-            if v != 0.0 {
-                entries.push((i, v));
-            }
-        }
-        entries
+    // Select strategy based on T density
+    let strategy = if sparse_t.is_sparse() {
+        KalmanStrategy::Sparse
+    } else {
+        KalmanStrategy::Dense
     };
 
     let mut sum_log_f = 0.0;
@@ -161,49 +441,36 @@ fn kalman_core(
     let mut a_next = DVector::<f64>::zeros(k);
     let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
-    // Steady-state detection buffers (pz-vector based)
-    let mut converged = false;
-    let mut k_gain = DVector::<f64>::zeros(k); // K_∞ = T * P_∞ * Z
-    let mut f_steady = 0.0;
-    let mut log_f_steady = 0.0;
+    // Steady-state detection
+    let mut ss_cache: Option<SteadyStateCache> = None;
     let mut pz_prev = DVector::<f64>::zeros(k);
-    let mut pz_inf = DVector::<f64>::zeros(k); // cached pz_∞ = P_∞ * Z at convergence
     let mut consec_count = 0_usize;
 
     for t in 0..n {
-        // --- Innovation ---
+        // --- Observation intercept ---
         let d_t = if t < ss.obs_intercept.len() {
             ss.obs_intercept[t]
         } else {
             0.0
         };
 
-        if converged {
-            // ---- PATH 1: Steady-state — O(nnz) per step ----
-            // P has converged to P_∞, so K_∞ and F_∞ are constant.
+        if let Some(ref cache) = ss_cache {
+            // ---- STEADY-STATE PATH: O(nnz) per step ----
+            // P has converged to P_inf, so K_inf and F_inf are constant.
             // Only the state mean recursion is computed; covariance is frozen.
-            let a_slice = a.as_slice();
-            let za: f64 = sparse_z.iter().map(|&(i, v)| v * a_slice[i]).sum();
-            let v_t = endog[t] - za - d_t;
+            let v_t = endog[t] - sparse_z.dot(&a) - d_t;
             innovations.push(v_t);
             if store_full {
-                innovation_vars.push(f_steady);
+                innovation_vars.push(cache.f_steady);
             }
 
-            // Predict state: a_next = T_sparse * a + K_∞ * (v_t / F_∞)
-            // Using sparse T: O(nnz) instead of dense gemv O(k²)
-            let a_slice = a.as_slice();
-            let a_next_slice = a_next.as_mut_slice();
-            for v in a_next_slice.iter_mut() {
-                *v = 0.0;
-            }
-            for &(i, j, val) in &sparse_t {
-                a_next_slice[i] += val * a_slice[j];
-            }
-            let scale_v = v_t / f_steady;
-            let k_slice = k_gain.as_slice();
+            // Predict state: a_next = T_sparse * a + K_inf * (v_t / F_inf) + c_t
+            sparse_t.t_mul_vec_into(&a, &mut a_next);
+            let scale_v = v_t / cache.f_steady;
+            let k_slice = cache.k_gain.as_slice();
+            let an_s = a_next.as_mut_slice();
             for i in 0..k {
-                a_next_slice[i] += scale_v * k_slice[i];
+                an_s[i] += scale_v * k_slice[i];
             }
             if has_state_intercept {
                 for i in 0..k {
@@ -212,11 +479,10 @@ fn kalman_core(
             }
 
             if store_full {
-                // Filtered state: a_{t|t} = a_{t|t-1} + (v_t / F_∞) * pz_∞
+                // Filtered state: a_{t|t} = a_{t|t-1} + (v_t / F_inf) * pz_inf
                 a_filtered.copy_from(&a);
-                let scale_v = v_t / f_steady;
                 let af_s = a_filtered.as_mut_slice();
-                let pz_s = pz_inf.as_slice();
+                let pz_s = cache.pz_inf.as_slice();
                 for i in 0..k {
                     af_s[i] += scale_v * pz_s[i];
                 }
@@ -225,32 +491,15 @@ fn kalman_core(
             std::mem::swap(&mut a, &mut a_next);
 
             if t >= burn {
-                sum_log_f += log_f_steady;
-                sum_v2_f += v_t * v_t / f_steady;
+                sum_log_f += cache.log_f_steady;
+                sum_v2_f += v_t * v_t / cache.f_steady;
             }
-        } else if use_sparse {
-            // ---- PATH 2: Sparse Kalman — O(nnz×k) per step ----
-            // Used when T density < 50%. For SARIMA(1,1,1)(1,1,1,12) with k=27,
-            // T has ~31/729 = 4% non-zeros, giving ~23× speedup over dense gemm.
+        } else {
+            // ---- NON-CONVERGED PATH: Dense or Sparse strategy ----
             let v_t = endog[t] - z.dot(&a) - d_t;
             innovations.push(v_t);
 
-            // pz = P * z (sparse Z: O(nnz_z × k) instead of O(k²))
-            {
-                let pz_s = pz.as_mut_slice();
-                let p_data = p.as_slice(); // column-major
-                for v in pz_s.iter_mut() {
-                    *v = 0.0;
-                }
-                for &(zi, zv) in &sparse_z {
-                    // P[:, zi] * zv → accumulate into pz
-                    let col_start = zi * k;
-                    for r in 0..k {
-                        pz_s[r] += zv * p_data[col_start + r];
-                    }
-                }
-            }
-            let f_t: f64 = sparse_z.iter().map(|&(i, v)| v * pz[i]).sum();
+            let f_t = strategy.compute_pz_and_f(&p, z, &sparse_z, &sparse_t, &mut pz);
             if store_full {
                 innovation_vars.push(f_t);
             }
@@ -269,60 +518,20 @@ fn kalman_core(
                     p_filtered.copy_from(&p);
                 }
 
-                // Predict state: a_next = T_sparse * a (O(nnz))
-                {
-                    let a_s = a.as_slice();
-                    let an_s = a_next.as_mut_slice();
-                    for v in an_s.iter_mut() {
-                        *v = 0.0;
-                    }
-                    for &(i, j, val) in &sparse_t {
-                        an_s[i] += val * a_s[j];
-                    }
-                }
-                if has_state_intercept {
-                    let an_s = a_next.as_mut_slice();
-                    let base = t * k;
-                    for i in 0..k {
-                        an_s[i] += ss.state_intercept[base + i];
-                    }
-                }
+                // Predict state: a_next = T * a_updated + c_t
+                strategy.predict_state(
+                    t_mat,
+                    &sparse_t,
+                    &a,
+                    &mut a_next,
+                    &ss.state_intercept,
+                    t,
+                    k,
+                    has_state_intercept,
+                );
 
-                // Predict covariance: P = T_sparse * P * T_sparse' + RQR'
-                // Step 1: temp_kk = T_sparse * P  — O(nnz × k)
-                {
-                    let p_data = p.as_slice(); // column-major
-                    let tmp = temp_kk.as_mut_slice();
-                    for v in tmp.iter_mut() {
-                        *v = 0.0;
-                    }
-                    // temp_kk[i, j] += T[i,l] * P[l,j]
-                    // In column-major: temp_kk[i + j*k] += val * p_data[l + j*k]
-                    for &(i, l, val) in &sparse_t {
-                        for j in 0..k {
-                            tmp[i + j * k] += val * p_data[l + j * k];
-                        }
-                    }
-                }
-                // Step 2: P = temp_kk * T' + RQR'  — O(nnz × k)
-                // P[i,j] = sum_l temp_kk[i,l] * T[j,l]  (since T'[l,j] = T[j,l])
-                {
-                    let tmp = temp_kk.as_slice();
-                    let p_data = p.as_mut_slice();
-                    let rqr_data = rqr.as_slice();
-                    // Start with RQR'
-                    p_data.copy_from_slice(rqr_data);
-                    // Accumulate: P[i,j] += temp_kk[i,l] * T[j,l]
-                    // Iterate over sparse T entries as (j, l, val)
-                    for &(j, l, val) in &sparse_t {
-                        // Add val * temp_kk[:, l] to P[:, j]
-                        let col_l = l * k;
-                        let col_j = j * k;
-                        for i in 0..k {
-                            p_data[col_j + i] += val * tmp[col_l + i];
-                        }
-                    }
-                }
+                // Predict covariance: P = T * P * T' + RQR'
+                strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
 
                 std::mem::swap(&mut a, &mut a_next);
 
@@ -332,44 +541,25 @@ fn kalman_core(
                 }
 
                 // --- Steady-state convergence check (pz-vector based) ---
-                // We check pz = P*Z convergence instead of scalar F_t = Z'*pz
-                // because F_t can converge while pz still changes in directions
-                // orthogonal to Z, causing incorrect cached K_∞.
                 if t >= burn + STEADY_STATE_MIN_STEPS {
                     // Compute pz from the PREDICTED P (already updated above)
                     pz.gemv(1.0, &p, z, 0.0);
-                    let pz_diff_sq: f64 = pz
-                        .iter()
-                        .zip(pz_prev.iter())
-                        .map(|(a, b)| {
-                            let d = a - b;
-                            d * d
-                        })
-                        .sum();
-                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
-                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
 
-                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
-                        consec_count += 1;
-                        if consec_count >= STEADY_STATE_CONSEC {
-                            converged = true;
-                            f_steady = z.dot(&pz);
-                            log_f_steady = f_steady.ln();
-                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
-                                                   // K_∞ = T * pz_∞
-                            {
-                                let pz_s = pz.as_slice();
-                                let kg_s = k_gain.as_mut_slice();
-                                for v in kg_s.iter_mut() {
-                                    *v = 0.0;
-                                }
-                                for &(i, j, val) in &sparse_t {
-                                    kg_s[i] += val * pz_s[j];
-                                }
-                            }
-                        }
-                    } else {
-                        consec_count = 0;
+                    if check_convergence(&pz, &pz_prev, &mut consec_count) {
+                        let f_steady = z.dot(&pz);
+                        let log_f_steady = f_steady.ln();
+                        let pz_inf = pz.clone();
+
+                        // K_inf = T * pz_inf
+                        let mut k_gain = DVector::<f64>::zeros(k);
+                        strategy.compute_k_gain(t_mat, &sparse_t, &pz, &mut k_gain);
+
+                        ss_cache = Some(SteadyStateCache {
+                            k_gain,
+                            f_steady,
+                            log_f_steady,
+                            pz_inf,
+                        });
                     }
                     pz_prev.copy_from(&pz);
                 }
@@ -386,148 +576,17 @@ fn kalman_core(
                     p_filtered.copy_from(&p);
                 }
 
-                {
-                    let a_s = a.as_slice();
-                    let an_s = a_next.as_mut_slice();
-                    for v in an_s.iter_mut() {
-                        *v = 0.0;
-                    }
-                    for &(i, j, val) in &sparse_t {
-                        an_s[i] += val * a_s[j];
-                    }
-                }
-                if has_state_intercept {
-                    let an_s = a_next.as_mut_slice();
-                    let base = t * k;
-                    for i in 0..k {
-                        an_s[i] += ss.state_intercept[base + i];
-                    }
-                }
-                {
-                    let p_data = p.as_slice();
-                    let tmp = temp_kk.as_mut_slice();
-                    for v in tmp.iter_mut() {
-                        *v = 0.0;
-                    }
-                    for &(i, l, val) in &sparse_t {
-                        for j in 0..k {
-                            tmp[i + j * k] += val * p_data[l + j * k];
-                        }
-                    }
-                }
-                {
-                    let tmp = temp_kk.as_slice();
-                    let p_data = p.as_mut_slice();
-                    let rqr_data = rqr.as_slice();
-                    p_data.copy_from_slice(rqr_data);
-                    for &(j, l, val) in &sparse_t {
-                        let col_l = l * k;
-                        let col_j = j * k;
-                        for i in 0..k {
-                            p_data[col_j + i] += val * tmp[col_l + i];
-                        }
-                    }
-                }
-                std::mem::swap(&mut a, &mut a_next);
-            }
-        } else {
-            // ---- PATH 3: Dense Kalman — O(k³) per step ----
-            // Standard nalgebra gemm for small state dimensions or dense T.
-            // This is the textbook Kalman filter implementation.
-            let v_t = endog[t] - z.dot(&a) - d_t;
-            innovations.push(v_t);
-
-            // pz = P * z
-            pz.gemv(1.0, &p, z, 0.0);
-            let f_t: f64 = z.dot(&pz);
-            if store_full {
-                innovation_vars.push(f_t);
-            }
-
-            if f_t > 0.0 {
-                let f_inv = 1.0 / f_t;
-
-                // State update: a = a + (v_t / F_t) * pz
-                a.axpy(v_t * f_inv, &pz, 1.0);
-
-                // Covariance update: P = P - (1/F_t) * pz * pz'
-                p.ger(-f_inv, &pz, &pz, 1.0);
-
-                if store_full {
-                    a_filtered.copy_from(&a);
-                    p_filtered.copy_from(&p);
-                }
-
-                // Predict state: a_next = T * a_updated
-                a_next.gemv(1.0, t_mat, &a, 0.0);
-                if has_state_intercept {
-                    for i in 0..k {
-                        a_next[i] += ss.state_intercept[t * k + i];
-                    }
-                }
-
-                // Predict covariance: P = T * P_updated * T' + RQR'
-                temp_kk.gemm(1.0, t_mat, &p, 0.0);
-                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
-                p += &rqr;
-
-                std::mem::swap(&mut a, &mut a_next);
-
-                if t >= burn {
-                    sum_log_f += f_t.ln();
-                    sum_v2_f += v_t * v_t * f_inv;
-                }
-
-                // --- Steady-state convergence check (pz-vector based) ---
-                if t >= burn + STEADY_STATE_MIN_STEPS {
-                    pz.gemv(1.0, &p, z, 0.0);
-                    let pz_diff_sq: f64 = pz
-                        .iter()
-                        .zip(pz_prev.iter())
-                        .map(|(a, b)| {
-                            let d = a - b;
-                            d * d
-                        })
-                        .sum();
-                    let pz_norm_sq: f64 = pz_prev.iter().map(|v| v * v).sum();
-                    let pz_norm = pz_norm_sq.sqrt().max(1e-15);
-
-                    if pz_diff_sq.sqrt() / pz_norm < STEADY_STATE_TOL {
-                        consec_count += 1;
-                        if consec_count >= STEADY_STATE_CONSEC {
-                            converged = true;
-                            f_steady = z.dot(&pz);
-                            log_f_steady = f_steady.ln();
-                            pz_inf.copy_from(&pz); // cache pz_∞ for filtered state
-                            k_gain.gemv(1.0, t_mat, &pz, 0.0);
-                        }
-                    } else {
-                        consec_count = 0;
-                    }
-                    pz_prev.copy_from(&pz);
-                }
-            } else if t >= burn {
-                return Err(SarimaxError::DataError(format!(
-                    "innovation variance F_t <= 0 at t={} (F_t={}); \
-                     model parameters may be numerically unstable",
-                    t, f_t
-                )));
-            } else {
-                // F_t <= 0 during burn-in: skip update, predict from current state
-                if store_full {
-                    a_filtered.copy_from(&a);
-                    p_filtered.copy_from(&p);
-                }
-
-                a_next.gemv(1.0, t_mat, &a, 0.0);
-                if has_state_intercept {
-                    for i in 0..k {
-                        a_next[i] += ss.state_intercept[t * k + i];
-                    }
-                }
-                temp_kk.gemm(1.0, t_mat, &p, 0.0);
-                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
-                p += &rqr;
+                strategy.predict_state(
+                    t_mat,
+                    &sparse_t,
+                    &a,
+                    &mut a_next,
+                    &ss.state_intercept,
+                    t,
+                    k,
+                    has_state_intercept,
+                );
+                strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
                 std::mem::swap(&mut a, &mut a_next);
             }
         }
@@ -581,7 +640,7 @@ fn kalman_core(
 /// Compute the (optionally concentrated) log-likelihood via the Kalman filter.
 ///
 /// Uses steady-state acceleration: once the predicted covariance P converges,
-/// the Kalman gain is cached and O(k³) covariance updates are skipped.
+/// the Kalman gain is cached and O(k^3) covariance updates are skipped.
 pub fn kalman_loglike(
     endog: &[f64],
     ss: &StateSpace,

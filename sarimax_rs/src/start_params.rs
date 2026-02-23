@@ -35,18 +35,27 @@ fn seasonal_difference(y: &[f64], d: usize, s: usize) -> Vec<f64> {
     out
 }
 
-/// Compute sample autocovariance at lag k.
-fn autocovariance(y: &[f64], k: usize) -> f64 {
+/// Compute sample autocovariance at lag k, given a pre-computed mean.
+fn autocovariance_with_mean(y: &[f64], k: usize, mean: f64) -> f64 {
     let n = y.len();
     if k >= n {
         return 0.0;
     }
-    let mean: f64 = y.iter().sum::<f64>() / n as f64;
     let mut sum = 0.0;
     for i in 0..n - k {
         sum += (y[i] - mean) * (y[i + k] - mean);
     }
     sum / n as f64
+}
+
+/// Compute sample autocovariance at lag k.
+fn autocovariance(y: &[f64], k: usize) -> f64 {
+    let n = y.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mean: f64 = y.iter().sum::<f64>() / n as f64;
+    autocovariance_with_mean(y, k, mean)
 }
 
 /// Estimate AR coefficients via Burg's maximum entropy method.
@@ -109,10 +118,41 @@ fn burg_ar(y: &[f64], p: usize) -> Option<Vec<f64>> {
     Some(a)
 }
 
+/// Compute autocovariance sequence gamma(0), gamma(1), ..., gamma(max_lag).
+///
+/// Computes the mean once and reuses it for all lags, avoiding redundant O(n)
+/// mean computations when multiple lags are needed.
+fn compute_autocovariance(y: &[f64], max_lag: usize) -> Vec<f64> {
+    let n = y.len();
+    if n == 0 {
+        return vec![0.0; max_lag + 1];
+    }
+    let mean: f64 = y.iter().sum::<f64>() / n as f64;
+    (0..=max_lag)
+        .map(|k| autocovariance_with_mean(y, k, mean))
+        .collect()
+}
+
+/// Compute autocovariance at seasonal lags: gamma(0), gamma(s), gamma(2s), ..., gamma(order*s).
+///
+/// Computes the mean once and reuses it for all seasonal lags.
+fn compute_seasonal_autocovariance(y: &[f64], order: usize, s: usize) -> Vec<f64> {
+    let n = y.len();
+    if n == 0 || s == 0 {
+        return vec![0.0; order + 1];
+    }
+    let mean: f64 = y.iter().sum::<f64>() / n as f64;
+    (0..=order)
+        .map(|k| autocovariance_with_mean(y, k * s, mean))
+        .collect()
+}
+
 /// Estimate AR coefficients via Yule-Walker equations.
 ///
 /// Solves the Yule-Walker system: R * phi = r
 /// where R[i,j] = gamma(|i-j|) and r[i] = gamma(i+1).
+///
+/// Computes autocovariance from data and delegates to `yule_walker_from_acov()`.
 fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
     if p == 0 {
         return Some(vec![]);
@@ -121,40 +161,8 @@ fn yule_walker(y: &[f64], p: usize) -> Option<Vec<f64>> {
         return None;
     }
 
-    let gamma0 = autocovariance(y, 0);
-    if gamma0.abs() < 1e-15 {
-        return None;
-    }
-
-    // Build Toeplitz matrix R and vector r
-    let gammas: Vec<f64> = (0..=p).map(|k| autocovariance(y, k)).collect();
-
-    // Levinson-Durbin recursion for efficient Toeplitz solve
-    let mut phi = vec![0.0; p];
-    let mut phi_prev = vec![0.0; p];
-    let mut var = gammas[0];
-
-    for k in 0..p {
-        // Compute reflection coefficient
-        let mut num = gammas[k + 1];
-        for j in 0..k {
-            num -= phi[j] * gammas[k - j];
-        }
-        if var.abs() < 1e-15 {
-            return None;
-        }
-        let lambda = num / var;
-
-        // Update coefficients
-        phi_prev[..p].copy_from_slice(&phi[..p]);
-        phi[k] = lambda;
-        for j in 0..k {
-            phi[j] = phi_prev[j] - lambda * phi_prev[k - 1 - j];
-        }
-        var *= 1.0 - lambda * lambda;
-    }
-
-    Some(phi)
+    let gammas = compute_autocovariance(y, p);
+    yule_walker_from_acov(&gammas, p)
 }
 
 /// Solve Yule-Walker equations from a pre-computed autocovariance sequence.
@@ -206,16 +214,23 @@ fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
         return vec![0.0; q];
     }
 
-    // Compute autocovariances gamma(0..q)
-    let gamma: Vec<f64> = (0..=q).map(|k| autocovariance(residuals, k)).collect();
+    let gamma = compute_autocovariance(residuals, q);
+    innovation_algorithm_ma(&gamma, q)
+}
 
-    if gamma[0].abs() < 1e-15 {
-        return vec![0.0; q];
+/// Run the innovation algorithm (Brockwell & Davis, Sec 5.2) on an autocovariance
+/// sequence to extract MA coefficients.
+///
+/// `gamma` must contain gamma(0), gamma(1), ..., gamma(order) (at least order+1 values).
+/// The autocovariances may be at consecutive or seasonal lags -- the algorithm only
+/// sees them as an abstract sequence.
+/// Returns MA coefficients [theta_1, ..., theta_order], clamped to (-0.99, 0.99).
+fn innovation_algorithm_ma(gamma: &[f64], order: usize) -> Vec<f64> {
+    if order == 0 || gamma.len() <= order || gamma[0].abs() < 1e-15 {
+        return vec![0.0; order];
     }
 
-    // Innovation algorithm (Brockwell & Davis, Sec 5.2)
-    // Computes theta[i][j] and v[i] iteratively
-    let m = q;
+    let m = order;
     let mut theta = vec![vec![0.0; m]; m + 1]; // theta[i][j], 0-indexed
     let mut v = vec![0.0; m + 1];
     v[0] = gamma[0];
@@ -237,8 +252,10 @@ fn estimate_ma_from_residuals(residuals: &[f64], q: usize) -> Vec<f64> {
         v[i] = v[i].max(1e-15);
     }
 
-    // Extract MA(q) coefficients from theta[m][0..q]
-    (0..q).map(|k| theta[m][k].clamp(-0.99, 0.99)).collect()
+    // Extract MA(order) coefficients from theta[m][0..order]
+    (0..order)
+        .map(|k| theta[m][k].clamp(-0.99, 0.99))
+        .collect()
 }
 
 /// Estimate seasonal MA coefficients from autocovariances at seasonal lags.
@@ -251,35 +268,8 @@ fn estimate_seasonal_ma(residuals: &[f64], qq: usize, s: usize) -> Vec<f64> {
         return vec![0.0; qq];
     }
 
-    // Compute autocovariances at seasonal lags: γ(0), γ(s), γ(2s), ..., γ(Q*s)
-    let gamma: Vec<f64> = (0..=qq).map(|k| autocovariance(residuals, k * s)).collect();
-
-    if gamma[0].abs() < 1e-15 {
-        return vec![0.0; qq];
-    }
-
-    // Innovation algorithm treating seasonal lags as consecutive
-    let m = qq;
-    let mut theta = vec![vec![0.0; m]; m + 1];
-    let mut v = vec![0.0; m + 1];
-    v[0] = gamma[0];
-
-    for i in 1..=m {
-        for k in 0..i {
-            let mut sum = gamma[i - k];
-            for j in 0..k {
-                sum -= theta[k][k - 1 - j] * theta[i][i - 1 - j] * v[j];
-            }
-            theta[i][i - 1 - k] = if v[k].abs() > 1e-15 { sum / v[k] } else { 0.0 };
-        }
-        v[i] = gamma[0];
-        for j in 0..i {
-            v[i] -= theta[i][i - 1 - j].powi(2) * v[j];
-        }
-        v[i] = v[i].max(1e-15);
-    }
-
-    (0..qq).map(|k| theta[m][k].clamp(-0.99, 0.99)).collect()
+    let gamma = compute_seasonal_autocovariance(residuals, qq, s);
+    innovation_algorithm_ma(&gamma, qq)
 }
 
 /// Hannan-Rissanen joint estimation for ARMA + seasonal ARMA parameters.
@@ -634,8 +624,7 @@ pub fn compute_start_params(
 
         // Seasonal AR coefficients via Yule-Walker on seasonal autocovariances.
         if pp > 0 && s > 0 && diffed.len() > pp * s {
-            let seasonal_gammas: Vec<f64> =
-                (0..=pp).map(|k| autocovariance(&diffed, k * s)).collect();
+            let seasonal_gammas = compute_seasonal_autocovariance(&diffed, pp, s);
             let sar =
                 yule_walker_from_acov(&seasonal_gammas, pp).unwrap_or_else(|| vec![0.0; pp]);
             params.extend_from_slice(&sar);
