@@ -41,17 +41,17 @@ SARIMA(p, d, q)(P, D, Q, s) + 외생 회귀변수
 ## 설치
 
 ```bash
-# 요구사항: Rust 1.83+, Python 3.10+, maturin 1.7+
+# 요구사항: Rust 1.83+, Python 3.10+, uv, maturin 1.7+
 cd sarimax_rs
 
-# 옵션 1: maturin develop (개발용)
-pip install maturin
-maturin develop --release
-
-# 옵션 2: uv (권장)
+# 빌드 + 설치
 uv sync --extra dev
 CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
 uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+
+# 개발 모드 (in-place, 빠른 반복)
+uv pip install maturin
+uv run maturin develop --release
 ```
 
 ## 빠른 시작
