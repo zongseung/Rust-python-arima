@@ -12,6 +12,7 @@ use argmin::solver::quasinewton::LBFGS;
 
 use std::cell::RefCell;
 
+use nalgebra::DMatrix;
 use rayon::prelude::*;
 
 use crate::css;
@@ -948,12 +949,15 @@ where
             &grid_label,
         );
 
-        // 3. LCG perturbations
+        // 3. LCG perturbations (with P6 near-cancellation filter, α=0.01)
         let perturbations =
             lcg_perturbed_starts(unconstrained_start, n_restarts, &remaining);
         for perturbed in perturbations {
             if remaining == 0 {
                 break;
+            }
+            if !passes_cancellation_filter(&perturbed, config) {
+                continue; // reject near-cancellation start point
             }
             if let Ok((p, c, n, conv)) = runner(perturbed, remaining) {
                 consume_budget(&mut remaining, &mut total_work, n);
@@ -991,6 +995,7 @@ where
 fn fit_lbfgsb_multi(
     objective: &SarimaxObjective,
     unconstrained_start: &[f64],
+    css_hint: Option<&[f64]>,
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
@@ -1018,6 +1023,20 @@ fn fit_lbfgsb_multi(
             try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
         }
 
+        // 1b. CSS hint start — additional basin from CSS pre-optimization (A-1).
+        // Run alongside (not replacing) the original start so LCG perturbations
+        // remain centered on unconstrained_start.
+        if let Some(css_start) = css_hint {
+            if remaining > 0 {
+                if let Ok((p, c, n, conv)) =
+                    run_lbfgsb(objective, css_start.to_vec(), bounds.clone(), remaining)
+                {
+                    consume_budget(&mut remaining, &mut total_work, n);
+                    try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
+                }
+            }
+        }
+
         // 2. Grid MA initialization (sequential NM, gradient-free)
         grid_ma_initialization(
             objective,
@@ -1029,8 +1048,11 @@ fn fit_lbfgsb_multi(
             "lbfgsb-multi+nm",
         );
 
-        // 3. LCG perturbations — PARALLEL via rayon
-        let perturbations = lcg_perturbed_starts(unconstrained_start, n_restarts, &remaining);
+        // 3. LCG perturbations — PARALLEL via rayon (with P6 near-cancellation filter, α=0.01)
+        let perturbations: Vec<_> = lcg_perturbed_starts(unconstrained_start, n_restarts, &remaining)
+            .into_iter()
+            .filter(|start| passes_cancellation_filter(start, config))
+            .collect();
         if perturbations.len() >= 2 && remaining > 0 {
             let per_start_budget = remaining / perturbations.len() as u64;
             if per_start_budget > 0 {
@@ -1215,6 +1237,17 @@ fn build_fit_result(
 ) -> Result<FitResult> {
     let final_constrained = transform_params(best_unconstrained, config)?;
     let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
+
+    // A-2: Warn if final result has near-cancellation (α=0.05, VER5.2 P6)
+    if !validate_no_near_cancellation(&final_params, config, 0.05) {
+        eprintln!(
+            "[sarimax_rs] WARNING: near-cancellation detected in fitted ARMA({},{}) \
+             parameters (min inverted-root distance < 0.05). \
+             Model may be non-identifiable.",
+            config.order.p, config.order.q
+        );
+    }
+
     let ss = StateSpace::new(config, &final_params, endog, exog)?;
     let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
     let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
@@ -1318,6 +1351,122 @@ fn eval_kf_loglike_constrained(
     }
 }
 
+// ---------------------------------------------------------------------------
+// A-2: Near-cancellation detection (VER5.2 P6)
+// ---------------------------------------------------------------------------
+
+/// Compute inverted roots of an AR or MA polynomial via companion matrix eigenvalues.
+///
+/// `coeffs` = [φ₁, φ₂, …, φ_p] (AR) or [θ₁, θ₂, …, θ_q] (MA).
+/// Returns eigenvalues of the companion matrix as (real, imag) pairs.
+/// These are the inverted polynomial roots (= 1 / z_i).
+///
+/// Uses nalgebra real Schur decomposition to handle complex conjugate pairs.
+/// Matching arima2 convention: `inv_ar_roots = 1/polyroot(c(1, -ar_pars))`.
+fn polynomial_roots(coeffs: &[f64]) -> Vec<(f64, f64)> {
+    let p = coeffs.len();
+    if p == 0 {
+        return vec![];
+    }
+    if p == 1 {
+        return vec![(coeffs[0], 0.0)];
+    }
+
+    // Companion matrix: first row = coefficients, sub-diagonal = 1
+    let mut companion = DMatrix::zeros(p, p);
+    for i in 0..p {
+        companion[(0, i)] = coeffs[i];
+    }
+    for i in 1..p {
+        companion[(i, i - 1)] = 1.0;
+    }
+
+    // Real Schur decomposition → quasi-upper triangular T
+    let schur = nalgebra::Schur::new(companion);
+    let (_, t) = schur.unpack();
+
+    // Extract eigenvalues from diagonal blocks of T
+    let mut eigenvalues = Vec::with_capacity(p);
+    let mut k = 0_usize;
+    while k < p {
+        if k + 1 < p && t[(k + 1, k)].abs() > 1e-12 {
+            // 2×2 block → complex conjugate pair
+            let a = t[(k, k)];
+            let b = t[(k, k + 1)];
+            let c = t[(k + 1, k)];
+            let d = t[(k + 1, k + 1)];
+            let center = (a + d) / 2.0;
+            let disc = (a - d) * (a - d) / 4.0 + b * c;
+            // disc < 0 for genuine complex eigenvalues; clamp to 0 for safety
+            let imag = (-disc).max(0.0).sqrt();
+            eigenvalues.push((center, imag));
+            eigenvalues.push((center, -imag));
+            k += 2;
+        } else {
+            eigenvalues.push((t[(k, k)], 0.0));
+            k += 1;
+        }
+    }
+    eigenvalues
+}
+
+/// Minimum distance between AR and MA inverted roots.
+///
+/// Near-cancellation: AR and MA polynomials share a common root → the ARMA
+/// representation is non-identifiable (Fisher information matrix singular).
+///
+/// Threshold guidance (arima2 convention):
+///   α = 0.01 — filter random restart starting points
+///   α = 0.05 — warn about final parameter estimates
+fn min_root_distance(ar_coeffs: &[f64], ma_coeffs: &[f64]) -> f64 {
+    let ar_roots = polynomial_roots(ar_coeffs);
+    let ma_roots = polynomial_roots(ma_coeffs);
+
+    let mut min_dist = f64::INFINITY;
+    for &(ar_re, ar_im) in &ar_roots {
+        for &(ma_re, ma_im) in &ma_roots {
+            let dist = ((ar_re - ma_re).powi(2) + (ar_im - ma_im).powi(2)).sqrt();
+            min_dist = min_dist.min(dist);
+        }
+    }
+    min_dist
+}
+
+/// Returns true when ARMA parameters have no near-cancellation (dist > threshold).
+///
+/// AR-only or MA-only models always return true (no cancellation possible).
+/// Spec (VER5.2 P6): threshold=0.01 for restart filtering, 0.05 for warnings.
+fn validate_no_near_cancellation(
+    sparams: &SarimaxParams,
+    config: &SarimaxConfig,
+    threshold: f64,
+) -> bool {
+    if config.order.p == 0 || config.order.q == 0 {
+        return true;
+    }
+    min_root_distance(&sparams.ar_coeffs, &sparams.ma_coeffs) > threshold
+}
+
+/// Check whether unconstrained params exhibit near-cancellation.
+///
+/// Returns true if the params pass (no near-cancellation), false if they
+/// should be rejected. Used to filter random restart starting points (α=0.01).
+fn passes_cancellation_filter(unconstrained: &[f64], config: &SarimaxConfig) -> bool {
+    // Skip check for AR-only or MA-only models
+    if config.order.p == 0 || config.order.q == 0 {
+        return true;
+    }
+    let constrained = match transform_params(unconstrained, config) {
+        Ok(c) => c,
+        Err(_) => return false, // invalid params → reject
+    };
+    let sparams = match SarimaxParams::from_flat(&constrained, config) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    validate_no_near_cancellation(&sparams, config, 0.01)
+}
+
 /// Run CSS pre-optimization via Nelder-Mead in unconstrained space.
 ///
 /// CSS is O(n·(p'+q')) per evaluation, ~100x faster than KF for large k.
@@ -1404,24 +1553,35 @@ pub fn fit(
         return build_zero_iter_result(endog, config, &constrained_start, exog, method);
     }
 
-    // 2.5. CSS pre-optimization: for seasonal models with MA terms,
-    // run fast CSS Nelder-Mead to find a better starting point before MLE.
-    // KF cross-validation prevents CSS from worsening the starting point.
-    // Restricted to seasonal models (s >= 2) where the large state dimension
-    // makes CSS pre-optimization most beneficial and least likely to mislead.
+    // 2.5. CSS pre-optimization (VER5.2 P2: A-1): for models with MA terms
+    // (q+qq >= 2) or seasonal SMA (qq>0, s>=4), run fast CSS Nelder-Mead.
+    //
+    // Strategy split:
+    //   - Seasonal models (original scope): REPLACE constrained_start when CSS
+    //     gives better KF loglike — preserves the behaviour that made seasonal
+    //     models converge reliably before A-1.
+    //   - Non-seasonal models (A-1 new scope): pass CSS result as HINT to
+    //     fit_lbfgsb_multi so LCG perturbations stay centred on the original
+    //     start (prevents basin-trapping regression, e.g. ARIMA(2,1,2) seed=73).
+    let mut css_hint: Option<Vec<f64>> = None;
     if start_params.is_none() {
-        let is_seasonal = config.order.s >= 2;
-        let has_seasonal_ma = config.order.qq > 0;
-        let benefit_from_css = is_seasonal
-            && has_seasonal_ma
+        let has_ma = config.order.q > 0 || config.order.qq > 0;
+        let benefit_from_css = has_ma
             && (config.order.q + config.order.qq >= 2
-                || config.order.s >= 4);
+                || (config.order.qq > 0 && config.order.s >= 4));
         if benefit_from_css {
             if let Some(css_params) = run_css_optimization(endog, config, &constrained_start, 100) {
                 let css_kf_ll = eval_kf_loglike_constrained(endog, config, &css_params, exog);
-                let orig_kf_ll = eval_kf_loglike_constrained(endog, config, &constrained_start, exog);
+                let orig_kf_ll =
+                    eval_kf_loglike_constrained(endog, config, &constrained_start, exog);
                 if css_kf_ll > orig_kf_ll {
-                    constrained_start = css_params;
+                    let is_seasonal_model =
+                        config.order.s >= 2 && (config.order.pp > 0 || config.order.qq > 0);
+                    if is_seasonal_model {
+                        constrained_start = css_params;
+                    } else {
+                        css_hint = untransform_params(&css_params, config).ok();
+                    }
                 }
             }
         }
@@ -1452,9 +1612,14 @@ pub fn fit(
             (p, c, n, conv, "lbfgsb-strict".to_string())
         }
         "lbfgsb" => fit_lbfgsb_single(&objective, unconstrained_start, config, maxiter)?,
-        "lbfgsb-multi" => {
-            fit_lbfgsb_multi(&objective, &unconstrained_start, config, maxiter, n_restarts)?
-        }
+        "lbfgsb-multi" => fit_lbfgsb_multi(
+            &objective,
+            &unconstrained_start,
+            css_hint.as_deref(),
+            config,
+            maxiter,
+            n_restarts,
+        )?,
         "lbfgs" => {
             fit_lbfgs_argmin(&objective, &unconstrained_start, config, maxiter, n_restarts)?
         }
@@ -1951,5 +2116,132 @@ mod tests {
             lbfgsb_multi.n_iter,
             maxiter
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // A-2: Near-cancellation detection tests (VER5.2 P6)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_polynomial_roots_ar1() {
+        // AR(1) with φ=0.5: companion eigenvalue = 0.5 (inverted root)
+        let roots = polynomial_roots(&[0.5]);
+        assert_eq!(roots.len(), 1);
+        assert!((roots[0].0 - 0.5).abs() < 1e-10, "real part: {}", roots[0].0);
+        assert!(roots[0].1.abs() < 1e-10, "imag part: {}", roots[0].1);
+    }
+
+    #[test]
+    fn test_polynomial_roots_ar2_real() {
+        // AR(2) with real roots: φ₁=0.8, φ₂=-0.15 → roots near 0.3 and 0.5
+        let roots = polynomial_roots(&[0.8, -0.15]);
+        assert_eq!(roots.len(), 2);
+        // Both roots should be real (imag ≈ 0)
+        for (re, im) in &roots {
+            assert!(im.abs() < 1e-8, "expected real root, got imag={}", im);
+            assert!(re.abs() < 1.0 + 1e-6, "inverted root should be inside unit circle: {}", re);
+        }
+    }
+
+    #[test]
+    fn test_polynomial_roots_ar2_complex() {
+        // AR(2) with complex roots: φ₁=0.0, φ₂=-0.5
+        // Companion eigenvalues: λ² - 0·λ - (-0.5) = λ²+0.5 = 0 → λ=±i·√0.5
+        // discriminant = φ₁² + 4φ₂ = 0 + 4·(-0.5) = -2 < 0 → complex
+        let roots = polynomial_roots(&[0.0, -0.5]);
+        assert_eq!(roots.len(), 2);
+        // Should have a complex conjugate pair
+        let has_complex = roots.iter().any(|(_, im)| im.abs() > 1e-8);
+        assert!(has_complex, "expected complex roots for AR(2) with phi2=-0.5");
+        // Conjugate: real parts equal, imag parts opposite
+        assert!((roots[0].0 - roots[1].0).abs() < 1e-10);
+        assert!((roots[0].1 + roots[1].1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_min_root_distance_far() {
+        // AR root at 0.9 (real), MA root at 0.1 (real) → distance = 0.8
+        let dist = min_root_distance(&[0.9], &[0.1]);
+        assert!((dist - 0.8).abs() < 1e-10, "expected 0.8, got {}", dist);
+    }
+
+    #[test]
+    fn test_min_root_distance_near_cancellation() {
+        // AR root ≈ MA root: φ=0.9, θ=0.89 → inverted roots 0.9 vs 0.89 → dist=0.01
+        let dist = min_root_distance(&[0.9], &[0.89]);
+        assert!(dist < 0.02, "expected near-cancellation (dist < 0.02), got {}", dist);
+        assert!(dist > 0.005, "dist should be ~0.01, got {}", dist);
+    }
+
+    #[test]
+    fn test_validate_no_near_cancellation_ar_only() {
+        // Pure AR: no MA → always valid
+        let config = make_config(2, 0, 0, false, false);
+        let sp = SarimaxParams {
+            ar_coeffs: vec![0.5, -0.2],
+            ma_coeffs: vec![],
+            sar_coeffs: vec![],
+            sma_coeffs: vec![],
+            sigma2: None,
+            exog_coeffs: vec![],
+            trend_coeffs: vec![],
+        };
+        assert!(validate_no_near_cancellation(&sp, &config, 0.05));
+    }
+
+    #[test]
+    fn test_validate_no_near_cancellation_arma_far() {
+        // ARMA(1,1) with distant roots: valid
+        let config = make_config(1, 0, 1, false, false);
+        let sp = SarimaxParams {
+            ar_coeffs: vec![0.8],
+            ma_coeffs: vec![0.2],
+            sar_coeffs: vec![],
+            sma_coeffs: vec![],
+            sigma2: None,
+            exog_coeffs: vec![],
+            trend_coeffs: vec![],
+        };
+        assert!(validate_no_near_cancellation(&sp, &config, 0.05));
+    }
+
+    #[test]
+    fn test_validate_no_near_cancellation_arma_near() {
+        // ARMA(1,1) with near-cancellation: φ≈θ → should fail α=0.05 check
+        let config = make_config(1, 0, 1, false, false);
+        let sp = SarimaxParams {
+            ar_coeffs: vec![0.9],
+            ma_coeffs: vec![0.89],
+            sar_coeffs: vec![],
+            sma_coeffs: vec![],
+            sigma2: None,
+            exog_coeffs: vec![],
+            trend_coeffs: vec![],
+        };
+        assert!(!validate_no_near_cancellation(&sp, &config, 0.05));
+    }
+
+    #[test]
+    fn test_passes_cancellation_filter_ar_only() {
+        // Pure AR: always passes (no MA to cancel with)
+        let config = make_config(2, 0, 0, false, false);
+        let params = vec![0.5, -0.2]; // unconstrained = constrained when !enforce
+        assert!(passes_cancellation_filter(&params, &config));
+    }
+
+    #[test]
+    fn test_passes_cancellation_filter_arma_far() {
+        // ARMA(1,1) with distant roots: should pass
+        let config = make_config(1, 0, 1, false, false);
+        let params = vec![0.8, 0.2]; // ar=0.8, ma=0.2 → roots far apart
+        assert!(passes_cancellation_filter(&params, &config));
+    }
+
+    #[test]
+    fn test_passes_cancellation_filter_arma_near() {
+        // ARMA(1,1) with near-cancellation: should fail α=0.01 check
+        let config = make_config(1, 0, 1, false, false);
+        let params = vec![0.9, 0.895]; // ar=0.9, ma=0.895 → dist=0.005 < 0.01
+        assert!(!passes_cancellation_filter(&params, &config));
     }
 }
