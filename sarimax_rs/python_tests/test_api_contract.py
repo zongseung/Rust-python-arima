@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import sarimax_rs
+from conftest import generate_ar1
 
 
 # ---------------------------------------------------------------------------
@@ -17,11 +18,7 @@ import sarimax_rs
 @pytest.fixture(scope="module")
 def ar1_data():
     """Simple AR(1) data for contract testing."""
-    np.random.seed(42)
-    y = np.zeros(200)
-    for t in range(1, 200):
-        y[t] = 0.7 * y[t - 1] + np.random.randn()
-    return y
+    return generate_ar1()
 
 
 @pytest.fixture(scope="module")

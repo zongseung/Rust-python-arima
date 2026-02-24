@@ -18,8 +18,7 @@ use statrs::distribution::{ChiSquared, ContinuousCDF, FisherSnedecor, Normal};
 
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
-use crate::kalman::kalman_loglike;
-use crate::optimizer::{transform_params, untransform_params};
+use crate::optimizer::untransform_params;
 use crate::params::SarimaxParams;
 use crate::score;
 use crate::state_space::StateSpace;
@@ -227,7 +226,7 @@ pub fn opg_information_matrix(
 ) -> Result<DMatrix<f64>> {
     let sparams = SarimaxParams::from_flat(constrained_params, config)?;
     let ss = StateSpace::new(config, &sparams, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    let init = KalmanInit::from_config_default(&ss, config);
 
     let scores = score::score_obs(
         endog,
@@ -366,13 +365,18 @@ fn inference_from_information(
 
 /// Compute diagnostic tests on standardized residuals.
 pub fn compute_diagnostics(resid: &[f64], n_params: usize) -> DiagnosticsResult {
-    // Ljung-Box
-    let (lb_stat, lb_pval, lb_df) = ljung_box(resid, n_params);
+    // Precompute shared moments to avoid redundant O(n) passes
+    let n = resid.len();
+    let mean = if n > 0 { resid.iter().sum::<f64>() / n as f64 } else { 0.0 };
+    let var_sum: f64 = resid.iter().map(|&x| (x - mean).powi(2)).sum();
 
-    // Jarque-Bera
-    let (jb_stat, jb_pval) = jarque_bera(resid);
+    // Ljung-Box (uses mean + var_sum)
+    let (lb_stat, lb_pval, lb_df) = ljung_box(resid, n_params, mean, var_sum);
 
-    // Heteroskedasticity (breakvar)
+    // Jarque-Bera (uses mean + var_sum/n = m2)
+    let (jb_stat, jb_pval) = jarque_bera(resid, mean, var_sum);
+
+    // Heteroskedasticity (uses subset means — independent)
     let (het_stat, het_pval) = heteroskedasticity_breakvar(resid);
 
     DiagnosticsResult {
@@ -390,15 +394,10 @@ pub fn compute_diagnostics(resid: &[f64], n_params: usize) -> DiagnosticsResult 
 ///
 /// Q = n(n+2) · Σ_{k=1}^{lags} r_k² / (n-k)
 /// P-value from chi-squared(lags - n_params) if df > 0.
-fn ljung_box(resid: &[f64], n_params: usize) -> (f64, f64, usize) {
+fn ljung_box(resid: &[f64], n_params: usize, mean: f64, var_sum: f64) -> (f64, f64, usize) {
     let n = resid.len();
     let lags = std::cmp::min(10, n / 5).max(1);
 
-    // Mean
-    let mean = resid.iter().sum::<f64>() / n as f64;
-
-    // Variance denominator
-    let var_sum: f64 = resid.iter().map(|&x| (x - mean).powi(2)).sum();
     if var_sum <= 0.0 {
         return (0.0, 1.0, lags);
     }
@@ -434,14 +433,13 @@ fn ljung_box(resid: &[f64], n_params: usize) -> (f64, f64, usize) {
 ///
 /// JB = (n/6) · (S² + K²/4)  where S=skewness, K=excess kurtosis
 /// P-value from chi-squared(2).
-fn jarque_bera(resid: &[f64]) -> (f64, f64) {
+fn jarque_bera(resid: &[f64], mean: f64, var_sum: f64) -> (f64, f64) {
     let n = resid.len() as f64;
     if n < 3.0 {
         return (0.0, 1.0);
     }
 
-    let mean = resid.iter().sum::<f64>() / n;
-    let m2: f64 = resid.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
+    let m2 = var_sum / n;
     let m3: f64 = resid.iter().map(|&x| (x - mean).powi(3)).sum::<f64>() / n;
     let m4: f64 = resid.iter().map(|&x| (x - mean).powi(4)).sum::<f64>() / n;
 
@@ -515,11 +513,8 @@ fn eval_loglike_at_unconstrained(
     endog: &[f64],
     exog: Option<&[Vec<f64>]>,
 ) -> Result<f64> {
-    let constrained = transform_params(unconstrained, config)?;
-    let sparams = SarimaxParams::from_flat(&constrained, config)?;
-    let ss = StateSpace::new(config, &sparams, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-    let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
+    let output =
+        crate::pipeline::kalman_eval_unconstrained(endog, unconstrained, config, exog)?;
     if output.loglike.is_finite() {
         Ok(output.loglike)
     } else {
@@ -529,27 +524,12 @@ fn eval_loglike_at_unconstrained(
 
 /// Compute numerical Jacobian of transform_params.
 ///
-/// J[j, i] = d(constrained_j) / d(unconstrained_i)
+/// Delegates to [`crate::params::transform_jacobian`].
 fn compute_transform_jacobian(
     unconstrained: &[f64],
     config: &SarimaxConfig,
 ) -> Result<DMatrix<f64>> {
-    let k = unconstrained.len();
-    let eps = 1e-7;
-    let c_base = transform_params(unconstrained, config)?;
-    let mut jac = DMatrix::zeros(k, k);
-    let mut u_pert = unconstrained.to_vec();
-
-    for i in 0..k {
-        let orig = u_pert[i];
-        u_pert[i] = orig + eps;
-        let c_pert = transform_params(&u_pert, config)?;
-        u_pert[i] = orig;
-        for j in 0..k {
-            jac[(j, i)] = (c_pert[j] - c_base[j]) / eps;
-        }
-    }
-    Ok(jac)
+    crate::params::transform_jacobian(unconstrained, config)
 }
 
 /// Safe matrix inverse with pseudo-inverse fallback.
@@ -590,20 +570,7 @@ fn compute_n_eff(endog: &[f64], config: &SarimaxConfig) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SarimaxOrder, Trend};
-
-    fn make_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: true,
-            enforce_invertibility: true,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
+    use crate::test_helpers::make_config_enforced;
 
     fn generate_ar1_data(n: usize, phi: f64, seed: u64) -> Vec<f64> {
         let mut y = vec![0.0; n];
@@ -625,7 +592,7 @@ mod tests {
     #[test]
     fn test_numerical_hessian_ar1() {
         let data = generate_ar1_data(500, 0.5, 42);
-        let config = make_config(1, 0, 0);
+        let config = make_config_enforced(1, 0, 0);
 
         // Fit to get params
         let fit = crate::optimizer::fit(&data, &config, None, Some("lbfgsb"), Some(200), None)
@@ -654,7 +621,7 @@ mod tests {
     #[test]
     fn test_hessian_symmetry() {
         let data = generate_ar1_data(300, 0.3, 123);
-        let config = make_config(1, 1, 1); // ARIMA(1,1,1), k=2
+        let config = make_config_enforced(1, 1, 1); // ARIMA(1,1,1), k=2
 
         let fit = crate::optimizer::fit(&data, &config, None, Some("lbfgsb"), Some(200), None)
             .expect("fit should succeed");
@@ -684,7 +651,7 @@ mod tests {
     #[test]
     fn test_inference_std_err_positive() {
         let data = generate_ar1_data(500, 0.5, 42);
-        let config = make_config(1, 1, 1);
+        let config = make_config_enforced(1, 1, 1);
 
         let fit = crate::optimizer::fit(&data, &config, None, Some("lbfgsb"), Some(200), None)
             .expect("fit should succeed");
@@ -707,7 +674,7 @@ mod tests {
     #[test]
     fn test_pvalue_range() {
         let data = generate_ar1_data(500, 0.5, 42);
-        let config = make_config(1, 1, 1);
+        let config = make_config_enforced(1, 1, 1);
 
         let fit = crate::optimizer::fit(&data, &config, None, Some("lbfgsb"), Some(200), None)
             .expect("fit should succeed");
@@ -729,7 +696,7 @@ mod tests {
     #[test]
     fn test_ci_covers_param() {
         let data = generate_ar1_data(500, 0.5, 42);
-        let config = make_config(1, 1, 1);
+        let config = make_config_enforced(1, 1, 1);
 
         let fit = crate::optimizer::fit(&data, &config, None, Some("lbfgsb"), Some(200), None)
             .expect("fit should succeed");

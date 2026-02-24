@@ -688,41 +688,8 @@ mod tests {
     use crate::initialization::KalmanInit;
     use crate::params::SarimaxParams;
     use crate::state_space::StateSpace;
+    use crate::test_helpers::{load_fixtures, make_config, make_params};
     use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn load_fixtures() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/statsmodels_reference.json"
-        );
-        let data = std::fs::read_to_string(path).expect("fixtures file not found");
-        serde_json::from_str(&data).expect("invalid JSON")
-    }
-
-    fn make_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
-
-    fn make_params(ar: &[f64], ma: &[f64]) -> SarimaxParams {
-        SarimaxParams {
-            trend_coeffs: vec![],
-            exog_coeffs: vec![],
-            ar_coeffs: ar.to_vec(),
-            ma_coeffs: ma.to_vec(),
-            sar_coeffs: vec![],
-            sma_coeffs: vec![],
-            sigma2: None,
-        }
-    }
 
     fn run_kalman_test(fixture_key: &str, p: usize, d: usize, q: usize, tol: f64) {
         let fixtures = load_fixtures();

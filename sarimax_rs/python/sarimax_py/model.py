@@ -10,10 +10,10 @@ import sarimax_rs
 # Parameter naming helpers
 # ---------------------------------------------------------------------------
 
-def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=True):
+def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=True, trend="n"):
     """Generate statsmodels-style parameter names from model specification.
 
-    Layout: [exog(k) | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]
+    Layout: [trend(kt) | exog(k) | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]
 
     Parameters
     ----------
@@ -21,6 +21,7 @@ def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=Tru
     seasonal_order : tuple (P, D, Q, s)
     n_exog : int
     concentrate_scale : bool
+    trend : str
 
     Returns
     -------
@@ -29,6 +30,12 @@ def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=Tru
     p, _d, q = order
     P, _D, Q, s = seasonal_order
     names = []
+
+    # Trend
+    if trend in ("c", "ct", "tc"):
+        names.append("intercept")
+    if trend in ("t", "ct", "tc"):
+        names.append("drift")
 
     # Exogenous
     for i in range(1, n_exog + 1):
@@ -94,6 +101,24 @@ def _norm_cdf(x):
         return norm.cdf(x)
     except ImportError:
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _inference_nan_dict(k, status, message, prefix=""):
+    """Construct a failure dict with NaN arrays for inference."""
+    nan = np.full(k, np.nan)
+    if prefix:
+        return {
+            f"{prefix}_std_err": nan.copy(), f"{prefix}_z": nan.copy(),
+            f"{prefix}_p_value": nan.copy(), f"{prefix}_ci_lower": nan.copy(),
+            f"{prefix}_ci_upper": nan.copy(),
+            f"inference_status_{prefix}": status,
+            f"inference_message_{prefix}": message,
+        }
+    return {
+        "std_err": nan.copy(), "z": nan.copy(), "p_value": nan.copy(),
+        "ci_lower": nan.copy(), "ci_upper": nan.copy(),
+        "inference_status": status, "inference_message": message,
+    }
 
 
 def _compute_numerical_hessian(loglike_fn, params):
@@ -248,17 +273,7 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
     try:
         from statsmodels.tsa.statespace.sarimax import SARIMAX
     except ImportError:
-        k = n_params_rs or 0
-        nan_arr = np.full(k, np.nan)
-        return dict(
-            sm_std_err=nan_arr.copy(),
-            sm_z=nan_arr.copy(),
-            sm_p_value=nan_arr.copy(),
-            sm_ci_lower=nan_arr.copy(),
-            sm_ci_upper=nan_arr.copy(),
-            inference_status_sm="failed",
-            inference_message_sm="statsmodels not installed",
-        )
+        return _inference_nan_dict(n_params_rs or 0, "failed", "statsmodels not installed", prefix="sm")
 
     try:
         model_sm = SARIMAX(
@@ -283,17 +298,7 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
             inference_message_sm=None,
         )
     except Exception as e:
-        k = n_params_rs or 0
-        nan_arr = np.full(k, np.nan)
-        return dict(
-            sm_std_err=nan_arr.copy(),
-            sm_z=nan_arr.copy(),
-            sm_p_value=nan_arr.copy(),
-            sm_ci_lower=nan_arr.copy(),
-            sm_ci_upper=nan_arr.copy(),
-            inference_status_sm="failed",
-            inference_message_sm=str(e),
-        )
+        return _inference_nan_dict(n_params_rs or 0, "failed", str(e), prefix="sm")
 
 
 def _compute_inference(loglike_fn, params, alpha=0.05):
@@ -305,20 +310,11 @@ def _compute_inference(loglike_fn, params, alpha=0.05):
                     inference_status, inference_message
     """
     k = len(params)
-    nan_array = np.full(k, np.nan)
 
     H = _compute_numerical_hessian(loglike_fn, params)
 
     if H is None:
-        return dict(
-            std_err=nan_array.copy(),
-            z=nan_array.copy(),
-            p_value=nan_array.copy(),
-            ci_lower=nan_array.copy(),
-            ci_upper=nan_array.copy(),
-            inference_status="failed",
-            inference_message="Hessian computation produced non-finite values",
-        )
+        return _inference_nan_dict(k, "failed", "Hessian computation produced non-finite values")
 
     # Observed information matrix: I = -H
     info = -H
@@ -330,15 +326,7 @@ def _compute_inference(loglike_fn, params, alpha=0.05):
         try:
             cov = np.linalg.pinv(info)
         except np.linalg.LinAlgError:
-            return dict(
-                std_err=nan_array.copy(),
-                z=nan_array.copy(),
-                p_value=nan_array.copy(),
-                ci_lower=nan_array.copy(),
-                ci_upper=nan_array.copy(),
-                inference_status="failed",
-                inference_message="Information matrix inversion failed",
-            )
+            return _inference_nan_dict(k, "failed", "Information matrix inversion failed")
 
     diag = np.diag(cov)
 
@@ -381,7 +369,7 @@ def _compute_inference(loglike_fn, params, alpha=0.05):
 
 def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=0.05,
                             exog=None, enforce_stationarity=True,
-                            enforce_invertibility=True):
+                            enforce_invertibility=True, trend="n"):
     """Compute inference using the Rust sarimax_inference function.
 
     Parameters
@@ -396,6 +384,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
     exog : np.ndarray or None
     enforce_stationarity : bool
     enforce_invertibility : bool
+    trend : str
 
     Returns
     -------
@@ -411,6 +400,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
             alpha=alpha,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
+            trend=trend,
         )
         if exog is not None:
             kwargs["exog"] = exog
@@ -461,10 +451,18 @@ class SARIMAXModel:
         Seasonal ARIMA order.
     exog : array_like, optional
         Exogenous variables, shape (n_obs, n_exog).
+    trend : str
+        Trend specification: 'n' (none), 'c' (constant), 't' (linear),
+        'ct' (constant + linear).
     enforce_stationarity : bool
         Enforce AR stationarity constraints during fitting.
     enforce_invertibility : bool
         Enforce MA invertibility constraints during fitting.
+    simple_differencing : bool
+        If True, pre-difference the series externally before Kalman filtering.
+        Reduces state dimension (faster for high-order seasonal models) at the
+        cost of losing the first d + s*D observations from the likelihood.
+        AIC/BIC are computed with n_obs = n - d - s*D (R-style convention).
     """
 
     def __init__(
@@ -473,15 +471,19 @@ class SARIMAXModel:
         order=(1, 0, 0),
         seasonal_order=(0, 0, 0, 0),
         exog=None,
+        trend="n",
         enforce_stationarity=True,
         enforce_invertibility=True,
+        simple_differencing=False,
     ):
         self.endog = np.asarray(endog, dtype=np.float64)
         self.order = order
         self.seasonal_order = seasonal_order
         self.exog = np.asarray(exog, dtype=np.float64) if exog is not None else None
+        self.trend = trend
         self.enforce_stationarity = enforce_stationarity
         self.enforce_invertibility = enforce_invertibility
+        self.simple_differencing = simple_differencing
         self._fit_result = None
 
     @property
@@ -507,6 +509,8 @@ class SARIMAXModel:
             enforce_invertibility=self.enforce_invertibility,
             method=method,
             maxiter=maxiter,
+            trend=self.trend,
+            simple_differencing=self.simple_differencing,
         )
         if self.exog is not None:
             kwargs["exog"] = self.exog
@@ -568,6 +572,7 @@ class SARIMAXResult:
             self.model.order,
             self.model.seasonal_order,
             n_exog=self.model.n_exog,
+            trend=self.model.trend,
         )
         # Safety: pad or trim to match actual params length
         k = len(self.params)
@@ -583,6 +588,7 @@ class SARIMAXResult:
             kwargs = dict(
                 enforce_stationarity=self.model.enforce_stationarity,
                 enforce_invertibility=self.model.enforce_invertibility,
+                trend=self.model.trend,
             )
             if self.model.exog is not None:
                 kwargs["exog"] = self.model.exog
@@ -595,6 +601,19 @@ class SARIMAXResult:
             )
         except Exception:
             return np.nan
+
+    def _rs_kwargs(self, **extra):
+        """Build common kwargs dict for sarimax_rs function calls."""
+        kw = dict(trend=self.model.trend)
+        if self.model.exog is not None:
+            kw["exog"] = self.model.exog
+        kw.update(extra)
+        return kw
+
+    @property
+    def _rs_args(self):
+        """Common positional args: (endog, order, seasonal_order, params)."""
+        return (self.model.endog, self.model.order, self.model.seasonal_order, self.params)
 
     def parameter_summary(self, alpha=0.05, include_inference=None, inference=None):
         """Return parameter summary as a machine-readable dict.
@@ -674,6 +693,7 @@ class SARIMAXResult:
                     exog=self.model.exog,
                     enforce_stationarity=self.model.enforce_stationarity,
                     enforce_invertibility=self.model.enforce_invertibility,
+                    trend=self.model.trend,
                 )
             result.update(self._inference_cache[cache_key])
             return result
@@ -799,19 +819,11 @@ class SARIMAXResult:
         -------
         ForecastResult
         """
-        kwargs = dict(steps=steps, alpha=alpha)
-        if self.model.exog is not None:
-            kwargs["exog"] = self.model.exog
+        kwargs = self._rs_kwargs(steps=steps, alpha=alpha)
         if exog is not None:
             kwargs["future_exog"] = np.asarray(exog, dtype=np.float64)
 
-        result = sarimax_rs.sarimax_forecast(
-            self.model.endog,
-            self.model.order,
-            self.model.seasonal_order,
-            self.params,
-            **kwargs,
-        )
+        result = sarimax_rs.sarimax_forecast(*self._rs_args, **kwargs)
         return ForecastResult(result, alpha=alpha)
 
     def get_forecast(self, steps=1, alpha=0.05, exog=None):
@@ -822,16 +834,7 @@ class SARIMAXResult:
     def resid(self):
         """Standardized residuals."""
         if self._resid is None:
-            kwargs = {}
-            if self.model.exog is not None:
-                kwargs["exog"] = self.model.exog
-            result = sarimax_rs.sarimax_residuals(
-                self.model.endog,
-                self.model.order,
-                self.model.seasonal_order,
-                self.params,
-                **kwargs,
-            )
+            result = sarimax_rs.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
             self._resid = np.array(result["standardized_residuals"])
         return self._resid
 
@@ -844,19 +847,83 @@ class SARIMAXResult:
             Keys: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
                   jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
         """
-        kwargs = {}
-        if self.model.exog is not None:
-            kwargs["exog"] = self.model.exog
-        return sarimax_rs.sarimax_diagnostics(
-            self.model.endog,
-            self.model.order,
-            self.model.seasonal_order,
-            self.params,
-            **kwargs,
-        )
+        return sarimax_rs.sarimax_diagnostics(*self._rs_args, **self._rs_kwargs())
+
+    def params_table(self, alpha=0.05, inference="none"):
+        """Return parameter table as a Polars DataFrame.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance level for CI.
+        inference : str
+            Inference mode ("none", "hessian", "rust_hessian", "opg",
+            "statsmodels", "both").
+
+        Returns
+        -------
+        polars.DataFrame
+        """
+        import polars as pl
+
+        ps = self.parameter_summary(alpha=alpha, inference=inference)
+        data = {
+            "name": ps["name"],
+            "coef": ps["coef"].tolist(),
+        }
+        if inference != "none" and ps.get("inference_status") != "skipped":
+            for key in ("std_err", "z", "p_value", "ci_lower", "ci_upper"):
+                if key in ps and ps[key] is not None:
+                    data[key] = ps[key].tolist()
+        return pl.DataFrame(data)
+
+    def get_prediction(self, start=None, end=None, alpha=0.05, exog=None):
+        """In-sample one-step-ahead predictions with optional out-of-sample.
+
+        Parameters
+        ----------
+        start : int or None
+            Start index (default 0).
+        end : int or None
+            End index exclusive (default nobs). If end > nobs,
+            out-of-sample forecast is appended.
+        alpha : float
+            Significance level for out-of-sample CI.
+        exog : array_like, optional
+            Future exogenous for out-of-sample portion.
+
+        Returns
+        -------
+        PredictionResult
+        """
+        n = self.nobs
+        if start is None:
+            start = 0
+        if end is None:
+            end = n
+
+        # In-sample: one-step-ahead predictions = endog - residuals (innovations)
+        resid_out = sarimax_rs.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
+        in_sample_pred = self.model.endog - np.array(resid_out["residuals"])
+
+        # Out-of-sample
+        if end > n:
+            fc = self.forecast(steps=end - n, alpha=alpha, exog=exog)
+            all_pred = np.concatenate([in_sample_pred, fc.predicted_mean])
+        else:
+            all_pred = in_sample_pred
+
+        return PredictionResult(all_pred[start:end])
+
+    @property
+    def hqic(self):
+        """Hannan-Quinn information criterion."""
+        k = self._n_params
+        n = self.nobs
+        return -2.0 * self.llf + 2.0 * k * math.log(math.log(n)) if n > 1 else np.nan
 
     def summary(self, alpha=0.05, include_inference=None, inference=None):
-        """Return a summary string of the model fit.
+        """Return a statsmodels-style summary string.
 
         Parameters
         ----------
@@ -868,32 +935,42 @@ class SARIMAXResult:
             Inference mode: ``"none"`` | ``"hessian"`` | ``"statsmodels"``
             | ``"both"``.  Default ``"none"``.
         """
+        import datetime
+
         ps = self.parameter_summary(
             alpha=alpha, include_inference=include_inference, inference=inference,
         )
-
         mode = _resolve_inference_mode(inference, include_inference)
 
-        lines = [
-            "SARIMAX Results",
-            "=" * 78,
-            f"  Order:           {self.model.order}",
-            f"  Seasonal:        {self.model.seasonal_order}",
-            f"  Observations:    {self.nobs}",
-            f"  Log Likelihood:  {self.llf:.4f}",
-            f"  AIC:             {self.aic:.4f}",
-            f"  BIC:             {self.bic:.4f}",
-            f"  Converged:       {self.converged}",
-            f"  Method:          {self.method}",
-            "=" * 78,
+        p, d, q = self.model.order
+        pp, dd, qq, s = self.model.seasonal_order
+        w = 78
+        hw = w // 2
+
+        lines = []
+        lines.append("=" * w)
+        lines.append(f"{'SARIMAX Results':^{w}}")
+        lines.append("=" * w)
+
+        # 2-column header
+        model_str = f"SARIMAX({p},{d},{q})({pp},{dd},{qq})[{s}]"
+        pairs = [
+            (f"Model: {model_str}", f"Log Likelihood: {self.llf:>12.3f}"),
+            (f"No. Observations: {self.nobs}", f"AIC: {self.aic:>22.3f}"),
+            (f"Trend: {self.model.trend}", f"BIC: {self.bic:>22.3f}"),
+            (f"Method: {self.method}", f"HQIC: {self.hqic:>21.3f}"),
+            (f"Converged: {self.converged}", f"Scale: {self.scale:>19.6f}"),
+            (f"Date: {datetime.date.today()}", ""),
         ]
+        for left, right in pairs:
+            lines.append(f"{left:<{hw}}{right:>{hw}}")
+        lines.append("-" * w)
 
         names = ps["name"]
         coefs = ps["coef"]
-        has_inf = mode != "none" and ps["inference_status"] != "skipped"
+        has_inf = mode != "none" and ps.get("inference_status") != "skipped"
 
         if has_inf and mode == "both":
-            # Dual-column view: hessian + statsmodels + delta
             header = (
                 f"{'':>16s} {'coef':>10s} "
                 f"{'hess_se':>9s} {'sm_se':>9s} {'d_se':>9s} "
@@ -919,16 +996,17 @@ class SARIMAXResult:
                     f"{_f(hpval[i], '.3f'):>8s} {_f(spval[i], '.3f'):>8s}"
                 )
         elif has_inf:
-            # Single inference source (hessian or statsmodels)
             std_err = ps["std_err"]
             z = ps["z"]
             pval = ps["p_value"]
             ci_lo = ps["ci_lower"]
             ci_hi = ps["ci_upper"]
 
-            header = f"{'':>16s} {'coef':>10s} {'std err':>10s} {'z':>10s} {'P>|z|':>10s} {'[' + f'{alpha/2:.3f}':>7s} {f'{1-alpha/2:.3f}' + ']':>7s}"
+            header = (f"{'':>16s} {'coef':>10s} {'std err':>10s} "
+                      f"{'z':>8s} {'P>|z|':>8s} "
+                      f"{'[' + f'{alpha/2:.3f}':>7s} {f'{1-alpha/2:.3f}' + ']':>7s}")
             lines.append(header)
-            lines.append("-" * 78)
+            lines.append("-" * w)
             for i, name in enumerate(names):
                 se_s = f"{std_err[i]:.4f}" if np.isfinite(std_err[i]) else "NaN"
                 z_s = f"{z[i]:.3f}" if np.isfinite(z[i]) else "NaN"
@@ -936,22 +1014,22 @@ class SARIMAXResult:
                 lo_s = f"{ci_lo[i]:.3f}" if np.isfinite(ci_lo[i]) else "NaN"
                 hi_s = f"{ci_hi[i]:.3f}" if np.isfinite(ci_hi[i]) else "NaN"
                 lines.append(
-                    f"{name:>16s} {coefs[i]:>10.4f} {se_s:>10s} {z_s:>10s} {p_s:>10s} {lo_s:>7s} {hi_s:>7s}"
+                    f"{name:>16s} {coefs[i]:>10.4f} {se_s:>10s} "
+                    f"{z_s:>8s} {p_s:>8s} {lo_s:>7s} {hi_s:>7s}"
                 )
         else:
-            header = f"{'Parameters:':>16s} {'coef':>10s}"
+            header = f"{'':>16s} {'coef':>10s}"
             lines.append(header)
-            lines.append("-" * 78)
+            lines.append("-" * w)
             for i, name in enumerate(names):
                 lines.append(f"{name:>16s} {coefs[i]:>10.4f}")
 
-        lines.append("-" * 78)
-        lines.append(f"  Scale (sigma2): {self.scale:.6f}")
+        lines.append("=" * w)
 
         if has_inf and ps.get("inference_message"):
-            lines.append(f"  Note: {ps['inference_message']}")
+            lines.append(f"Notes: {ps['inference_message']}")
         if mode != "none":
-            lines.append(f"  Inference:       {mode}")
+            lines.append(f"Inference: {mode}")
 
         return "\n".join(lines)
 
@@ -1006,3 +1084,51 @@ class ForecastResult:
         lower = self.predicted_mean - z * std
         upper = self.predicted_mean + z * std
         return np.column_stack([lower, upper])
+
+    def to_dataframe(self):
+        """Return forecast as a Polars DataFrame.
+
+        Returns
+        -------
+        polars.DataFrame
+            Columns: step, mean, variance, ci_lower, ci_upper.
+        """
+        import polars as pl
+
+        n = len(self.predicted_mean)
+        return pl.DataFrame({
+            "step": list(range(1, n + 1)),
+            "mean": self.predicted_mean.tolist(),
+            "variance": self.variance.tolist(),
+            "ci_lower": self.ci_lower.tolist(),
+            "ci_upper": self.ci_upper.tolist(),
+        })
+
+
+class PredictionResult:
+    """In-sample (and optionally out-of-sample) prediction result.
+
+    Attributes
+    ----------
+    predicted_mean : np.ndarray
+        One-step-ahead predicted values for the requested range.
+    """
+
+    def __init__(self, predicted_mean):
+        self.predicted_mean = np.asarray(predicted_mean, dtype=np.float64)
+
+    def to_dataframe(self):
+        """Return predictions as a Polars DataFrame.
+
+        Returns
+        -------
+        polars.DataFrame
+            Columns: index, predicted_mean.
+        """
+        import polars as pl
+
+        n = len(self.predicted_mean)
+        return pl.DataFrame({
+            "index": list(range(n)),
+            "predicted_mean": self.predicted_mean.tolist(),
+        })

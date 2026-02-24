@@ -7,11 +7,8 @@ use rayon::prelude::*;
 
 use crate::error::{Result, SarimaxError};
 use crate::forecast::{forecast_pipeline, ForecastResult};
-use crate::initialization::KalmanInit;
-use crate::kalman::kalman_loglike;
 use crate::optimizer;
 use crate::params::SarimaxParams;
-use crate::state_space::StateSpace;
 use crate::types::{FitResult, SarimaxConfig};
 
 fn length_mismatch_results<T>(n: usize, msg: String) -> Vec<Result<T>> {
@@ -49,9 +46,7 @@ pub fn batch_loglike(
         .map(|(i, endog)| {
             let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             let exog_ref: Option<&[Vec<f64>]> = exog;
-            let ss = StateSpace::new(config, params, endog, exog_ref)?;
-            let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-            let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
+            let output = crate::pipeline::kalman_eval(endog, params, config, exog_ref)?;
             Ok(output.loglike)
         })
         .collect()
@@ -96,6 +91,35 @@ pub fn batch_fit(
                 Some(method_str),
                 Some(maxiter_val),
                 exog_ref,
+            )
+        })
+        .collect()
+}
+
+/// Fit a single time series with multiple model configurations in parallel.
+///
+/// Each config has a different ARIMA order. All share the same endog/exog.
+/// Returns one `FitResult` (or error) per configuration.
+pub fn grid_search_fit(
+    endog: &[f64],
+    configs: &[SarimaxConfig],
+    method: Option<&str>,
+    maxiter: Option<u64>,
+    exog: Option<&[Vec<f64>]>,
+) -> Vec<Result<FitResult>> {
+    let method_str = method.unwrap_or("lbfgsb");
+    let maxiter_val = maxiter.unwrap_or(500);
+
+    configs
+        .par_iter()
+        .map(|config| {
+            optimizer::fit(
+                endog,
+                config,
+                None,
+                Some(method_str),
+                Some(maxiter_val),
+                exog,
             )
         })
         .collect()
@@ -172,35 +196,11 @@ pub fn batch_forecast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn load_fixtures() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/statsmodels_reference.json"
-        );
-        let data = std::fs::read_to_string(path).expect("fixtures file not found");
-        serde_json::from_str(&data).expect("invalid JSON")
-    }
-
-    fn make_config(
-        p: usize,
-        d: usize,
-        q: usize,
-        enforce_stat: bool,
-        enforce_inv: bool,
-    ) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: enforce_stat,
-            enforce_invertibility: enforce_inv,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
+    use crate::initialization::KalmanInit;
+    use crate::kalman::kalman_loglike;
+    use crate::state_space::StateSpace;
+    use crate::test_helpers::{load_fixtures, make_config_with_enforcement};
+    use crate::types::SarimaxConfig;
 
     fn get_ar1_data() -> Vec<f64> {
         let fixtures = load_fixtures();
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_batch_fit_single() {
         let data = get_ar1_data();
-        let config = make_config(1, 0, 0, true, true);
+        let config = make_config_with_enforcement(1, 0, 0, true, true);
 
         // Single series via batch
         let batch_results = batch_fit(&[data.clone()], &config, Some("lbfgs"), Some(500), None);
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_batch_fit_multiple() {
         let data = get_ar1_data();
-        let config = make_config(1, 0, 0, true, true);
+        let config = make_config_with_enforcement(1, 0, 0, true, true);
 
         // Create 10 copies of the same series
         let series: Vec<Vec<f64>> = (0..10).map(|_| data.clone()).collect();
@@ -269,7 +269,7 @@ mod tests {
     fn test_batch_loglike_matches_single() {
         let data = get_ar1_data();
         let params_vec = get_ar1_params();
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let params = SarimaxParams {
             trend_coeffs: vec![],
             exog_coeffs: vec![],
@@ -306,7 +306,7 @@ mod tests {
     fn test_batch_forecast_matches_single() {
         let data = get_ar1_data();
         let params_vec = get_ar1_params();
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let params = SarimaxParams {
             trend_coeffs: vec![],
             exog_coeffs: vec![],
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_batch_empty() {
-        let config = make_config(1, 0, 0, true, true);
+        let config = make_config_with_enforcement(1, 0, 0, true, true);
         let empty: Vec<Vec<f64>> = vec![];
         let results = batch_fit(&empty, &config, None, None, None);
         assert!(results.is_empty());
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_batch_error_handling() {
-        let config = make_config(1, 0, 0, true, true);
+        let config = make_config_with_enforcement(1, 0, 0, true, true);
         let good_data = get_ar1_data();
         let bad_data = vec![]; // Empty series always fails
 
@@ -362,5 +362,32 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].is_ok(), "good series should succeed");
         assert!(results[1].is_err(), "bad series should fail");
+    }
+
+    #[test]
+    fn test_grid_search_basic() {
+        let data = get_ar1_data();
+        let configs = vec![
+            make_config_with_enforcement(1, 0, 0, true, true),
+            make_config_with_enforcement(1, 0, 1, true, true),
+            make_config_with_enforcement(2, 0, 0, true, true),
+        ];
+
+        let results = grid_search_fit(&data, &configs, None, None, None);
+        assert_eq!(results.len(), 3);
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_ok(), "combo {} should succeed", i);
+            let fit = r.as_ref().unwrap();
+            assert!(fit.converged, "combo {} should converge", i);
+            assert!(fit.loglike.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_grid_search_empty() {
+        let data = get_ar1_data();
+        let configs: Vec<SarimaxConfig> = vec![];
+        let results = grid_search_fit(&data, &configs, None, None, None);
+        assert!(results.is_empty());
     }
 }

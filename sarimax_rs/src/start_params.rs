@@ -669,29 +669,8 @@ pub fn compute_start_params(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn make_config(
-        p: usize,
-        d: usize,
-        q: usize,
-        pp: usize,
-        dd: usize,
-        qq: usize,
-        s: usize,
-        concentrate: bool,
-    ) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: concentrate,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
+    use crate::test_helpers::make_seasonal_config;
+    use crate::types::SarimaxConfig;
 
     #[test]
     fn test_difference_once() {
@@ -802,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_start_params_length_ar1() {
-        let config = make_config(1, 0, 0, 0, 0, 0, 0, true);
+        let config = make_seasonal_config(1, 0, 0, 0, 0, 0, 0);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 1); // ar(1)
@@ -810,7 +789,7 @@ mod tests {
 
     #[test]
     fn test_start_params_length_arma11() {
-        let config = make_config(1, 0, 1, 0, 0, 0, 0, true);
+        let config = make_seasonal_config(1, 0, 1, 0, 0, 0, 0);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
@@ -818,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_start_params_length_sarima() {
-        let config = make_config(1, 1, 1, 1, 1, 1, 12, true);
+        let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
         let y: Vec<f64> = (0..300)
             .map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos())
             .collect();
@@ -828,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_start_params_with_sigma2() {
-        let config = make_config(1, 0, 0, 0, 0, 0, 0, false);
+        let config = SarimaxConfig { concentrate_scale: false, ..make_seasonal_config(1, 0, 0, 0, 0, 0, 0) };
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + sigma2
@@ -837,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_fallback_short_series() {
-        let config = make_config(1, 1, 1, 0, 0, 0, 0, true);
+        let config = make_seasonal_config(1, 1, 1, 0, 0, 0, 0);
         let y = vec![1.0, 2.0]; // Too short after differencing
         let params = compute_start_params(&y, &config, None).unwrap();
         assert_eq!(params.len(), 2); // ar(1) + ma(1)
@@ -846,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_start_params_finite() {
-        let config = make_config(2, 1, 1, 0, 0, 0, 0, true);
+        let config = make_seasonal_config(2, 1, 1, 0, 0, 0, 0);
         let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.05).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
         assert!(

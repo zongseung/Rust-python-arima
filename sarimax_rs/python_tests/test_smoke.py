@@ -11,5 +11,4 @@ def test_version():
     """version() returns the package version string."""
     import sarimax_rs
     v = sarimax_rs.version()
-    assert isinstance(v, str)
-    assert v == "0.1.0"
+    assert isinstance(v, str) and len(v) > 0

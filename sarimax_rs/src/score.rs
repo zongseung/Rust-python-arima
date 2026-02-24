@@ -30,6 +30,26 @@ use crate::types::{SarimaxConfig, Trend};
 // System matrix derivatives
 // ---------------------------------------------------------------------------
 
+/// Compute dR*Q*R' + R*Q*dR' for a single-column noise matrix R.
+///
+/// dRQR[i,j] = σ² * (dR[i] * R[j] + R[i] * dR[j])
+#[inline]
+fn compute_drqr(
+    dr_col: &DVector<f64>,
+    r_mat: &DMatrix<f64>,
+    k: usize,
+    sigma2: f64,
+) -> DMatrix<f64> {
+    let mut d_rqr = DMatrix::<f64>::zeros(k, k);
+    let r_col = r_mat.column(0);
+    for row in 0..k {
+        for col in 0..k {
+            d_rqr[(row, col)] = sigma2 * (dr_col[row] * r_col[col] + r_col[row] * dr_col[col]);
+        }
+    }
+    d_rqr
+}
+
 /// Precomputed derivatives of system matrices w.r.t. each constrained parameter.
 struct SystemDerivatives {
     n_params: usize,
@@ -52,7 +72,7 @@ fn precompute_derivatives(
 ) -> SystemDerivatives {
     let order = &config.order;
     let k = ss.k_states;
-    let sd = order.k_states_diff();
+    let sd = config.effective_sd();
     let ko = order.k_order();
     let p = order.p;
     let q = order.q;
@@ -151,14 +171,7 @@ fn precompute_derivatives(
                 dr_col[sd + i] = d_reduced[i];
             }
         }
-        let mut d_rqr = DMatrix::<f64>::zeros(k, k);
-        let r_col = r_mat.column(0);
-        for row in 0..k {
-            for col in 0..k {
-                d_rqr[(row, col)] = sigma2 * (dr_col[row] * r_col[col] + r_col[row] * dr_col[col]);
-            }
-        }
-        drqr[param_idx] = Some(d_rqr);
+        drqr[param_idx] = Some(compute_drqr(&dr_col, r_mat, k, sigma2));
         param_idx += 1;
     }
 
@@ -194,14 +207,7 @@ fn precompute_derivatives(
                 dr_col[sd + i] = d_reduced[i];
             }
         }
-        let mut d_rqr = DMatrix::<f64>::zeros(k, k);
-        let r_col = r_mat.column(0);
-        for row in 0..k {
-            for col in 0..k {
-                d_rqr[(row, col)] = sigma2 * (dr_col[row] * r_col[col] + r_col[row] * dr_col[col]);
-            }
-        }
-        drqr[param_idx] = Some(d_rqr);
+        drqr[param_idx] = Some(compute_drqr(&dr_col, r_mat, k, sigma2));
         param_idx += 1;
     }
 
@@ -827,16 +833,8 @@ mod tests {
     use crate::kalman::kalman_loglike;
     use crate::params::SarimaxParams;
     use crate::state_space::StateSpace;
+    use crate::test_helpers::{load_fixtures, make_config, make_seasonal_config};
     use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn load_fixtures() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/statsmodels_reference.json"
-        );
-        let data = std::fs::read_to_string(path).expect("fixtures file not found");
-        serde_json::from_str(&data).expect("invalid JSON")
-    }
 
     /// Richardson-extrapolated central differences for robust numerical gradient.
     /// Uses two step sizes and extrapolates to O(h^4) accuracy.
@@ -882,43 +880,9 @@ mod tests {
     ) -> f64 {
         let sparams = SarimaxParams::from_flat(params_flat, config).unwrap();
         let ss = StateSpace::new(config, &sparams, endog, exog).unwrap();
-        let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, config);
         let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale).unwrap();
         output.loglike
-    }
-
-    fn make_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
-
-    fn make_seasonal_config(
-        p: usize,
-        d: usize,
-        q: usize,
-        pp: usize,
-        dd: usize,
-        qq: usize,
-        s: usize,
-    ) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
     }
 
     fn assert_gradient_close(analytical: &[f64], numerical: &[f64], tol: f64, label: &str) {
@@ -957,7 +921,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -987,7 +951,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -1017,7 +981,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -1047,7 +1011,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -1074,7 +1038,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -1106,7 +1070,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
@@ -1149,7 +1113,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, Some(&exog[..])).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical =
             score(&data, &ss, &init, &config, &sparams, true, Some(&exog[..])).unwrap();
@@ -1183,7 +1147,7 @@ mod tests {
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &config);
 
         let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);

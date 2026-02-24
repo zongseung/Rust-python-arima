@@ -17,6 +17,7 @@ use rayon::prelude::*;
 
 use crate::css;
 use crate::error::{Result, SarimaxError};
+use crate::pipeline;
 use crate::initialization::KalmanInit;
 use crate::kalman::kalman_loglike;
 use crate::params::{self, SarimaxParams};
@@ -230,7 +231,7 @@ impl SarimaxObjective {
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
         let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &self.config);
 
         let result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);
         // Always return SS to cache (even on error, the matrices are still valid)
@@ -262,7 +263,7 @@ impl SarimaxObjective {
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
         let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &self.config);
 
         // Score in constrained space: ∂ll/∂θ_constrained
         let score_result = score::score(
@@ -302,7 +303,7 @@ impl SarimaxObjective {
             SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
 
         let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config(&ss, &self.config, KalmanInit::default_kappa());
+        let init = KalmanInit::from_config_default(&ss, &self.config);
 
         // 1. Log-likelihood (forward KF)
         let kf_result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);
@@ -345,32 +346,14 @@ impl SarimaxObjective {
 
 /// Apply the chain rule: grad_unconstrained = J' · grad_constrained.
 ///
-/// Uses numerical Jacobian of transform_params (cheap: only n_params transform evaluations).
+/// Delegates to [`crate::params::transform_jacobian_t_vec`].
 fn apply_transform_jacobian(
     score_constrained: &[f64],
     unconstrained: &[f64],
     config: &SarimaxConfig,
 ) -> std::result::Result<Vec<f64>, String> {
-    let n = unconstrained.len();
-    let eps = 1e-7;
-    let c_base = transform_params(unconstrained, config).map_err(|e| e.to_string())?;
-    let mut grad = vec![0.0; n];
-
-    // Reuse buffer across iterations instead of allocating per-parameter
-    let mut u_pert = unconstrained.to_vec();
-
-    for i in 0..n {
-        let orig = u_pert[i];
-        u_pert[i] = orig + eps;
-        let c_pert = transform_params(&u_pert, config).map_err(|e| e.to_string())?;
-        u_pert[i] = orig; // reset for next iteration
-
-        // grad[i] = Σ_j score[j] * ∂c_j/∂u_i
-        for j in 0..n {
-            grad[i] += score_constrained[j] * (c_pert[j] - c_base[j]) / eps;
-        }
-    }
-    Ok(grad)
+    crate::params::transform_jacobian_t_vec(unconstrained, config, score_constrained)
+        .map_err(|e| e.to_string())
 }
 
 impl CostFunction for SarimaxObjective {
@@ -1172,7 +1155,7 @@ fn try_ar_fast_path(
 
     let test_params = SarimaxParams::from_flat(constrained_start, config)?;
     let test_ss = StateSpace::new(config, &test_params, endog, exog)?;
-    let test_init = KalmanInit::from_config(&test_ss, config, KalmanInit::default_kappa());
+    let test_init = KalmanInit::from_config_default(&test_ss, config);
     let test_output = kalman_loglike(endog, &test_ss, &test_init, config.concentrate_scale)?;
 
     if test_output.loglike.is_finite() {
@@ -1207,7 +1190,7 @@ fn build_zero_iter_result(
 ) -> Result<FitResult> {
     let sp = SarimaxParams::from_flat(constrained_start, config)?;
     let ss = StateSpace::new(config, &sp, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    let init = KalmanInit::from_config_default(&ss, config);
     let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
     let n_params = SarimaxParams::n_estimated_params(config);
     Ok(FitResult {
@@ -1249,7 +1232,7 @@ fn build_fit_result(
     }
 
     let ss = StateSpace::new(config, &final_params, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
+    let init = KalmanInit::from_config_default(&ss, config);
     let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
     let n_params = SarimaxParams::n_estimated_params(config);
 
@@ -1336,16 +1319,7 @@ fn eval_kf_loglike_constrained(
     constrained: &[f64],
     exog: Option<&[Vec<f64>]>,
 ) -> f64 {
-    let sparams = match SarimaxParams::from_flat(constrained, config) {
-        Ok(p) => p,
-        Err(_) => return f64::NEG_INFINITY,
-    };
-    let ss = match StateSpace::new(config, &sparams, endog, exog) {
-        Ok(s) => s,
-        Err(_) => return f64::NEG_INFINITY,
-    };
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-    match kalman_loglike(endog, &ss, &init, config.concentrate_scale) {
+    match pipeline::kalman_eval_constrained(endog, constrained, config, exog) {
         Ok(out) if out.loglike.is_finite() => out.loglike,
         _ => f64::NEG_INFINITY,
     }
@@ -1542,15 +1516,26 @@ pub fn fit(
     let maxiter = maxiter.unwrap_or(500);
     let method = method.unwrap_or("lbfgsb");
 
-    // 1. Validate + compute start params
+    // simple_differencing: pre-difference the data so the Kalman filter sees
+    // a stationary ARMA-only series. n_obs = eff_endog.len() for AIC/BIC.
+    let (eff_endog, eff_exog_owned) = pipeline::prepare_endog(endog, config, exog);
+    let eff_endog: &[f64] = &eff_endog;
+    let eff_exog: Option<&[Vec<f64>]> = if config.simple_differencing {
+        eff_exog_owned.as_deref()
+    } else {
+        exog
+    };
+
+    // 1. Validate + compute start params (always use original endog: CSS init
+    //    applies differencing internally via apply_differencing)
     let mut constrained_start = validate_and_get_start_params(endog, config, start_params, exog)?;
 
-    // 2. Fast paths (AR-only, maxiter=0)
-    if let Some(r) = try_ar_fast_path(endog, config, &constrained_start, exog, method, start_params.is_some())? {
+    // 2. Fast paths (AR-only, maxiter=0) — use eff_endog
+    if let Some(r) = try_ar_fast_path(eff_endog, config, &constrained_start, eff_exog, method, start_params.is_some())? {
         return Ok(r);
     }
     if maxiter == 0 {
-        return build_zero_iter_result(endog, config, &constrained_start, exog, method);
+        return build_zero_iter_result(eff_endog, config, &constrained_start, eff_exog, method);
     }
 
     // 2.5. CSS pre-optimization (VER5.2 P2: A-1): for models with MA terms
@@ -1570,10 +1555,12 @@ pub fn fit(
             && (config.order.q + config.order.qq >= 2
                 || (config.order.qq > 0 && config.order.s >= 4));
         if benefit_from_css {
+            // CSS optimization uses original endog (CSS applies differencing internally)
             if let Some(css_params) = run_css_optimization(endog, config, &constrained_start, 100) {
-                let css_kf_ll = eval_kf_loglike_constrained(endog, config, &css_params, exog);
+                // KF evaluation uses eff_endog (already differenced)
+                let css_kf_ll = eval_kf_loglike_constrained(eff_endog, config, &css_params, eff_exog);
                 let orig_kf_ll =
-                    eval_kf_loglike_constrained(endog, config, &constrained_start, exog);
+                    eval_kf_loglike_constrained(eff_endog, config, &constrained_start, eff_exog);
                 if css_kf_ll > orig_kf_ll {
                     let is_seasonal_model =
                         config.order.s >= 2 && (config.order.pp > 0 || config.order.qq > 0);
@@ -1587,12 +1574,12 @@ pub fn fit(
         }
     }
 
-    // 3. Transform to unconstrained space + build objective
+    // 3. Transform to unconstrained space + build objective (with eff_endog)
     let unconstrained_start = untransform_params(&constrained_start, config)?;
     let objective = SarimaxObjective {
-        endog: endog.to_vec(),
+        endog: eff_endog.to_vec(),
         config: config.clone(),
-        exog: exog.map(|e| e.to_vec()),
+        exog: eff_exog.map(|e| e.to_vec()),
         cache: RefCell::new(None),
         ss_cache: RefCell::new(None),
     };
@@ -1631,8 +1618,8 @@ pub fn fit(
         }
     };
 
-    // 5. Build result
-    build_fit_result(endog, config, &best_unconstrained, n_iter, converged, used_method, exog)
+    // 5. Build result (n_obs = eff_endog.len() for correct AIC/BIC)
+    build_fit_result(eff_endog, config, &best_unconstrained, n_iter, converged, used_method, eff_exog)
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,39 +1629,11 @@ pub fn fit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn load_fixtures() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/statsmodels_reference.json"
-        );
-        let data = std::fs::read_to_string(path).expect("fixtures file not found");
-        serde_json::from_str(&data).expect("invalid JSON")
-    }
-
-    fn make_config(
-        p: usize,
-        d: usize,
-        q: usize,
-        enforce_stat: bool,
-        enforce_inv: bool,
-    ) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: enforce_stat,
-            enforce_invertibility: enforce_inv,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
+    use crate::test_helpers::{load_fixtures, make_config_with_enforcement};
 
     #[test]
     fn test_transform_untransform_roundtrip() {
-        let config = make_config(2, 0, 1, true, true);
+        let config = make_config_with_enforcement(2, 0, 1, true, true);
         let original = vec![0.5, -0.3, 0.2]; // ar(2), ma(1)
         let unconstrained = untransform_params(&original, &config).unwrap();
         let recovered = transform_params(&unconstrained, &config).unwrap();
@@ -1685,7 +1644,7 @@ mod tests {
 
     #[test]
     fn test_transform_passthrough_no_enforce() {
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let original = vec![0.7, -0.3];
         let unconstrained = untransform_params(&original, &config).unwrap();
         assert_eq!(original, unconstrained);
@@ -1702,7 +1661,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let obj = SarimaxObjective {
             endog: data,
             config,
@@ -1726,7 +1685,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let obj = SarimaxObjective {
             endog: data,
             config,
@@ -1756,12 +1715,12 @@ mod tests {
             .collect();
 
         // Test with enforce=false
-        let config_noforce = make_config(1, 0, 0, false, false);
+        let config_noforce = make_config_with_enforcement(1, 0, 0, false, false);
         let r1 = fit(&data, &config_noforce, None, Some("lbfgsb"), Some(500), None).unwrap();
         assert!(r1.converged, "AR(1) lbfgsb enforce=false should converge");
 
         // Test with enforce=true (Python default)
-        let config_force = make_config(1, 0, 0, true, true);
+        let config_force = make_config_with_enforcement(1, 0, 0, true, true);
         let r2 = fit(&data, &config_force, None, Some("lbfgsb"), Some(500), None).unwrap();
         assert!(r2.converged, "AR(1) lbfgsb enforce=true should converge");
     }
@@ -1784,7 +1743,7 @@ mod tests {
         let expected_loglike = case["loglike"].as_f64().unwrap();
 
         // Fixture was generated with approximate_diffuse init, so use enforce=false
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         assert!(result.converged, "AR(1) fit should converge");
@@ -1824,7 +1783,7 @@ mod tests {
             .collect();
 
         // Fixture was generated with approximate_diffuse init
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         for (i, (got, exp)) in result.params.iter().zip(expected_params.iter()).enumerate() {
@@ -1853,7 +1812,7 @@ mod tests {
         let expected_loglike = case["loglike"].as_f64().unwrap();
 
         // Fixture was generated with approximate_diffuse init
-        let config = make_config(1, 1, 1, false, false);
+        let config = make_config_with_enforcement(1, 1, 1, false, false);
         let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         let ll_err = (result.loglike - expected_loglike).abs();
@@ -1883,7 +1842,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let result = fit(&data, &config, None, Some("nelder-mead"), Some(1000), None).unwrap();
 
         let param_err = (result.params[0] - expected_params[0]).abs();
@@ -1907,7 +1866,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, true, true);
+        let config = make_config_with_enforcement(1, 0, 0, true, true);
         let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
 
         // AIC = -2*loglike + 2*k, BIC = -2*loglike + k*ln(n)
@@ -1941,7 +1900,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let start = vec![0.5];
         let result = fit(&data, &config, Some(&start), Some("lbfgs"), Some(500), None).unwrap();
 
@@ -1960,7 +1919,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
 
         let lbfgs = fit(&data, &config, None, Some("lbfgs"), Some(0), None).unwrap();
         assert_eq!(lbfgs.n_iter, 0, "lbfgs with maxiter=0 should not run");
@@ -1988,7 +1947,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let result = fit(&data, &config, None, Some("lbfgsb-multi"), Some(0), None).unwrap();
 
         assert_eq!(
@@ -2012,7 +1971,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 0, false, false);
+        let config = make_config_with_enforcement(1, 0, 0, false, false);
         let result = fit(&data, &config, None, Some("lbfgsb"), Some(0), None).unwrap();
 
         eprintln!(
@@ -2042,7 +2001,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let result = fit(&data, &config, None, Some("lbfgs"), Some(1), None).unwrap();
         eprintln!(
             "lbfgs maxiter=1: n_iter={}, converged={}, method={}",
@@ -2067,7 +2026,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let result = fit(&data, &config, None, Some("nelder-mead"), Some(1), None).unwrap();
         eprintln!(
             "nm maxiter=1: n_iter={}, converged={}, method={}",
@@ -2090,7 +2049,7 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
 
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let maxiter = 5_u64;
 
         let lbfgs = fit(&data, &config, None, Some("lbfgs"), Some(maxiter), None).unwrap();
@@ -2176,7 +2135,7 @@ mod tests {
     #[test]
     fn test_validate_no_near_cancellation_ar_only() {
         // Pure AR: no MA → always valid
-        let config = make_config(2, 0, 0, false, false);
+        let config = make_config_with_enforcement(2, 0, 0, false, false);
         let sp = SarimaxParams {
             ar_coeffs: vec![0.5, -0.2],
             ma_coeffs: vec![],
@@ -2192,7 +2151,7 @@ mod tests {
     #[test]
     fn test_validate_no_near_cancellation_arma_far() {
         // ARMA(1,1) with distant roots: valid
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let sp = SarimaxParams {
             ar_coeffs: vec![0.8],
             ma_coeffs: vec![0.2],
@@ -2208,7 +2167,7 @@ mod tests {
     #[test]
     fn test_validate_no_near_cancellation_arma_near() {
         // ARMA(1,1) with near-cancellation: φ≈θ → should fail α=0.05 check
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let sp = SarimaxParams {
             ar_coeffs: vec![0.9],
             ma_coeffs: vec![0.89],
@@ -2224,7 +2183,7 @@ mod tests {
     #[test]
     fn test_passes_cancellation_filter_ar_only() {
         // Pure AR: always passes (no MA to cancel with)
-        let config = make_config(2, 0, 0, false, false);
+        let config = make_config_with_enforcement(2, 0, 0, false, false);
         let params = vec![0.5, -0.2]; // unconstrained = constrained when !enforce
         assert!(passes_cancellation_filter(&params, &config));
     }
@@ -2232,7 +2191,7 @@ mod tests {
     #[test]
     fn test_passes_cancellation_filter_arma_far() {
         // ARMA(1,1) with distant roots: should pass
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let params = vec![0.8, 0.2]; // ar=0.8, ma=0.2 → roots far apart
         assert!(passes_cancellation_filter(&params, &config));
     }
@@ -2240,7 +2199,7 @@ mod tests {
     #[test]
     fn test_passes_cancellation_filter_arma_near() {
         // ARMA(1,1) with near-cancellation: should fail α=0.01 check
-        let config = make_config(1, 0, 1, false, false);
+        let config = make_config_with_enforcement(1, 0, 1, false, false);
         let params = vec![0.9, 0.895]; // ar=0.9, ma=0.895 → dist=0.005 < 0.01
         assert!(!passes_cancellation_filter(&params, &config));
     }

@@ -3,12 +3,10 @@
 Tests the numerical Hessian and OPG inference paths, plus residual diagnostics.
 """
 
-import sys
-sys.path.insert(0, "python")
-
 import numpy as np
 import pytest
 import sarimax_rs
+from conftest import generate_ar1, generate_random_walk
 from sarimax_py.model import SARIMAXModel
 
 
@@ -19,25 +17,15 @@ from sarimax_py.model import SARIMAXModel
 @pytest.fixture(scope="module")
 def ar1_data():
     """Synthetic AR(1) data with known phi=0.7."""
-    np.random.seed(42)
-    n = 500
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = 0.7 * y[t - 1] + np.random.randn()
-    return y
+    return generate_ar1(n=500)
 
 
 @pytest.fixture(scope="module")
 def arima111_data():
     """Synthetic ARIMA(1,1,1) data."""
-    np.random.seed(123)
-    n = 500
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = 0.5 * y[t - 1] + np.random.randn()
-    # Integrate
-    y = np.cumsum(y)
-    return y
+    # AR(1) with phi=0.5 then integrated
+    ar = generate_ar1(n=500, phi=0.5, seed=123)
+    return np.cumsum(ar)
 
 
 @pytest.fixture(scope="module")

@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 import sarimax_rs
 import statsmodels.api as sm
+from conftest import generate_stationary_data, generate_random_walk
 
 PARAM_TOL = 0.05      # 파라미터 허용 오차
 LOGLIKE_TOL = 5.0     # 로그우도 허용 오차
@@ -21,17 +22,7 @@ AIC_TOL = 10.0        # AIC 허용 오차
 
 def generate_data(n=300, seed=42):
     """Deterministic test data."""
-    np.random.seed(seed)
-    return np.cumsum(np.random.randn(n))
-
-
-def generate_stationary_data(n=300, seed=42):
-    """Stationary AR(1)-like data."""
-    np.random.seed(seed)
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = 0.5 * y[t - 1] + np.random.randn()
-    return y
+    return generate_random_walk(n=n, seed=seed)
 
 
 def generate_seasonal_data(n=300, s=12, seed=42):

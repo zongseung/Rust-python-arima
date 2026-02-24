@@ -15,24 +15,13 @@ Validates:
 import numpy as np
 import pytest
 
-import sys
-sys.path.insert(0, "python")
-
+from conftest import generate_ar1
 from sarimax_py.model import ForecastResult, SARIMAXModel, SARIMAXResult
-
-
-def generate_ar1_series(n=200, phi=0.7, seed=42):
-    """Generate an AR(1) time series."""
-    np.random.seed(seed)
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = phi * y[t - 1] + np.random.randn()
-    return y
 
 
 def test_model_fit_ar1():
     """SARIMAXModel.fit() should return finite parameters and valid metadata."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0), seasonal_order=(0, 0, 0, 0))
     result = model.fit()
 
@@ -49,7 +38,7 @@ def test_model_fit_ar1():
 
 def test_model_forecast():
     """result.forecast(10) should return 10-step forecast with finite values."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
@@ -64,7 +53,7 @@ def test_model_forecast():
 
 def test_model_get_forecast_alias():
     """get_forecast() should produce identical results to forecast()."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
@@ -79,7 +68,7 @@ def test_model_get_forecast_alias():
 
 def test_model_residuals():
     """result.resid should have length equal to nobs."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
@@ -90,25 +79,25 @@ def test_model_residuals():
 
 def test_model_summary_string():
     """summary() should contain expected keywords."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
     s = result.summary()
     assert isinstance(s, str)
     assert "SARIMAX Results" in s
-    assert "Order:" in s
+    assert "Model:" in s
     assert "Log Likelihood:" in s
     assert "AIC:" in s
     assert "BIC:" in s
     assert "Converged:" in s
-    assert "Parameters:" in s
+    assert "coef" in s
     assert "Scale" in s
 
 
 def test_model_aic_bic():
     """AIC and BIC should be finite."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
@@ -122,7 +111,7 @@ def test_model_aic_bic():
 
 def test_model_conf_int():
     """conf_int() should return (steps, 2) shaped array."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 
@@ -139,7 +128,7 @@ def test_model_matches_raw_api():
     """SARIMAXModel results should match sarimax_rs raw API."""
     import sarimax_rs
 
-    y = generate_ar1_series()
+    y = generate_ar1()
 
     # Via model class
     model = SARIMAXModel(y, order=(1, 0, 0))
@@ -156,7 +145,7 @@ def test_model_matches_raw_api():
 
 def test_forecast_result_attributes():
     """ForecastResult should have predicted_mean, variance, ci_lower, ci_upper."""
-    y = generate_ar1_series()
+    y = generate_ar1()
     model = SARIMAXModel(y, order=(1, 0, 0))
     result = model.fit()
 

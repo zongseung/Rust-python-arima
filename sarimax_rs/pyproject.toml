@@ -9,6 +9,7 @@ requires-python = ">=3.10"
 description = "High-performance SARIMAX via Rust + PyO3"
 dependencies = [
     "numpy>=1.24",
+    "polars>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -24,9 +25,11 @@ dev = [
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "sarimax_rs"
+python-source = "python"
 
 [tool.pytest.ini_options]
 testpaths = ["python_tests"]
+pythonpath = ["python"]
 markers = [
     "nightly: marks tests as nightly-only (deselect with '-m \"not nightly\"')",
 ]

@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 All commands run from `sarimax_rs/`.
 
 ```bash
-# Rust unit tests (140 tests across all modules)
+# Rust unit tests (154 tests across all modules)
 cargo test --all-targets
 
 # Build Python wheel (development)
@@ -50,21 +50,23 @@ Python (PyO3) → params.rs (unpack/transform) → polynomial.rs (lag expansion)
 
 ### Key Modules (sarimax_rs/src/)
 
-- **lib.rs** — PyO3 entry point; exports 7 Python functions (`sarimax_fit`, `sarimax_forecast`, `sarimax_loglike`, `sarimax_residuals`, `sarimax_batch_fit`, `sarimax_batch_forecast`, `version`)
+- **lib.rs** — PyO3 entry point; exports 10 Python functions (`sarimax_fit`, `sarimax_forecast`, `sarimax_loglike`, `sarimax_residuals`, `sarimax_batch_fit`, `sarimax_batch_forecast`, `sarimax_batch_loglike`, `sarimax_inference`, `sarimax_diagnostics`, `version`). All functions accept `trend=` and `simple_differencing=` parameters.
 - **types.rs** — `SarimaxOrder(p,d,q,P,D,Q,s)`, `SarimaxConfig`, `Trend`, `FitResult`
 - **params.rs** — `SarimaxParams` struct, flat vector ↔ struct conversion, Monahan/Jones constrained transform for stationarity/invertibility
-- **state_space.rs** — Builds Harvey representation matrices. State dimension = `k_states_diff(d + s*D) + k_order(max(p+sP, q+sQ+1))`
+- **state_space.rs** — Builds Harvey representation matrices. Normal: `k_states = k_states_diff(d+s*D) + k_order`. With `simple_differencing=true`: `k_states = k_order` only (diff states removed)
+- **pipeline.rs** — Shared helpers: `kalman_eval`, `kalman_filter_full` with automatic pre-differencing when `simple_differencing=true`
 - **kalman.rs** — `kalman_loglike()` (concentrated/full) and `kalman_filter()` (full state history). Joseph form covariance update
 - **optimizer.rs** — MLE via L-BFGS-B (primary) with Nelder-Mead fallback. CSS pre-optimization, DARE initialization, multi-start with near-cancellation filtering (P6), finite-difference gradients (center diff, eps=1e-7)
-- **forecast.rs** — `forecast_pipeline()` and `residuals_pipeline()`. Z-score via Abramowitz & Stegun approximation
+- **forecast.rs** — `forecast_pipeline()` and `residuals_pipeline()`. Trend state intercept propagated in h-step forecast loop. Z-score via Abramowitz & Stegun approximation
 - **batch.rs** — `batch_fit()` / `batch_forecast()` using `rayon::par_iter()`. Error isolation per series
 - **polynomial.rs** — `reduced_ar` / `reduced_ma` via polynomial multiplication for seasonal lag expansion
 - **start_params.rs** — CSS-based initial parameter estimation (Yule-Walker AR, OLS MA)
 
 ### Python Layer
 
-- **python/sarimax_py/** — High-level `SARIMAXModel` class wrapping the Rust engine (statsmodels-compatible API)
-- **python_tests/** — 44 pytest integration tests validated against statsmodels reference data
+- **python/sarimax_py/model.py** — `SARIMAXModel`, `SARIMAXResult`, `ForecastResult`, `PredictionResult` classes (statsmodels-compatible API). Supports trend='n'/'c'/'t'/'ct', simple_differencing=True/False. Polars DataFrames via `to_dataframe()`, `params_table()`. HQIC, `get_prediction()`, statsmodels-style `summary()`.
+- **python/sarimax_py/auto.py** — `auto_arima()` with stepwise (Hyndman-Khandakar) and grid search modes. `AutoARIMAResult` with Polars `history_dataframe()`.
+- **python_tests/** — 351 pytest integration tests validated against statsmodels reference data (includes test_simple_diff.py for Phase 5-C)
 
 ### Test Fixtures
 
@@ -74,10 +76,12 @@ JSON files in `tests/fixtures/` contain statsmodels reference outputs for ground
 
 - Seasonal differencing D must be 0 or 1
 - Exogenous variables (exog) supported: `[exog_coeffs, ar(p), ma(q), sar(P), sma(Q)]` param layout with exog
-- No Hessian/information matrix — standard errors not available
+- Hessian/OPG-based standard errors available via `inference="hessian"` or `inference="opg"`
 - Forecast steps capped at 10,000
-- Flat param vector layout: `[ar(p), ma(q), sar(P), sma(Q)]` (without exog) or `[exog(k), ar(p), ma(q), sar(P), sma(Q)]` (with exog)
+- Trend support: 'n' (none), 'c' (constant), 't' (linear), 'ct' (both)
+- Flat param vector layout: `[trend(kt) | exog(k) | ar(p) | ma(q) | sar(P) | sma(Q)]`
 - `concentrate_scale=true` by default (sigma² concentrated out of likelihood)
+- `simple_differencing=false` by default. When `true`: pre-differencing reduces `k_states` by `d + s*D`, n_obs = n - d - s*D (R-style AIC/BIC). DARE init used (vs Lyapunov for normal path), so loglike may differ slightly from statsmodels SD.
 
 ## Key Dependencies
 
@@ -85,3 +89,4 @@ JSON files in `tests/fixtures/` contain statsmodels reference outputs for ground
 - **argmin** — L-BFGS + Nelder-Mead optimization
 - **rayon** — Parallel batch processing
 - **pyo3 + numpy** — Python C-API bindings with zero-copy array access
+- **polars** — Columnar DataFrame for Python result tables (replaces pandas)

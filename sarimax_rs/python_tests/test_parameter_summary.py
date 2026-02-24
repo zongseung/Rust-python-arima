@@ -14,11 +14,9 @@ Additional:
 
 import numpy as np
 import pytest
-import sys
-
-sys.path.insert(0, "python")
-
 import warnings
+
+from conftest import generate_ar1, generate_random_walk
 
 from sarimax_py.model import (
     SARIMAXModel,
@@ -34,18 +32,12 @@ from sarimax_py.model import (
 
 @pytest.fixture
 def ar1_data():
-    np.random.seed(42)
-    n = 200
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = 0.7 * y[t - 1] + np.random.randn()
-    return y
+    return generate_ar1()
 
 
 @pytest.fixture
 def arima_111_data():
-    np.random.seed(99)
-    return np.cumsum(np.random.randn(250))
+    return generate_random_walk(n=250, seed=99)
 
 
 @pytest.fixture
@@ -147,7 +139,6 @@ class TestSummaryFormat:
         model = SARIMAXModel(ar1_data, order=(1, 0, 0))
         result = model.fit()
         s = result.summary()
-        assert "Parameters:" in s
         assert "coef" in s
         assert "ar.L1" in s
 
@@ -157,7 +148,7 @@ class TestSummaryFormat:
         result = model.fit()
         s = result.summary()
         assert "SARIMAX Results" in s
-        assert "Order:" in s
+        assert "Model:" in s
         assert "Log Likelihood:" in s
         assert "AIC:" in s
         assert "BIC:" in s
@@ -557,7 +548,7 @@ class TestSummaryInferenceEnum:
         result = model.fit()
         s = result.summary(inference="none")
         assert "std err" not in s
-        assert "Parameters:" in s
+        assert "coef" in s
 
     def test_summary_inference_hessian(self, ar1_data):
         model = SARIMAXModel(ar1_data, order=(1, 0, 0))
@@ -565,7 +556,7 @@ class TestSummaryInferenceEnum:
         s = result.summary(inference="hessian")
         assert "std err" in s
         assert "P>|z|" in s
-        assert "Inference:       hessian" in s
+        assert "Inference: hessian" in s
 
     @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
     def test_summary_inference_statsmodels(self, ar1_data):
@@ -573,7 +564,7 @@ class TestSummaryInferenceEnum:
         result = model.fit()
         s = result.summary(inference="statsmodels")
         assert "std err" in s
-        assert "Inference:       statsmodels" in s
+        assert "Inference: statsmodels" in s
 
     @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
     def test_summary_inference_both(self, ar1_data):
@@ -585,7 +576,7 @@ class TestSummaryInferenceEnum:
         assert "d_se" in s
         assert "hess_p" in s
         assert "sm_p" in s
-        assert "Inference:       both" in s
+        assert "Inference: both" in s
 
     def test_summary_legacy_include_inference_true(self, ar1_data):
         """Legacy include_inference=True should still work with deprecation warning."""

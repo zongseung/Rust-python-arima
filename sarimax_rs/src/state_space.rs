@@ -49,20 +49,16 @@ impl StateSpace {
             )));
         }
 
-        if config.simple_differencing {
-            return Err(SarimaxError::StateSpaceError(
-                "simple_differencing is not yet supported".into(),
-            ));
-        }
-
         if config.measurement_error {
             return Err(SarimaxError::StateSpaceError(
                 "measurement_error is not yet supported".into(),
             ));
         }
 
-        let k_states = order.k_states();
-        let k_states_diff = order.k_states_diff();
+        // simple_differencing: diff states are removed from the state vector.
+        // The data will be pre-differenced externally; the SS only models the ARMA part.
+        let k_states = if config.simple_differencing { order.k_order() } else { order.k_states() };
+        let k_states_diff = if config.simple_differencing { 0 } else { order.k_states_diff() };
         let _k_order = order.k_order();
         let k_posdef = 1;
         let n = endog.len();
@@ -81,10 +77,10 @@ impl StateSpace {
             }
         }
 
-        // Build matrices
-        let transition = Self::build_transition(config, params)?;
-        let design = Self::build_design(config);
-        let selection = Self::build_selection(config, params)?;
+        // Build matrices (sd=0 when simple_differencing=true → ARMA-only)
+        let transition = Self::build_transition_sd(config, params, k_states, k_states_diff)?;
+        let design = Self::build_design_sd(config, k_states, k_states_diff);
+        let selection = Self::build_selection_sd(config, params, k_states, k_states_diff)?;
         let state_cov = Self::build_state_cov(config, params);
 
         // Observation intercept: d_t = exog * beta
@@ -134,7 +130,7 @@ impl StateSpace {
         exog: Option<&[Vec<f64>]>,
     ) {
         let order = &config.order;
-        let sd = order.k_states_diff();
+        let sd = self.k_states_diff; // already 0 when simple_differencing
         let ko = order.k_order();
         let n = endog.len();
 
@@ -179,59 +175,60 @@ impl StateSpace {
         );
     }
 
-    /// Build the transition matrix T.
+    /// Build the transition matrix T (sd-aware version).
     ///
-    /// Structure for SARIMA(p,d,q)(P,D,Q,s):
-    /// 1. Regular diff block [0..d, 0..d]: upper triangular ones
-    /// 2. Seasonal diff blocks: D layers of s×s cyclic shift
-    /// 3. Cross-diff: regular diff states → last seasonal state
-    /// 4. Diff → ARMA: regular diff + first seasonal of each layer → ARMA
-    /// 5. ARMA companion [sd..sd+ko, sd..sd+ko]
-    fn build_transition(config: &SarimaxConfig, params: &SarimaxParams) -> Result<DMatrix<f64>> {
+    /// When `sd == 0` (simple_differencing=true): pure ARMA companion of size k_order × k_order.
+    /// When `sd > 0`: full Harvey representation with diff blocks.
+    fn build_transition_sd(
+        config: &SarimaxConfig,
+        params: &SarimaxParams,
+        k_states: usize,
+        sd: usize,
+    ) -> Result<DMatrix<f64>> {
         let order = &config.order;
-        let k_states = order.k_states();
         let d = order.d;
         let dd = order.dd;
         let s = order.s;
-        let sd = order.k_states_diff();
         let ko = order.k_order();
 
         let mut t = DMatrix::<f64>::zeros(k_states, k_states);
 
-        // 1. Regular differencing block [0..d, 0..d]: upper triangular ones
-        for i in 0..d {
-            for j in i..d {
-                t[(i, j)] = 1.0;
-            }
-        }
-
-        // 2. Seasonal differencing: cyclic shift blocks
-        for layer in 0..dd {
-            let base = d + layer * s;
-            // Wrap: first row of block → last column of block
-            t[(base, base + s - 1)] = 1.0;
-            // Shift down
-            for i in 0..(s - 1) {
-                t[(base + i + 1, base + i)] = 1.0;
-            }
-        }
-
-        // 3. Cross-diff: regular diff states → last seasonal state
-        if dd > 0 {
-            let last_seasonal = d + s * dd - 1;
+        if sd > 0 {
+            // 1. Regular differencing block [0..d, 0..d]: upper triangular ones
             for i in 0..d {
-                t[(i, last_seasonal)] = 1.0;
+                for j in i..d {
+                    t[(i, j)] = 1.0;
+                }
             }
-        }
 
-        // 4. Diff → ARMA connections
-        // Regular diff → first ARMA state
-        for i in 0..d {
-            t[(i, sd)] = 1.0;
-        }
-        // First seasonal state of each layer → first ARMA state
-        for layer in 0..dd {
-            t[(d + layer * s, sd)] = 1.0;
+            // 2. Seasonal differencing: cyclic shift blocks
+            for layer in 0..dd {
+                let base = d + layer * s;
+                // Wrap: first row of block → last column of block
+                t[(base, base + s - 1)] = 1.0;
+                // Shift down
+                for i in 0..(s - 1) {
+                    t[(base + i + 1, base + i)] = 1.0;
+                }
+            }
+
+            // 3. Cross-diff: regular diff states → last seasonal state
+            if dd > 0 {
+                let last_seasonal = d + s * dd - 1;
+                for i in 0..d {
+                    t[(i, last_seasonal)] = 1.0;
+                }
+            }
+
+            // 4. Diff → ARMA connections
+            // Regular diff → first ARMA state
+            for i in 0..d {
+                t[(i, sd)] = 1.0;
+            }
+            // First seasonal state of each layer → first ARMA state
+            for layer in 0..dd {
+                t[(d + layer * s, sd)] = 1.0;
+            }
         }
 
         // 5. ARMA companion matrix [sd..sd+ko, sd..sd+ko]
@@ -250,32 +247,31 @@ impl StateSpace {
         Ok(t)
     }
 
-    /// Build the design vector Z.
+    /// Build the design vector Z (sd-aware version).
     ///
-    /// Z[i] = 1 for i in 0..d (regular diff states)
-    /// Z[d + (layer+1)*s - 1] = 1 for each seasonal layer (last state of layer)
-    /// Z[sd] = 1 (first ARMA state)
-    fn build_design(config: &SarimaxConfig) -> DVector<f64> {
+    /// When sd == 0 (simple_differencing): Z[0] = 1.0 only (first ARMA state).
+    /// When sd > 0: full Harvey Z with diff states + ARMA state.
+    fn build_design_sd(config: &SarimaxConfig, k_states: usize, sd: usize) -> DVector<f64> {
         let order = &config.order;
-        let k_states = order.k_states();
         let d = order.d;
         let dd = order.dd;
         let s = order.s;
-        let sd = order.k_states_diff();
 
         let mut z = DVector::<f64>::zeros(k_states);
 
-        // Regular diff states
-        for i in 0..d {
-            z[i] = 1.0;
+        if sd > 0 {
+            // Regular diff states
+            for i in 0..d {
+                z[i] = 1.0;
+            }
+
+            // Last state of each seasonal layer
+            for layer in 0..dd {
+                z[d + (layer + 1) * s - 1] = 1.0;
+            }
         }
 
-        // Last state of each seasonal layer
-        for layer in 0..dd {
-            z[d + (layer + 1) * s - 1] = 1.0;
-        }
-
-        // First ARMA state
+        // First ARMA state (always present; when sd=0, this is index 0)
         if sd < k_states {
             z[sd] = 1.0;
         }
@@ -283,14 +279,17 @@ impl StateSpace {
         z
     }
 
-    /// Build the selection matrix R (k_states × k_posdef).
+    /// Build the selection matrix R (sd-aware version).
     ///
-    /// R[d, 0] = 1
-    /// R[d+i, 0] = reduced_ma[i] for i >= 1
-    fn build_selection(config: &SarimaxConfig, params: &SarimaxParams) -> Result<DMatrix<f64>> {
+    /// When sd == 0 (simple_differencing): R[0,0]=1, R[i,0]=ma[i] for i>=1.
+    /// When sd > 0: R[sd,0]=1, R[sd+i,0]=ma[i] for i>=1.
+    fn build_selection_sd(
+        config: &SarimaxConfig,
+        params: &SarimaxParams,
+        k_states: usize,
+        sd: usize,
+    ) -> Result<DMatrix<f64>> {
         let order = &config.order;
-        let k_states = order.k_states();
-        let sd = order.k_states_diff();
         let ko = order.k_order();
 
         let mut r = DMatrix::<f64>::zeros(k_states, 1);
@@ -381,66 +380,8 @@ impl StateSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::SarimaxParams;
-    use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn make_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
-
-    fn make_seasonal_config(
-        p: usize,
-        d: usize,
-        q: usize,
-        pp: usize,
-        dd: usize,
-        qq: usize,
-        s: usize,
-    ) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
-
-    fn make_params(ar: &[f64], ma: &[f64]) -> SarimaxParams {
-        SarimaxParams {
-            trend_coeffs: vec![],
-            exog_coeffs: vec![],
-            ar_coeffs: ar.to_vec(),
-            ma_coeffs: ma.to_vec(),
-            sar_coeffs: vec![],
-            sma_coeffs: vec![],
-            sigma2: None,
-        }
-    }
-
-    fn make_seasonal_params(ar: &[f64], ma: &[f64], sar: &[f64], sma: &[f64]) -> SarimaxParams {
-        SarimaxParams {
-            trend_coeffs: vec![],
-            exog_coeffs: vec![],
-            ar_coeffs: ar.to_vec(),
-            ma_coeffs: ma.to_vec(),
-            sar_coeffs: sar.to_vec(),
-            sma_coeffs: sma.to_vec(),
-            sigma2: None,
-        }
-    }
+    use crate::test_helpers::{make_config, make_seasonal_config, make_params, make_seasonal_params};
+    use crate::types::{SarimaxConfig, SarimaxOrder};
 
     #[test]
     fn test_ar1_transition() {
@@ -803,6 +744,141 @@ mod tests {
         // Z[14..27] = 0
         for i in 14..27 {
             assert!(ss.design[i].abs() < 1e-10, "Z[{}] should be 0", i);
+        }
+    }
+
+    // ---- simple_differencing tests ----
+
+    fn make_sd_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
+        SarimaxConfig {
+            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
+            simple_differencing: true,
+            ..SarimaxConfig::default()
+        }
+    }
+
+    fn make_sd_seasonal_config(
+        p: usize, d: usize, q: usize,
+        pp: usize, dd: usize, qq: usize, s: usize,
+    ) -> SarimaxConfig {
+        SarimaxConfig {
+            order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
+            simple_differencing: true,
+            ..SarimaxConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_sd_arima111_k_states() {
+        // ARIMA(1,1,1) with simple_differencing: state = ARMA only
+        // k_order = max(p, q+1) = max(1, 2) = 2
+        // k_states = 2, k_states_diff = 0
+        let config = make_sd_config(1, 1, 1);
+        let params = make_params(&[-0.6441], &[0.7]);
+        let endog = vec![0.0; 10];
+        let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
+
+        assert_eq!(ss.k_states, 2, "k_states should be k_order=2 (no diff states)");
+        assert_eq!(ss.k_states_diff, 0, "k_states_diff should be 0 (pre-differenced)");
+        assert_eq!(ss.transition.nrows(), 2);
+        assert_eq!(ss.transition.ncols(), 2);
+    }
+
+    #[test]
+    fn test_sd_arima111_matrices() {
+        // ARIMA(1,1,1) with simple_differencing: T should be pure ARMA companion
+        // phi=-0.6441, theta=0.7
+        // T = [[phi, 1], [0, 0]]
+        // Z = [1, 0]
+        // R = [[1], [theta]]
+        let config = make_sd_config(1, 1, 1);
+        let params = make_params(&[-0.6441], &[0.7]);
+        let endog = vec![0.0; 10];
+        let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
+
+        // T[0,0] = phi = -0.6441
+        assert!((ss.transition[(0, 0)] - (-0.6441)).abs() < 1e-10, "T[0,0] = phi");
+        // T[0,1] = 1 (superdiagonal)
+        assert!((ss.transition[(0, 1)] - 1.0).abs() < 1e-10, "T[0,1] = 1");
+        // T[1,0] = T[1,1] = 0
+        assert!(ss.transition[(1, 0)].abs() < 1e-10, "T[1,0] = 0");
+        assert!(ss.transition[(1, 1)].abs() < 1e-10, "T[1,1] = 0");
+
+        // Z = [1, 0]
+        assert!((ss.design[0] - 1.0).abs() < 1e-10, "Z[0] = 1");
+        assert!(ss.design[1].abs() < 1e-10, "Z[1] = 0");
+
+        // R = [[1], [theta]]
+        assert!((ss.selection[(0, 0)] - 1.0).abs() < 1e-10, "R[0,0] = 1");
+        assert!((ss.selection[(1, 0)] - 0.7).abs() < 1e-10, "R[1,0] = theta");
+    }
+
+    #[test]
+    fn test_sd_sarima_111_111_12_k_states() {
+        // SARIMA(1,1,1)(1,1,1,12) with simple_differencing:
+        // k_order = max(1+12, 1+12+1) = max(13, 14) = 14
+        // Without SD: k_states = 14 + 1 + 12 = 27
+        // With SD: k_states = 14, k_states_diff = 0
+        let config = make_sd_seasonal_config(1, 1, 1, 1, 1, 1, 12);
+        let params = make_seasonal_params(&[0.9903], &[0.0660], &[0.0007], &[-1.0664]);
+        let endog = vec![0.0; 300];
+        let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
+
+        assert_eq!(ss.k_states, 14, "k_states = k_order = 14 (no diff states)");
+        assert_eq!(ss.k_states_diff, 0, "k_states_diff = 0 (pre-differenced)");
+        assert_eq!(ss.transition.nrows(), 14);
+        assert_eq!(ss.design.len(), 14);
+        assert_eq!(ss.selection.nrows(), 14);
+    }
+
+    #[test]
+    fn test_sd_arima_d1_t_is_arma() {
+        // ARIMA(1,1,0) with simple_differencing: T = [[phi]] (scalar)
+        // k_order = max(1, 0+1) = 1, k_states = 1
+        let config = make_sd_config(1, 1, 0);
+        let params = make_params(&[0.5], &[]);
+        let endog = vec![0.0; 10];
+        let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
+
+        assert_eq!(ss.k_states, 1);
+        assert_eq!(ss.k_states_diff, 0);
+        // T = [[0.5]]
+        assert!((ss.transition[(0, 0)] - 0.5).abs() < 1e-10, "T[0,0] = phi");
+        // Z = [1]
+        assert!((ss.design[0] - 1.0).abs() < 1e-10, "Z[0] = 1");
+        // R = [[1]]
+        assert!((ss.selection[(0, 0)] - 1.0).abs() < 1e-10, "R[0,0] = 1");
+    }
+
+    #[test]
+    fn test_sd_vs_normal_same_arma_block() {
+        // For ARIMA(1,1,1), the ARMA block in normal SS (rows/cols [1..3, 1..3])
+        // should match the full T in SD mode (rows/cols [0..2, 0..2]).
+        let phi = -0.6441;
+        let theta = 0.7;
+
+        let config_normal = make_config(1, 1, 1);
+        let config_sd = make_sd_config(1, 1, 1);
+        let params = make_params(&[phi], &[theta]);
+        let endog = vec![0.0; 10];
+
+        let ss_normal = StateSpace::new(&config_normal, &params, &endog, None).unwrap();
+        let ss_sd = StateSpace::new(&config_sd, &params, &endog, None).unwrap();
+
+        // Normal: k_states=3, k_states_diff=1
+        // SD: k_states=2, k_states_diff=0
+        // Normal ARMA block: T[1..3, 1..3]
+        // SD full T: T[0..2, 0..2]
+        for i in 0..2 {
+            for j in 0..2 {
+                let normal_val = ss_normal.transition[(1 + i, 1 + j)];
+                let sd_val = ss_sd.transition[(i, j)];
+                assert!(
+                    (normal_val - sd_val).abs() < 1e-10,
+                    "ARMA block mismatch at ({},{}) normal={} sd={}",
+                    i, j, normal_val, sd_val
+                );
+            }
         }
     }
 

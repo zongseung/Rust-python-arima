@@ -10,21 +10,17 @@ import numpy as np
 import pytest
 
 import sarimax_rs
+from conftest import generate_ar1, generate_random_walk
 
 
 # --- Data generators (fixed seed) ---
 
 def ar1_data(n=500, seed=42):
-    np.random.seed(seed)
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = 0.7 * y[t - 1] + np.random.randn()
-    return y
+    return generate_ar1(n=n, seed=seed)
 
 
 def arima111_data(n=500, seed=42):
-    np.random.seed(seed)
-    return np.cumsum(np.random.randn(n))
+    return generate_random_walk(n=n, seed=seed)
 
 
 # --- Accuracy regression tests ---

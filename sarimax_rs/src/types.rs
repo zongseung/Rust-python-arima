@@ -90,6 +90,17 @@ pub struct SarimaxConfig {
     pub measurement_error: bool,
 }
 
+impl SarimaxConfig {
+    /// Effective diffuse-state offset.
+    ///
+    /// Returns 0 when `simple_differencing=true` (diff states already removed
+    /// from the state space), otherwise `k_states_diff()`.
+    #[inline]
+    pub fn effective_sd(&self) -> usize {
+        if self.simple_differencing { 0 } else { self.order.k_states_diff() }
+    }
+}
+
 impl Default for SarimaxConfig {
     fn default() -> Self {
         Self {

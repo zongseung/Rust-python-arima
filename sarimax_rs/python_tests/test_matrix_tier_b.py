@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import sarimax_rs
+from conftest import converged_models, expected_k_params
 
 # ---------------------------------------------------------------------------
 # Fixture loading
@@ -37,18 +38,6 @@ def tier_b_models():
         return json.load(f)
 
 
-def _converged_models(models):
-    """Filter to only converged models."""
-    return [m for m in models if m.get("converged", False)]
-
-
-def _expected_k_params(order, seasonal, n_exog=0):
-    """Expected number of estimated params (concentrated scale)."""
-    p, d, q = order
-    P, D, Q, s = seasonal
-    return p + q + P + Q + n_exog
-
-
 # ---------------------------------------------------------------------------
 # Tests (marked nightly)
 # ---------------------------------------------------------------------------
@@ -60,7 +49,7 @@ class TestTierBLoglikeComputation:
 
     def test_loglike_at_oracle_params(self, tier_b_models):
         failures = []
-        for m in _converged_models(tier_b_models):
+        for m in converged_models(tier_b_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -80,7 +69,7 @@ class TestTierBLoglikeComputation:
             except Exception as e:
                 failures.append(f"{m['model_id']}: ERROR {e}")
 
-        n_total = len(_converged_models(tier_b_models))
+        n_total = len(converged_models(tier_b_models))
         n_fail = len(failures)
         pass_rate = (n_total - n_fail) / n_total * 100 if n_total > 0 else 0
 
@@ -94,11 +83,11 @@ class TestTierBFitConvergence:
     """Verify convergence rate for Tier B models."""
 
     def test_convergence_rate(self, tier_b_models):
-        n_total = len(_converged_models(tier_b_models))
+        n_total = len(converged_models(tier_b_models))
         n_converged = 0
         failures = []
 
-        for m in _converged_models(tier_b_models):
+        for m in converged_models(tier_b_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -128,11 +117,11 @@ class TestTierBParamLength:
 
     def test_param_lengths(self, tier_b_models):
         failures = []
-        for m in _converged_models(tier_b_models):
+        for m in converged_models(tier_b_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             n_exog = m.get("n_exog", 0)
-            expected = _expected_k_params(order, seasonal, n_exog)
+            expected = expected_k_params(order, seasonal, n_exog)
 
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
@@ -158,7 +147,7 @@ class TestTierBForecastSanity:
 
     def test_all_forecasts_finite(self, tier_b_models):
         failures = []
-        for m in _converged_models(tier_b_models):
+        for m in converged_models(tier_b_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -186,7 +175,7 @@ class TestTierBForecastSanity:
             except Exception as e:
                 failures.append(f"{m['model_id']}: ERROR {e}")
 
-        n_total = len(_converged_models(tier_b_models))
+        n_total = len(converged_models(tier_b_models))
         n_fail = len(failures)
         pass_rate = (n_total - n_fail) / n_total * 100 if n_total > 0 else 0
 
@@ -201,7 +190,7 @@ class TestTierBResiduals:
 
     def test_all_residuals_finite(self, tier_b_models):
         failures = []
-        for m in _converged_models(tier_b_models):
+        for m in converged_models(tier_b_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -230,7 +219,7 @@ class TestTierBResiduals:
             except Exception as e:
                 failures.append(f"{m['model_id']}: ERROR {e}")
 
-        n_total = len(_converged_models(tier_b_models))
+        n_total = len(converged_models(tier_b_models))
         n_fail = len(failures)
         pass_rate = (n_total - n_fail) / n_total * 100 if n_total > 0 else 0
 

@@ -56,7 +56,7 @@ impl KalmanInit {
     /// Falls back to approximate diffuse if Lyapunov solve fails.
     pub fn mixed(ss: &StateSpace, config: &SarimaxConfig, kappa: f64) -> Self {
         let k_states = ss.k_states;
-        let sd = config.order.k_states_diff();
+        let sd = config.effective_sd();
         let ko = config.order.k_order();
 
         if ko == 0 || sd >= k_states {
@@ -127,7 +127,7 @@ impl KalmanInit {
     /// steady-state cache immediately at t=0, skipping the transient phase.
     pub fn dare(ss: &StateSpace, config: &SarimaxConfig, kappa: f64) -> Self {
         let k_states = ss.k_states;
-        let sd = config.order.k_states_diff();
+        let sd = config.effective_sd();
         let ko = config.order.k_order();
 
         if ko == 0 || sd >= k_states {
@@ -209,7 +209,7 @@ impl KalmanInit {
     /// - `enforce_stationarity=false`: approximate diffuse for all states
     pub fn from_config(ss: &StateSpace, config: &SarimaxConfig, kappa: f64) -> Self {
         if config.enforce_stationarity {
-            let sd = config.order.k_states_diff();
+            let sd = config.effective_sd();
             if sd == 0 {
                 // Pure stationary: DARE gives tighter P_0 + steady-state shortcut
                 Self::dare(ss, config, kappa)
@@ -225,6 +225,11 @@ impl KalmanInit {
     /// Default kappa value matching statsmodels.
     pub fn default_kappa() -> f64 {
         1e6
+    }
+
+    /// Convenience constructor using the default kappa value (1e6).
+    pub fn from_config_default(ss: &StateSpace, config: &SarimaxConfig) -> Self {
+        Self::from_config(ss, config, Self::default_kappa())
     }
 }
 

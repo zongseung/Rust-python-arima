@@ -1,4 +1,7 @@
+use nalgebra::DMatrix;
+
 use crate::error::{Result, SarimaxError};
+use crate::optimizer::transform_params;
 use crate::types::SarimaxConfig;
 
 /// Unpacked SARIMAX parameters.
@@ -196,30 +199,77 @@ pub fn unconstrain_variance(s: f64) -> Result<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// Numerical Jacobian of transform_params
+// ---------------------------------------------------------------------------
+
+/// Compute the full Jacobian matrix of `transform_params` via forward differences.
+///
+/// `J[j, i] = d(constrained_j) / d(unconstrained_i)`, eps = 1e-7.
+pub(crate) fn transform_jacobian(
+    unconstrained: &[f64],
+    config: &SarimaxConfig,
+) -> Result<DMatrix<f64>> {
+    let k = unconstrained.len();
+    let eps = 1e-7;
+    let c_base = transform_params(unconstrained, config)?;
+    let mut jac = DMatrix::zeros(k, k);
+    let mut u_pert = unconstrained.to_vec();
+
+    for i in 0..k {
+        let orig = u_pert[i];
+        u_pert[i] = orig + eps;
+        let c_pert = transform_params(&u_pert, config)?;
+        u_pert[i] = orig;
+        for j in 0..k {
+            jac[(j, i)] = (c_pert[j] - c_base[j]) / eps;
+        }
+    }
+    Ok(jac)
+}
+
+/// Compute `J^T * v` without materializing J (fused Jacobian-transpose-vector product).
+///
+/// Equivalent to `transform_jacobian(...).transpose() * v` but avoids allocating the
+/// full k-by-k matrix.  Uses the same forward-difference scheme (eps = 1e-7).
+pub(crate) fn transform_jacobian_t_vec(
+    unconstrained: &[f64],
+    config: &SarimaxConfig,
+    v: &[f64],
+) -> Result<Vec<f64>> {
+    let n = unconstrained.len();
+    let eps = 1e-7;
+    let c_base = transform_params(unconstrained, config)?;
+    let mut out = vec![0.0; n];
+
+    let mut u_pert = unconstrained.to_vec();
+
+    for i in 0..n {
+        let orig = u_pert[i];
+        u_pert[i] = orig + eps;
+        let c_pert = transform_params(&u_pert, config)?;
+        u_pert[i] = orig;
+
+        // out[i] = Σ_j v[j] * ∂c_j/∂u_i
+        for j in 0..n {
+            out[i] += v[j] * (c_pert[j] - c_base[j]) / eps;
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::make_seasonal_config;
     use crate::types::{SarimaxOrder, Trend};
-
-    fn make_config(p: usize, q: usize, pp: usize, qq: usize, concentrate: bool) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, 0, q, pp, 0, qq, 12),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: concentrate,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
 
     #[test]
     fn test_from_flat_to_flat_roundtrip() {
-        let config = make_config(2, 1, 1, 1, true);
+        let config = make_seasonal_config(2, 0, 1, 1, 0, 1, 12);
         // flat: ar(2) + ma(1) + sar(1) + sma(1) = 5 params
         let flat = vec![0.5, -0.3, 0.2, 0.4, -0.1];
         let params = SarimaxParams::from_flat(&flat, &config).unwrap();
@@ -233,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_from_flat_with_sigma2() {
-        let config = make_config(1, 0, 0, 0, false);
+        let config = SarimaxConfig { concentrate_scale: false, ..make_seasonal_config(1, 0, 0, 0, 0, 0, 12) };
         // flat: ar(1) + sigma2 = 2 params
         let flat = vec![0.7, 1.5];
         let params = SarimaxParams::from_flat(&flat, &config).unwrap();
@@ -263,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_from_flat_length_mismatch() {
-        let config = make_config(1, 0, 0, 0, true);
+        let config = make_seasonal_config(1, 0, 0, 0, 0, 0, 12);
         let flat = vec![0.5, 0.3]; // too many
         assert!(SarimaxParams::from_flat(&flat, &config).is_err());
     }

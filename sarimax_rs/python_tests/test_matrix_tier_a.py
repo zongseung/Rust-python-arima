@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 import sarimax_rs
+from conftest import converged_models, expected_k_params
 
 # ---------------------------------------------------------------------------
 # Fixture loading
@@ -42,18 +43,6 @@ def tier_a_models():
         return json.load(f)
 
 
-def _converged_models(models):
-    """Filter to only converged models."""
-    return [m for m in models if m.get("converged", False)]
-
-
-def _expected_k_params(order, seasonal, n_exog=0):
-    """Expected number of estimated params (concentrated scale)."""
-    p, d, q = order
-    P, D, Q, s = seasonal
-    return p + q + P + Q + n_exog
-
-
 # ---------------------------------------------------------------------------
 # A) Computation verification — loglike at oracle params
 # ---------------------------------------------------------------------------
@@ -68,7 +57,7 @@ class TestLoglikeComputation:
     def test_all_loglike_at_oracle_params(self, tier_a_models):
         """Rust loglike(oracle_params) should match statsmodels loglike."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -103,7 +92,7 @@ class TestFitConvergence:
     def test_all_converge(self, tier_a_models):
         """Every model with a converged oracle should converge in Rust."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -141,7 +130,7 @@ class TestFitLoglikeQuality:
     def test_fit_loglike_not_worse(self, tier_a_models):
         """Rust fit loglike should not be significantly worse than reference."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -174,11 +163,11 @@ class TestParamLength:
     def test_all_models(self, tier_a_models):
         """Every converged model should have correct param count."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             n_exog = m.get("n_exog", 0)
-            expected = _expected_k_params(order, seasonal, n_exog)
+            expected = expected_k_params(order, seasonal, n_exog)
 
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
@@ -205,7 +194,7 @@ class TestForecast:
     def test_all_forecast_sanity(self, tier_a_models):
         """Every converged model forecast should be finite with length 10."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -258,7 +247,7 @@ class TestResiduals:
     def test_all_residuals(self, tier_a_models):
         """Every converged model should produce valid residuals."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])
@@ -301,7 +290,7 @@ class TestAicBicFinite:
     def test_all_aic_bic_finite(self, tier_a_models):
         """Every converged model AIC/BIC should be finite."""
         failures = []
-        for m in _converged_models(tier_a_models):
+        for m in converged_models(tier_a_models):
             order = tuple(m["order"])
             seasonal = tuple(m["seasonal"])
             y = np.array(m["data"])

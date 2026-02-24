@@ -12,19 +12,12 @@ import time
 import numpy as np
 import sarimax_rs
 
-
-def generate_ar1_series(n=200, phi=0.7, seed=42):
-    """Generate an AR(1) time series."""
-    np.random.seed(seed)
-    y = np.zeros(n)
-    for t in range(1, n):
-        y[t] = phi * y[t - 1] + np.random.randn()
-    return y
+from conftest import generate_ar1
 
 
 def test_batch_fit_results_match_single():
     """batch_fit results should match sequential sarimax_fit for each series."""
-    series = [generate_ar1_series(seed=i) for i in range(5)]
+    series = [generate_ar1(seed=i) for i in range(5)]
 
     # Sequential
     seq_results = []
@@ -50,7 +43,7 @@ def test_batch_fit_results_match_single():
 
 def test_batch_fit_all_converge():
     """100 AR(1) series should all converge via batch_fit."""
-    series = [generate_ar1_series(seed=i) for i in range(100)]
+    series = [generate_ar1(seed=i) for i in range(100)]
 
     results = sarimax_rs.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
@@ -65,7 +58,7 @@ def test_batch_fit_all_converge():
 
 def test_batch_forecast_matches_single():
     """batch_forecast should match sequential sarimax_forecast."""
-    series = [generate_ar1_series(seed=i) for i in range(3)]
+    series = [generate_ar1(seed=i) for i in range(3)]
 
     # Fit each series first
     fit_results = sarimax_rs.sarimax_batch_fit(
@@ -94,7 +87,7 @@ def test_batch_forecast_matches_single():
 
 def test_batch_fit_returns_list_of_dicts():
     """Verify batch_fit returns list of dicts with expected keys."""
-    series = [generate_ar1_series(seed=42)]
+    series = [generate_ar1(seed=42)]
     results = sarimax_rs.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
     )
@@ -111,7 +104,7 @@ def test_batch_fit_returns_list_of_dicts():
 
 def test_batch_fit_speedup():
     """batch_fit(100) should be faster than 100 sequential fits."""
-    series = [generate_ar1_series(seed=i) for i in range(50)]
+    series = [generate_ar1(seed=i) for i in range(50)]
 
     # Sequential timing
     t0 = time.perf_counter()

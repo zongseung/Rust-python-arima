@@ -7,19 +7,20 @@ pub mod initialization;
 pub mod kalman;
 pub mod optimizer;
 pub mod params;
+pub mod pipeline;
 pub mod polynomial;
 pub mod score;
 pub mod start_params;
 pub mod state_space;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod types;
 
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::initialization::KalmanInit;
 use crate::params::SarimaxParams;
-use crate::state_space::StateSpace;
 use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
 
 const MAX_K_STATES: usize = 1024;
@@ -323,6 +324,8 @@ fn build_config(
     enforce_stationarity: bool,
     enforce_invertibility: bool,
     concentrate_scale: bool,
+    trend: Trend,
+    simple_differencing: bool,
 ) -> SarimaxConfig {
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
@@ -330,13 +333,85 @@ fn build_config(
     SarimaxConfig {
         order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
         n_exog,
-        trend: Trend::None,
+        trend,
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-        simple_differencing: false,
+        simple_differencing,
         measurement_error: false,
     }
+}
+
+/// Parse optional trend string from Python into Trend enum.
+fn parse_trend(trend: Option<&str>) -> Trend {
+    Trend::from_str(trend.unwrap_or("n"))
+}
+
+/// Common validation and config-building for single-series PyO3 functions.
+///
+/// Validates endog (finite), parses and validates exog, checks order bounds,
+/// and builds `SarimaxConfig`. Returns `(config, exog_cols)`.
+fn prepare_single_request(
+    endog: &[f64],
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    exog: Option<&PyReadonlyArray2<f64>>,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+    concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
+) -> PyResult<(SarimaxConfig, Option<Vec<Vec<f64>>>)> {
+    validate_endog_finite(endog)?;
+    let (exog_cols, n_exog) = parse_exog(exog);
+    validate_exog(&exog_cols)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(
+        order, seasonal, n_exog,
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, parse_trend(trend), simple_differencing,
+    );
+    Ok((config, exog_cols))
+}
+
+/// Convert a FitResult to a PyDict with standard keys.
+fn fit_result_to_pydict<'py>(py: Python<'py>, result: &crate::types::FitResult) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("params", &result.params)?;
+    dict.set_item("loglike", result.loglike)?;
+    dict.set_item("scale", result.scale)?;
+    dict.set_item("aic", result.aic)?;
+    dict.set_item("bic", result.bic)?;
+    dict.set_item("n_obs", result.n_obs)?;
+    dict.set_item("n_params", result.n_params)?;
+    dict.set_item("n_iter", result.n_iter)?;
+    dict.set_item("converged", result.converged)?;
+    dict.set_item("method", &result.method)?;
+    Ok(dict)
+}
+
+/// Validate that alpha is in the open interval (0, 1).
+fn validate_alpha(alpha: f64) -> PyResult<()> {
+    if alpha <= 0.0 || alpha >= 1.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "alpha must be in (0, 1), got {}",
+            alpha
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that forecast steps do not exceed the maximum.
+fn validate_steps(steps: usize) -> PyResult<()> {
+    if steps > 10_000 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "steps must be <= 10000, got {}",
+            steps
+        )));
+    }
+    Ok(())
 }
 
 /// Map internal SarimaxError to appropriate Python exception type.
@@ -363,7 +438,8 @@ fn version() -> &'static str {
 /// Compute the SARIMAX concentrated (or full) log-likelihood.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true,
-                    enforce_stationarity=true, enforce_invertibility=true))]
+                    enforce_stationarity=true, enforce_invertibility=true,
+                    trend=None, simple_differencing=false))]
 fn sarimax_loglike<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -374,23 +450,16 @@ fn sarimax_loglike<'py>(
     concentrate_scale: bool,
     enforce_stationarity: bool,
     enforce_invertibility: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<f64> {
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order,
-        seasonal,
-        n_exog,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-    );
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, trend, simple_differencing,
+    )?;
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -398,10 +467,8 @@ fn sarimax_loglike<'py>(
 
     py.detach(move || {
         let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
-        let ss = StateSpace::new(&config, &sarimax_params, &endog, exog_cols.as_deref())?;
-        let init = KalmanInit::from_config(&ss, &config, KalmanInit::default_kappa());
-        let output = kalman::kalman_loglike(&endog, &ss, &init, concentrate_scale)?;
-        Ok(output.loglike)
+        pipeline::kalman_eval(&endog, &sarimax_params, &config, exog_cols.as_deref())
+            .map(|o| o.loglike)
     })
     .map_err(to_pyerr)
 }
@@ -412,7 +479,8 @@ fn sarimax_loglike<'py>(
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, start_params=None, exog=None,
                     concentrate_scale=true, enforce_stationarity=true,
-                    enforce_invertibility=true, method=None, maxiter=None))]
+                    enforce_invertibility=true, method=None, maxiter=None,
+                    trend=None, simple_differencing=false))]
 fn sarimax_fit<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -425,22 +493,15 @@ fn sarimax_fit<'py>(
     enforce_invertibility: bool,
     method: Option<&str>,
     maxiter: Option<u64>,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order,
-        seasonal,
-        n_exog,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-    );
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, trend, simple_differencing,
+    )?;
 
     let sp_owned: Option<Vec<f64>> = start_params
         .as_ref()
@@ -464,17 +525,7 @@ fn sarimax_fit<'py>(
         })
         .map_err(to_pyerr)?;
 
-    let dict = PyDict::new(py);
-    dict.set_item("params", result.params)?;
-    dict.set_item("loglike", result.loglike)?;
-    dict.set_item("scale", result.scale)?;
-    dict.set_item("aic", result.aic)?;
-    dict.set_item("bic", result.bic)?;
-    dict.set_item("n_obs", result.n_obs)?;
-    dict.set_item("n_params", result.n_params)?;
-    dict.set_item("n_iter", result.n_iter)?;
-    dict.set_item("converged", result.converged)?;
-    dict.set_item("method", result.method)?;
+    let dict = fit_result_to_pydict(py, &result)?;
 
     Ok(dict.into())
 }
@@ -484,7 +535,8 @@ fn sarimax_fit<'py>(
 /// Returns a dict with: mean, variance, ci_lower, ci_upper.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, steps=10, alpha=0.05,
-                    exog=None, future_exog=None, concentrate_scale=true))]
+                    exog=None, future_exog=None, concentrate_scale=true,
+                    trend=None, simple_differencing=false))]
 fn sarimax_forecast<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -496,30 +548,25 @@ fn sarimax_forecast<'py>(
     exog: Option<PyReadonlyArray2<'py, f64>>,
     future_exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyDict>> {
-    if alpha <= 0.0 || alpha >= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "alpha must be in (0, 1), got {}",
-            alpha
-        )));
-    }
-    if steps > 10_000 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "steps must be <= 10000, got {}",
-            steps
-        )));
-    }
+    validate_alpha(alpha)?;
+    validate_steps(steps)?;
 
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        false, false, concentrate_scale, trend, simple_differencing,
+    )?;
+
     let future_exog_cols = future_exog.as_ref().map(|e| numpy2d_to_cols(e));
-    validate_exog(&exog_cols)?;
     if let Some(ref cols) = future_exog_cols {
         validate_finite_cols(cols, "future_exog")?;
     }
 
+    let n_exog = config.n_exog;
     if let Some(ref fec) = future_exog_cols {
         if fec.len() != n_exog {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -550,11 +597,6 @@ fn sarimax_forecast<'py>(
             "model has exogenous variables: future_exog is required for forecasting",
         ));
     }
-
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -588,7 +630,7 @@ fn sarimax_forecast<'py>(
 ///
 /// Returns a dict with: residuals, standardized_residuals.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true, trend=None, simple_differencing=false))]
 fn sarimax_residuals<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -597,16 +639,15 @@ fn sarimax_residuals<'py>(
     params: PyReadonlyArray1<'py, f64>,
     exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        false, false, concentrate_scale, trend, simple_differencing,
+    )?;
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -633,7 +674,8 @@ fn sarimax_residuals<'py>(
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal, params,
                     exog_list=None, concentrate_scale=true,
-                    enforce_stationarity=false, enforce_invertibility=false))]
+                    enforce_stationarity=false, enforce_invertibility=false,
+                    trend=None, simple_differencing=false))]
 fn sarimax_batch_loglike<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -644,6 +686,8 @@ fn sarimax_batch_loglike<'py>(
     concentrate_scale: bool,
     enforce_stationarity: bool,
     enforce_invertibility: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
     let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
@@ -658,6 +702,8 @@ fn sarimax_batch_loglike<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
+        parse_trend(trend),
+        simple_differencing,
     );
 
     let params_flat = params.as_slice()?.to_vec();
@@ -693,7 +739,7 @@ fn sarimax_batch_loglike<'py>(
 #[pyo3(signature = (series_list, order, seasonal,
                     enforce_stationarity=true, enforce_invertibility=true,
                     concentrate_scale=true, method=None, maxiter=None,
-                    exog_list=None))]
+                    exog_list=None, trend=None, simple_differencing=false))]
 fn sarimax_batch_fit<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -705,6 +751,8 @@ fn sarimax_batch_fit<'py>(
     method: Option<&str>,
     maxiter: Option<u64>,
     exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
     let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
@@ -719,6 +767,8 @@ fn sarimax_batch_fit<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
+        parse_trend(trend),
+        simple_differencing,
     );
 
     // Release GIL for Rayon parallel computation
@@ -735,26 +785,112 @@ fn sarimax_batch_fit<'py>(
 
     let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
     for r in results {
-        let dict = PyDict::new(py);
         match r {
             Ok(result) => {
-                dict.set_item("params", result.params)?;
-                dict.set_item("loglike", result.loglike)?;
-                dict.set_item("scale", result.scale)?;
-                dict.set_item("aic", result.aic)?;
-                dict.set_item("bic", result.bic)?;
-                dict.set_item("n_obs", result.n_obs)?;
-                dict.set_item("n_params", result.n_params)?;
-                dict.set_item("n_iter", result.n_iter)?;
-                dict.set_item("converged", result.converged)?;
-                dict.set_item("method", result.method)?;
+                let dict = fit_result_to_pydict(py, &result)?;
+                py_results.push(dict.into());
             }
             Err(e) => {
+                let dict = PyDict::new(py);
                 dict.set_item("error", e.to_string())?;
                 dict.set_item("converged", false)?;
+                py_results.push(dict.into());
             }
         }
-        py_results.push(dict.into());
+    }
+
+    let list = PyList::new(py, &py_results)?;
+    Ok(list.into())
+}
+
+/// Fit a single time series with multiple (order, seasonal_order) combinations
+/// in parallel using Rayon.
+///
+/// Returns a list of dicts (one per combination), same structure as sarimax_fit.
+/// Failed combinations have an "error" key instead of fit results.
+#[pyfunction]
+#[pyo3(signature = (y, order_list, seasonal_list,
+                    enforce_stationarity=true, enforce_invertibility=true,
+                    concentrate_scale=true, method=None, maxiter=None,
+                    exog=None, trend=None, simple_differencing=false))]
+fn sarimax_grid_search<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<'py, f64>,
+    order_list: Vec<(usize, usize, usize)>,
+    seasonal_list: Vec<(usize, usize, usize, usize)>,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+    concentrate_scale: bool,
+    method: Option<&str>,
+    maxiter: Option<u64>,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
+    trend: Option<&str>,
+    simple_differencing: bool,
+) -> PyResult<Py<PyList>> {
+    if order_list.len() != seasonal_list.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "order_list length ({}) must match seasonal_list length ({})",
+            order_list.len(),
+            seasonal_list.len()
+        )));
+    }
+
+    let endog = y.as_slice()?;
+    validate_endog_finite(endog)?;
+    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
+    validate_exog(&exog_cols)?;
+
+    let trend_val = parse_trend(trend);
+
+    // Validate each combination and build configs
+    let mut configs: Vec<SarimaxConfig> = Vec::with_capacity(order_list.len());
+    for (order, seasonal) in order_list.iter().zip(seasonal_list.iter()) {
+        let (p, d, q) = *order;
+        let (pp, dd, qq, s) = *seasonal;
+        validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+        configs.push(build_config(
+            *order,
+            *seasonal,
+            n_exog,
+            enforce_stationarity,
+            enforce_invertibility,
+            concentrate_scale,
+            trend_val,
+            simple_differencing,
+        ));
+    }
+
+    // Release GIL for Rayon parallel computation
+    let endog_owned = endog.to_vec();
+    let method_owned = method.map(|s| s.to_string());
+    let results = py.detach(|| {
+        batch::grid_search_fit(
+            &endog_owned,
+            &configs,
+            method_owned.as_deref(),
+            maxiter,
+            exog_cols.as_deref(),
+        )
+    });
+
+    let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
+    for (idx, r) in results.into_iter().enumerate() {
+        match r {
+            Ok(result) => {
+                let dict = fit_result_to_pydict(py, &result)?;
+                dict.set_item("order", order_list[idx])?;
+                dict.set_item("seasonal_order", seasonal_list[idx])?;
+                py_results.push(dict.into());
+            }
+            Err(e) => {
+                let dict = PyDict::new(py);
+                dict.set_item("order", order_list[idx])?;
+                dict.set_item("seasonal_order", seasonal_list[idx])?;
+                dict.set_item("error", e.to_string())?;
+                dict.set_item("converged", false)?;
+                py_results.push(dict.into());
+            }
+        }
     }
 
     let list = PyList::new(py, &py_results)?;
@@ -768,7 +904,8 @@ fn sarimax_batch_fit<'py>(
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal, params_list,
                     steps=10, alpha=0.05, concentrate_scale=true,
-                    exog_list=None, exog_forecast_list=None))]
+                    exog_list=None, exog_forecast_list=None, trend=None,
+                    simple_differencing=false))]
 fn sarimax_batch_forecast<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -780,6 +917,8 @@ fn sarimax_batch_forecast<'py>(
     concentrate_scale: bool,
     exog_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
     exog_forecast_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
     if series_list.len() != params_list.len() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -788,20 +927,8 @@ fn sarimax_batch_forecast<'py>(
             params_list.len()
         )));
     }
-    if steps > 10_000 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "steps must be <= 10000, got {}",
-            steps
-        )));
-    }
-
-    // V-4: alpha validation (same as sarimax_forecast)
-    if alpha <= 0.0 || alpha >= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "alpha must be between 0 and 1, got {}",
-            alpha
-        )));
-    }
+    validate_steps(steps)?;
+    validate_alpha(alpha)?;
 
     let series = validate_batch_finite(&series_list)?;
     let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
@@ -815,7 +942,7 @@ fn sarimax_batch_forecast<'py>(
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
     validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale, parse_trend(trend), simple_differencing);
 
     let params_vecs: Vec<Vec<f64>> = params_list
         .iter()
@@ -863,7 +990,8 @@ fn sarimax_batch_forecast<'py>(
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, method="hessian", alpha=0.05,
                     exog=None, concentrate_scale=true,
-                    enforce_stationarity=true, enforce_invertibility=true))]
+                    enforce_stationarity=true, enforce_invertibility=true,
+                    trend=None, simple_differencing=false))]
 fn sarimax_inference<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -876,30 +1004,18 @@ fn sarimax_inference<'py>(
     concentrate_scale: bool,
     enforce_stationarity: bool,
     enforce_invertibility: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyDict>> {
-    if alpha <= 0.0 || alpha >= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "alpha must be in (0, 1), got {}",
-            alpha
-        )));
-    }
+    validate_alpha(alpha)?;
 
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order,
-        seasonal,
-        n_exog,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-    );
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, trend, simple_differencing,
+    )?;
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -939,7 +1055,7 @@ fn sarimax_inference<'py>(
 /// Returns a dict with: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
 /// jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true, trend=None, simple_differencing=false))]
 fn sarimax_diagnostics<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -948,16 +1064,15 @@ fn sarimax_diagnostics<'py>(
     params: PyReadonlyArray1<'py, f64>,
     exog: Option<PyReadonlyArray2<'py, f64>>,
     concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
     let params_flat = params.as_slice()?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale);
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        false, false, concentrate_scale, trend, simple_differencing,
+    )?;
 
     // Own all data before releasing GIL
     let endog = endog.to_vec();
@@ -999,6 +1114,7 @@ fn sarimax_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sarimax_residuals, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_fit, m)?)?;
+    m.add_function(wrap_pyfunction!(sarimax_grid_search, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_forecast, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_inference, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_diagnostics, m)?)?;

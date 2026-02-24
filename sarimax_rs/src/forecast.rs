@@ -1,3 +1,4 @@
+use crate::css::apply_differencing;
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
 use crate::kalman::{kalman_filter, KalmanFilterOutput};
@@ -32,7 +33,7 @@ pub struct ResidualOutput {
 /// Uses state-space forward propagation:
 ///   y_hat_h = Z' * a_h
 ///   F_h     = Z' * P_h * Z * scale
-///   a_{h+1} = T * a_h
+///   a_{h+1} = T * a_h + c_{n+h}
 ///   P_{h+1} = T * P_h * T' + R * Q * R'
 pub fn forecast(
     ss: &StateSpace,
@@ -41,6 +42,9 @@ pub fn forecast(
     alpha: f64,
     future_exog: Option<&[Vec<f64>]>,
     exog_coeffs: &[f64],
+    config: &SarimaxConfig,
+    params: &SarimaxParams,
+    n_obs: usize,
 ) -> Result<ForecastResult> {
     // Validate: exog model requires future_exog for forecasting
     if !exog_coeffs.is_empty() && future_exog.is_none() && steps > 0 {
@@ -128,8 +132,21 @@ pub fn forecast(
         ci_lower.push(y_hat + d_h - z_alpha * se);
         ci_upper.push(y_hat + d_h + z_alpha * se);
 
-        // Propagate state: a_{h+1} = T * a_h
+        // Propagate state: a_{h+1} = T * a_h + c_{n+h}
         a = t_mat * &a;
+        // Add trend state intercept for this forecast step
+        if config.trend != crate::types::Trend::None && !params.trend_coeffs.is_empty() {
+            let t_abs = n_obs + h; // absolute time index
+            let val = match config.trend {
+                crate::types::Trend::Constant => params.trend_coeffs[0],
+                crate::types::Trend::Linear => params.trend_coeffs[0] * (t_abs as f64),
+                crate::types::Trend::Both => {
+                    params.trend_coeffs[0] + params.trend_coeffs[1] * (t_abs as f64)
+                }
+                crate::types::Trend::None => 0.0,
+            };
+            a[ss.k_states_diff] += val;
+        }
         // Propagate covariance: P_{h+1} = T * P_h * T' + R * Q * R'
         p = t_mat * &p * t_mat.transpose() + &rqr;
     }
@@ -165,6 +182,12 @@ pub fn compute_residuals(filter_output: &KalmanFilterOutput) -> ResidualOutput {
 }
 
 /// Run forecast pipeline: build state space → filter → forecast.
+///
+/// When `config.simple_differencing=true`:
+///   1. Pre-difference the endog (and trim exog accordingly)
+///   2. Run Kalman filter on the differenced series (ARMA-only state space)
+///   3. Forecast in differenced space
+///   4. Undifference the forecast to reconstruct original-scale means and variances
 pub fn forecast_pipeline(
     endog: &[f64],
     config: &SarimaxConfig,
@@ -174,10 +197,169 @@ pub fn forecast_pipeline(
     exog: Option<&[Vec<f64>]>,
     future_exog: Option<&[Vec<f64>]>,
 ) -> Result<ForecastResult> {
-    let ss = StateSpace::new(config, params, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-    let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
-    forecast(&ss, &fo, steps, alpha, future_exog, &params.exog_coeffs)
+    if config.simple_differencing {
+        // Pre-difference the data
+        let eff_endog = apply_differencing(endog, config);
+        let n_drop = endog.len() - eff_endog.len();
+        let eff_exog_owned: Option<Vec<Vec<f64>>> = exog.map(|cols| {
+            cols.iter().map(|col| col[n_drop..].to_vec()).collect()
+        });
+        let eff_exog = eff_exog_owned.as_deref();
+
+        let ss = StateSpace::new(config, params, &eff_endog, eff_exog)?;
+        let init = KalmanInit::from_config_default(&ss, config);
+        let fo = kalman_filter(&eff_endog, &ss, &init, config.concentrate_scale)?;
+
+        // Forecast in differenced space (future_exog is for future steps, no trimming)
+        let diff_fc = forecast(
+            &ss,
+            &fo,
+            steps,
+            alpha,
+            future_exog,
+            &params.exog_coeffs,
+            config,
+            params,
+            eff_endog.len(),
+        )?;
+
+        // Undifference back to original scale
+        Ok(undifference_forecast(&diff_fc.mean, &diff_fc.variance, endog, config, alpha))
+    } else {
+        let ss = StateSpace::new(config, params, endog, exog)?;
+        let init = KalmanInit::from_config_default(&ss, config);
+        let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
+        forecast(&ss, &fo, steps, alpha, future_exog, &params.exog_coeffs, config, params, endog.len())
+    }
+}
+
+/// Reconstruct original-scale forecast from a differenced-space forecast.
+///
+/// Reverses the differencing applied by `apply_differencing`:
+///   - `apply_differencing` order: seasonal (D times, period s) → non-seasonal (d times)
+///   - Undo order: non-seasonal first (d times), then seasonal (D times)
+///
+/// Mean undifferencing is exact. Variance is approximated as a cumulative
+/// sum of the differenced-space variances (ignores cross-step covariances).
+///
+/// Supports: d = 0..2, D = 0..1 (D > 1 is not supported by the model).
+fn undifference_forecast(
+    diff_mean: &[f64],
+    diff_var: &[f64],
+    endog: &[f64],
+    config: &SarimaxConfig,
+    alpha: f64,
+) -> ForecastResult {
+    let d = config.order.d;
+    let dd = config.order.dd;
+    let s = config.order.s;
+    let steps = diff_mean.len();
+    let n = endog.len();
+    let z_alpha = z_score(1.0 - alpha / 2.0);
+
+    // --- Step 1: undo non-seasonal differencing (d times) ---
+    // For undo iteration i, the initial "prev" value is ∇^{d-1-i}(∇_s^D y)_n.
+    let mut x_mean = diff_mean.to_vec();
+    let mut x_var = diff_var.to_vec();
+
+    if d > 0 {
+        let undo_inits = compute_undo_d_initials(endog, d, dd, s);
+        for &init in &undo_inits {
+            let mut prev = init;
+            for h in 0..steps {
+                x_mean[h] += prev;
+                prev = x_mean[h];
+            }
+            // Variance: cumulative sum (each step adds uncertainty from prior step)
+            let mut cum = 0.0;
+            for h in 0..steps {
+                cum += x_var[h];
+                x_var[h] = cum;
+            }
+        }
+    }
+
+    // --- Step 2: undo seasonal differencing (D=1, period s) ---
+    let mut y_mean = x_mean;
+    let mut y_var = x_var;
+
+    if dd > 0 && s >= 1 {
+        // Last s values of original y (used for h < s reconstruction)
+        let y_last_s: &[f64] = &endog[n.saturating_sub(s)..n];
+        let buf_len = y_last_s.len();
+
+        let mut undiff_mean = vec![0.0_f64; steps];
+        let mut undiff_var = vec![0.0_f64; steps];
+        for h in 0..steps {
+            let (y_prev, v_prev) = if h < buf_len {
+                (y_last_s[h], 0.0) // known y → no added variance
+            } else {
+                (undiff_mean[h - s], undiff_var[h - s])
+            };
+            undiff_mean[h] = y_mean[h] + y_prev;
+            undiff_var[h] = y_var[h] + v_prev;
+        }
+        y_mean = undiff_mean;
+        y_var = undiff_var;
+    }
+
+    // Build CI
+    let ci_lower = y_mean
+        .iter()
+        .zip(y_var.iter())
+        .map(|(&m, &v)| m - z_alpha * v.max(0.0).sqrt())
+        .collect();
+    let ci_upper = y_mean
+        .iter()
+        .zip(y_var.iter())
+        .map(|(&m, &v)| m + z_alpha * v.max(0.0).sqrt())
+        .collect();
+
+    ForecastResult {
+        mean: y_mean,
+        variance: y_var,
+        ci_lower,
+        ci_upper,
+    }
+}
+
+/// Precompute the initial "prev" values needed for undoing d levels of non-seasonal
+/// differencing, given that D levels of seasonal differencing were already applied.
+///
+/// Returns d values where `result[i]` = last value of ∇^{d-1-i}(∇_s^D y).
+///   i=0   → ∇^{d-1}(∇_s^D y)_n  (used to undo the innermost ∇)
+///   i=d-1 → ∇^0  (∇_s^D y)_n    (used to undo the outermost ∇)
+fn compute_undo_d_initials(endog: &[f64], d: usize, dd: usize, s: usize) -> Vec<f64> {
+    if d == 0 {
+        return vec![];
+    }
+
+    // Apply seasonal differencing first (to get the intermediate series ∇_s^D y)
+    let mut series = endog.to_vec();
+    for _ in 0..dd {
+        if s >= 1 && series.len() > s {
+            let prev = series.clone();
+            series = (s..prev.len()).map(|t| prev[t] - prev[t - s]).collect();
+        }
+    }
+
+    // Collect last values of ∇^0 s, ∇^1 s, ..., ∇^{d-1} s
+    // derivs[k] = last value of ∇^k(series)
+    let mut derivs: Vec<f64> = vec![*series.last().unwrap_or(&0.0)];
+    let mut current = series;
+    for _ in 0..(d - 1) {
+        if current.len() > 1 {
+            let next: Vec<f64> =
+                (1..current.len()).map(|t| current[t] - current[t - 1]).collect();
+            derivs.push(*next.last().unwrap_or(&0.0));
+            current = next;
+        } else {
+            derivs.push(0.0);
+        }
+    }
+
+    // For undo iteration i: init = derivs[d-1-i]
+    (0..d).map(|i| derivs[d - 1 - i]).collect()
 }
 
 /// Run residuals pipeline: build state space → filter → residuals.
@@ -187,9 +369,7 @@ pub fn residuals_pipeline(
     params: &SarimaxParams,
     exog: Option<&[Vec<f64>]>,
 ) -> Result<ResidualOutput> {
-    let ss = StateSpace::new(config, params, endog, exog)?;
-    let init = KalmanInit::from_config(&ss, config, KalmanInit::default_kappa());
-    let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
+    let fo = crate::pipeline::kalman_filter_full(endog, params, config, exog)?;
     Ok(compute_residuals(&fo))
 }
 
@@ -263,42 +443,7 @@ fn z_score(p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::SarimaxParams;
-    use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
-
-    fn load_fixtures() -> serde_json::Value {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/statsmodels_reference.json"
-        );
-        let data = std::fs::read_to_string(path).expect("fixtures file not found");
-        serde_json::from_str(&data).expect("invalid JSON")
-    }
-
-    fn make_config(p: usize, d: usize, q: usize) -> SarimaxConfig {
-        SarimaxConfig {
-            order: SarimaxOrder::new(p, d, q, 0, 0, 0, 0),
-            n_exog: 0,
-            trend: Trend::None,
-            enforce_stationarity: false,
-            enforce_invertibility: false,
-            concentrate_scale: true,
-            simple_differencing: false,
-            measurement_error: false,
-        }
-    }
-
-    fn make_params(ar: &[f64], ma: &[f64]) -> SarimaxParams {
-        SarimaxParams {
-            trend_coeffs: vec![],
-            exog_coeffs: vec![],
-            ar_coeffs: ar.to_vec(),
-            ma_coeffs: ma.to_vec(),
-            sar_coeffs: vec![],
-            sma_coeffs: vec![],
-            sigma2: None,
-        }
-    }
+    use crate::test_helpers::{load_fixtures, make_config, make_params};
 
     #[test]
     fn test_z_score_standard() {
