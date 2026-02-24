@@ -7,23 +7,6 @@ Tier B: ~70 extended models (higher order, multiple seasonal periods,
         exog, d=2) — same validation logic, marked @nightly, 95% pass rate.
 """
 
-Tests 30 ARIMA/SARIMA model combinations against statsmodels reference
-fixtures. Two levels of testing:
-
-A) Computation verification: evaluate Rust loglike at statsmodels params
-   → tests the Kalman filter / state-space math, not the optimizer
-B) Fit quality: verify Rust optimizer converges and finds reasonable params
-   → tests the optimizer finds at least as good a solution
-
-Each model is validated for:
-1. Loglike at oracle params (computation accuracy, tight tolerance)
-2. Fit convergence
-3. Fit loglike >= oracle (optimizer not worse)
-4. Parameter count correctness
-5. Forecast sanity (finite, correct length)
-6. Residual sanity (finite, correct length)
-"""
-
 import json
 import pathlib
 

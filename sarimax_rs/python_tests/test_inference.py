@@ -1,13 +1,26 @@
-"""Tests for Rust-native inference (sarimax_inference, sarimax_diagnostics).
+"""Tests for inference, diagnostics, parameter summary, and statsmodels parity.
 
-Tests the numerical Hessian and OPG inference paths, plus residual diagnostics.
+Covers:
+- sarimax_inference (Hessian, OPG) low-level Rust function
+- sarimax_diagnostics (Ljung-Box, Jarque-Bera)
+- SARIMAXResult.parameter_summary() with all inference backends
+- Parameter name generation
+- Inference enum (_resolve_inference_mode)
+- Numerical Hessian helper
+- statsmodels parity comparison
 """
 
 import numpy as np
 import pytest
+import warnings
 import sarimax_rs
 from conftest import generate_ar1, generate_random_walk
-from sarimax_py.model import SARIMAXModel
+from sarimax_py.model import (
+    SARIMAXModel,
+    _generate_param_names,
+    _compute_numerical_hessian,
+    _resolve_inference_mode,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +314,343 @@ class TestRustVsPythonHessian:
         ps_rust = res.parameter_summary(inference="rust_hessian")
         assert ps_rust["inference_status"] in ("ok", "partial")
         assert len(ps_rust["std_err"]) == len(res.params)
+
+
+# =========================================================================
+# Parameter name generation (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestParamNames:
+    def test_ar1_name(self):
+        assert _generate_param_names((1, 0, 0), (0, 0, 0, 0)) == ["ar.L1"]
+
+    def test_arima_111_names(self):
+        assert _generate_param_names((1, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ma.L1"]
+
+    def test_arima_211_names(self):
+        assert _generate_param_names((2, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ar.L2", "ma.L1"]
+
+    def test_seasonal_names(self):
+        assert _generate_param_names((1, 0, 1), (1, 0, 1, 12)) == ["ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12"]
+
+    def test_seasonal_p2(self):
+        assert _generate_param_names((0, 0, 0), (2, 0, 0, 12)) == ["ar.S.L12", "ar.S.L24"]
+
+    def test_with_exog(self):
+        assert _generate_param_names((1, 0, 1), (1, 0, 1, 12), n_exog=2) == [
+            "x1", "x2", "ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12",
+        ]
+
+    def test_non_concentrate_includes_sigma2(self):
+        assert _generate_param_names((1, 0, 0), (0, 0, 0, 0), concentrate_scale=False) == ["ar.L1", "sigma2"]
+
+    def test_empty_model(self):
+        assert _generate_param_names((0, 1, 0), (0, 0, 0, 0)) == []
+
+
+# =========================================================================
+# Parameter summary basic (merged from test_parameter_summary.py)
+# =========================================================================
+
+@pytest.fixture
+def seasonal_data():
+    np.random.seed(7)
+    n = 240
+    t = np.arange(n)
+    seasonal = 5.0 * np.sin(2 * np.pi * t / 12)
+    return np.cumsum(np.random.randn(n) * 0.5) + seasonal
+
+
+class TestParameterSummary:
+    def test_returns_named_rows(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0))
+        assert model.fit().param_names == ["ar.L1"]
+
+    def test_parameter_summary_dict_keys(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(include_inference=False)
+        assert set(ps.keys()) == {
+            "name", "coef", "std_err", "z", "p_value",
+            "ci_lower", "ci_upper", "inference_status", "inference_message",
+        }
+        assert ps["inference_status"] == "skipped"
+
+    def test_parameter_summary_coef_matches_params(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps = result.parameter_summary(include_inference=False)
+        np.testing.assert_array_equal(ps["coef"], result.params)
+
+    def test_seasonal_param_names(self, seasonal_data):
+        result = SARIMAXModel(seasonal_data, order=(1, 1, 1), seasonal_order=(1, 0, 0, 12)).fit()
+        assert result.param_names == ["ar.L1", "ma.L1", "ar.S.L12"]
+
+    def test_param_names_length_matches_params(self, seasonal_data):
+        result = SARIMAXModel(seasonal_data, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12)).fit()
+        assert len(result.param_names) == len(result.params)
+
+
+# =========================================================================
+# Summary format (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestSummaryFormat:
+    def test_contains_parameter_table_headers(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary()
+        assert "coef" in s and "ar.L1" in s
+
+    def test_summary_no_inference_path_fast(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(include_inference=False)
+        assert "std err" not in s and "ar.L1" in s
+
+    def test_summary_inference_columns_when_enabled(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(include_inference=True)
+        assert "std err" in s and "P>|z|" in s
+
+
+# =========================================================================
+# Inference statistics (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestInferenceStats:
+    def test_inference_ok_for_ar1(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(alpha=0.05, include_inference=True)
+        assert ps["inference_status"] in ("ok", "partial")
+        assert np.all(np.isfinite(ps["std_err"])) and np.all(ps["std_err"] > 0)
+        assert np.all(ps["p_value"] >= 0) and np.all(ps["p_value"] <= 1)
+
+    def test_inference_ci_contains_estimate(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps = result.parameter_summary(alpha=0.05, include_inference=True)
+        if ps["inference_status"] == "ok":
+            assert np.all(ps["ci_lower"] <= ps["coef"])
+            assert np.all(ps["ci_upper"] >= ps["coef"])
+
+    def test_inference_different_alpha(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps_05 = result.parameter_summary(alpha=0.05, include_inference=True)
+        ps_01 = result.parameter_summary(alpha=0.01, include_inference=True)
+        if ps_05["inference_status"] == "ok" and ps_01["inference_status"] == "ok":
+            width_05 = ps_05["ci_upper"] - ps_05["ci_lower"]
+            width_01 = ps_01["ci_upper"] - ps_01["ci_lower"]
+            assert np.all(width_01 >= width_05 - 1e-10)
+
+    def test_inference_failure_degrades_gracefully(self):
+        np.random.seed(123)
+        y = np.ones(100) + np.random.randn(100) * 1e-10
+        result = SARIMAXModel(y, order=(1, 0, 0)).fit()
+        ps = result.parameter_summary(include_inference=True)
+        assert ps["inference_status"] in ("ok", "partial", "failed")
+        s = result.summary(include_inference=True)
+        assert isinstance(s, str) and "ar.L1" in s
+
+
+# =========================================================================
+# Numerical Hessian helper (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestNumericalHessian:
+    def test_quadratic_hessian(self):
+        H = _compute_numerical_hessian(lambda x: -x[0]**2, np.array([1.0]))
+        assert H is not None
+        np.testing.assert_allclose(H[0, 0], -2.0, atol=1e-4)
+
+    def test_multivariate_quadratic(self):
+        def f(x):
+            return -(x[0]**2 + 2*x[1]**2 + x[0]*x[1])
+        H = _compute_numerical_hessian(f, np.array([1.0, 1.0]))
+        assert H is not None
+        np.testing.assert_allclose(H, [[-2, -1], [-1, -4]], atol=1e-3)
+
+    def test_non_finite_returns_none(self):
+        assert _compute_numerical_hessian(lambda x: np.nan, np.array([1.0])) is None
+
+
+# =========================================================================
+# Inference enum (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestResolveInferenceMode:
+    def test_default_is_none(self):
+        assert _resolve_inference_mode() == "none"
+
+    def test_inference_enum_values(self):
+        for mode in ("none", "hessian", "statsmodels", "both"):
+            assert _resolve_inference_mode(inference=mode) == mode
+
+    def test_invalid_inference_raises(self):
+        with pytest.raises(ValueError, match="inference must be one of"):
+            _resolve_inference_mode(inference="invalid")
+
+    def test_legacy_true_maps_to_hessian(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert _resolve_inference_mode(include_inference=True) == "hessian"
+            assert len(w) == 1 and issubclass(w[0].category, DeprecationWarning)
+
+    def test_legacy_false_maps_to_none(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert _resolve_inference_mode(include_inference=False) == "none"
+            assert len(w) == 1
+
+    def test_both_specified_inference_wins(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            assert _resolve_inference_mode(inference="statsmodels", include_inference=True) == "statsmodels"
+
+
+def _has_statsmodels():
+    try:
+        import statsmodels
+        return True
+    except ImportError:
+        return False
+
+
+class TestInferenceEnum:
+    def test_mode_none(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="none")
+        assert ps["inference_status"] == "skipped"
+        assert np.all(np.isnan(ps["std_err"]))
+
+    def test_mode_hessian(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="hessian")
+        assert ps["inference_status"] in ("ok", "partial")
+        assert np.all(np.isfinite(ps["std_err"]))
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_statsmodels(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="statsmodels")
+        assert ps["inference_status"] in ("ok", "failed")
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_mode_both_keys(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="both")
+        for key in ("hessian_std_err", "hessian_z", "hessian_p_value",
+                     "sm_std_err", "sm_z", "sm_p_value",
+                     "delta_std_err", "delta_ci_lower", "delta_ci_upper"):
+            assert key in ps, f"Missing key: {key}"
+
+    def test_alpha_validation(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        with pytest.raises(ValueError, match="alpha must be in"):
+            result.parameter_summary(alpha=0.0, inference="hessian")
+        with pytest.raises(ValueError, match="alpha must be in"):
+            result.parameter_summary(alpha=1.0, inference="hessian")
+
+    def test_invalid_inference_in_summary(self, ar1_data):
+        with pytest.raises(ValueError, match="inference must be one of"):
+            SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="invalid_mode")
+
+
+class TestSummaryInferenceEnum:
+    def test_summary_inference_none(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(inference="none")
+        assert "std err" not in s and "coef" in s
+
+    def test_summary_inference_hessian(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(inference="hessian")
+        assert "std err" in s and "Inference: hessian" in s
+
+    @pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+    def test_summary_inference_both(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(inference="both")
+        assert "hess_se" in s and "sm_se" in s
+
+    def test_summary_legacy_include_inference_true(self, ar1_data):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(include_inference=True)
+            assert any(issubclass(x.category, DeprecationWarning) for x in w)
+        assert "std err" in s
+
+
+# =========================================================================
+# Risk fix tests (merged from test_parameter_summary.py)
+# =========================================================================
+
+class TestRiskFixInferenceValidation:
+    def test_both_specified_invalid_inference_raises(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        with pytest.raises(ValueError, match="inference must be one of"):
+            result.parameter_summary(inference="invalid", include_inference=True)
+
+    def test_both_specified_valid_inference_works(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ps = result.parameter_summary(inference="hessian", include_inference=True)
+            assert any(issubclass(x.category, DeprecationWarning) for x in w)
+        assert ps["inference_status"] in ("ok", "partial")
+
+
+class TestRiskFixCacheInvalidation:
+    def test_inference_cache_invalidated_on_param_change(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps1 = result.parameter_summary(inference="hessian", alpha=0.05)
+        original_se = ps1["std_err"].copy()
+        result.params[0] = result.params[0] + 0.5
+        ps2 = result.parameter_summary(inference="hessian", alpha=0.05)
+        assert not np.array_equal(ps2["std_err"], original_se)
+
+    def test_same_params_same_alpha_hits_cache(self, ar1_data):
+        result = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps1 = result.parameter_summary(inference="hessian", alpha=0.05)
+        ps2 = result.parameter_summary(inference="hessian", alpha=0.05)
+        np.testing.assert_array_equal(ps1["std_err"], ps2["std_err"])
+
+
+# =========================================================================
+# statsmodels parity (merged from test_parameter_summary.py)
+# =========================================================================
+
+@pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+class TestStatsmodelsParity:
+    def _fit_both(self, y, order, seasonal_order=(0, 0, 0, 0)):
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+        res_rs = SARIMAXModel(y, order=order, seasonal_order=seasonal_order).fit()
+        res_sm = SARIMAX(y, order=order, seasonal_order=seasonal_order,
+                         enforce_stationarity=True, enforce_invertibility=True).fit(disp=False)
+        return res_rs, res_sm
+
+    def test_ar1_params_close(self, ar1_data):
+        res_rs, res_sm = self._fit_both(ar1_data, order=(1, 0, 0))
+        np.testing.assert_allclose(res_rs.params, res_sm.params[:-1], atol=0.05)
+
+    def test_ar1_loglike_close(self, ar1_data):
+        res_rs, res_sm = self._fit_both(ar1_data, order=(1, 0, 0))
+        assert abs(res_rs.llf - res_sm.llf) < 3.0
+
+    def test_seasonal_loglike_close(self, seasonal_data):
+        res_rs, res_sm = self._fit_both(seasonal_data, order=(1, 1, 1), seasonal_order=(1, 0, 0, 12))
+        assert abs(res_rs.llf - res_sm.llf) < 5.0
+
+    def test_ar1_inference_close(self, ar1_data):
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+        res_rs = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps = res_rs.parameter_summary(alpha=0.05, include_inference=True)
+        res_sm = SARIMAX(ar1_data, order=(1, 0, 0)).fit(disp=False)
+        if ps["inference_status"] == "ok":
+            for i in range(len(ps["std_err"])):
+                if np.isfinite(ps["std_err"][i]) and np.isfinite(res_sm.bse[i]):
+                    ratio = ps["std_err"][i] / res_sm.bse[i]
+                    assert 0.3 < ratio < 3.0
+
+
+@pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+class TestRiskFixDualPvalue:
+    def test_summary_both_has_dual_pvalue_columns(self, ar1_data):
+        s = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().summary(inference="both")
+        assert "hess_p" in s and "sm_p" in s
+
+    def test_parameter_summary_both_has_dual_pvalue_keys(self, ar1_data):
+        ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(inference="both")
+        assert "hessian_p_value" in ps and "sm_p_value" in ps
+
+
+@pytest.mark.skipif(not _has_statsmodels(), reason="statsmodels not installed")
+class TestRiskFixEnforcementFlags:
+    def test_statsmodels_mode_respects_enforcement_flags(self, ar1_data):
+        model = SARIMAXModel(ar1_data, order=(1, 0, 0),
+                             enforce_stationarity=False, enforce_invertibility=False)
+        ps = model.fit().parameter_summary(inference="statsmodels")
+        assert ps["inference_status"] in ("ok", "failed")

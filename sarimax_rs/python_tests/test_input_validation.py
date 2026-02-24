@@ -1,7 +1,16 @@
+"""API contract and input validation tests for all PyO3 functions.
+
+Verifies:
+- Error paths: wrong params, NaN/Inf rejection, order bounds, length mismatches
+- Return types, dict keys, dtypes (API contract)
+- Happy-path smoke for exog, concentrate_scale=False
+"""
+
 import numpy as np
 import pytest
 
 import sarimax_rs
+from conftest import generate_ar1
 
 
 def _sample_series(n: int = 30) -> np.ndarray:
@@ -524,3 +533,182 @@ class TestExogNanInfRejection:
                 y, (1, 0, 0), (0, 0, 0, 0), params, steps=5,
                 exog=exog, future_exog=future_exog,
             )
+
+
+# =========================================================================
+# API contract tests (merged from test_api_contract.py)
+# =========================================================================
+
+@pytest.fixture(scope="module")
+def ar1_data():
+    return generate_ar1()
+
+
+@pytest.fixture(scope="module")
+def ar1_fit_result(ar1_data):
+    return sarimax_rs.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
+
+
+@pytest.fixture(scope="module")
+def ar1_params(ar1_fit_result):
+    return np.array(ar1_fit_result["params"])
+
+
+class TestVersionContract:
+    def test_returns_string(self):
+        assert isinstance(sarimax_rs.version(), str)
+
+    def test_version_format(self):
+        parts = sarimax_rs.version().split(".")
+        assert len(parts) >= 2
+
+
+class TestLoglikeContract:
+    def test_returns_finite_float(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_loglike(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
+        )
+        assert isinstance(result, float) and np.isfinite(result)
+
+    def test_wrong_param_length_raises(self, ar1_data):
+        with pytest.raises((ValueError, RuntimeError)):
+            sarimax_rs.sarimax_loglike(
+                ar1_data, (1, 0, 0), (0, 0, 0, 0),
+                np.array([0.5, 0.3]),
+            )
+
+    def test_accepts_exog_none(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_loglike(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, exog=None,
+        )
+        assert np.isfinite(result)
+
+
+class TestFitContract:
+    REQUIRED_KEYS = {
+        "params", "loglike", "aic", "bic", "scale",
+        "converged", "method", "n_obs", "n_iter",
+    }
+
+    def test_returns_dict(self, ar1_data):
+        result = sarimax_rs.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
+        assert isinstance(result, dict)
+
+    def test_required_keys_present(self, ar1_fit_result):
+        missing = self.REQUIRED_KEYS - set(ar1_fit_result.keys())
+        assert not missing, f"Missing keys: {missing}"
+
+    def test_params_is_list_of_floats(self, ar1_fit_result):
+        params = ar1_fit_result["params"]
+        assert isinstance(params, list)
+        assert all(isinstance(p, float) for p in params)
+
+    def test_loglike_is_float(self, ar1_fit_result):
+        assert isinstance(ar1_fit_result["loglike"], float)
+
+    def test_converged_is_bool(self, ar1_fit_result):
+        assert isinstance(ar1_fit_result["converged"], bool)
+
+    def test_params_length_matches_order(self, ar1_data):
+        result = sarimax_rs.sarimax_fit(ar1_data, (2, 0, 0), (0, 0, 0, 0))
+        assert len(result["params"]) == 2
+
+    def test_n_obs_matches_data_length(self, ar1_data, ar1_fit_result):
+        assert ar1_fit_result["n_obs"] == len(ar1_data)
+
+
+class TestForecastContract:
+    REQUIRED_KEYS = {"mean", "variance", "ci_lower", "ci_upper"}
+
+    def test_returns_dict_with_keys(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_forecast(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=5,
+        )
+        assert isinstance(result, dict)
+        missing = self.REQUIRED_KEYS - set(result.keys())
+        assert not missing, f"Missing keys: {missing}"
+
+    def test_output_length_matches_steps(self, ar1_data, ar1_params):
+        for steps in [1, 5, 10, 20]:
+            result = sarimax_rs.sarimax_forecast(
+                ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=steps,
+            )
+            for key in self.REQUIRED_KEYS:
+                assert len(result[key]) == steps
+
+    def test_variance_non_negative(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_forecast(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=10,
+        )
+        assert all(v >= 0 for v in result["variance"])
+
+
+class TestResidualsContract:
+    REQUIRED_KEYS = {"residuals", "standardized_residuals"}
+
+    def test_returns_dict_with_keys(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_residuals(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
+        )
+        assert isinstance(result, dict)
+        missing = self.REQUIRED_KEYS - set(result.keys())
+        assert not missing
+
+    def test_residuals_length_matches_data(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_residuals(
+            ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
+        )
+        assert len(result["residuals"]) == len(ar1_data)
+
+
+class TestBatchLoglikeContract:
+    def test_returns_list(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_batch_loglike(
+            [ar1_data, ar1_data], (1, 0, 0), (0, 0, 0, 0), ar1_params,
+        )
+        assert isinstance(result, list) and len(result) == 2
+
+    def test_each_element_has_loglike(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_batch_loglike(
+            [ar1_data], (1, 0, 0), (0, 0, 0, 0), ar1_params,
+        )
+        assert isinstance(result[0], dict) and "loglike" in result[0]
+
+
+class TestBatchFitContract:
+    def test_returns_list_of_dicts(self, ar1_data):
+        result = sarimax_rs.sarimax_batch_fit(
+            [ar1_data, ar1_data], (1, 0, 0), (0, 0, 0, 0),
+        )
+        assert isinstance(result, list) and len(result) == 2
+        assert all(isinstance(r, dict) for r in result)
+
+    def test_each_dict_has_fit_keys(self, ar1_data):
+        result = sarimax_rs.sarimax_batch_fit([ar1_data], (1, 0, 0), (0, 0, 0, 0))
+        required = {"params", "loglike", "converged"}
+        for r in result:
+            assert not (required - set(r.keys()))
+
+    def test_empty_input_returns_empty(self):
+        assert sarimax_rs.sarimax_batch_fit([], (1, 0, 0), (0, 0, 0, 0)) == []
+
+
+class TestBatchForecastContract:
+    def test_returns_list_with_forecast_keys(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_batch_forecast(
+            [ar1_data], (1, 0, 0), (0, 0, 0, 0), [ar1_params], steps=5,
+        )
+        assert isinstance(result, list) and len(result) == 1
+        required = {"mean", "variance", "ci_lower", "ci_upper"}
+        assert not (required - set(result[0].keys()))
+
+    def test_output_length_matches_input(self, ar1_data, ar1_params):
+        result = sarimax_rs.sarimax_batch_forecast(
+            [ar1_data] * 3, (1, 0, 0), (0, 0, 0, 0), [ar1_params] * 3, steps=5,
+        )
+        assert len(result) == 3
+
+    def test_empty_input_returns_empty(self):
+        assert sarimax_rs.sarimax_batch_forecast(
+            [], (1, 0, 0), (0, 0, 0, 0), [], steps=5,
+        ) == []
