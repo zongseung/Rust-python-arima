@@ -18,13 +18,15 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 - **칼만 필터**: Rust `for` + nalgebra 밀집 행렬 연산(인터프리터 오버헤드 없음)
 - **최적화**: L-BFGS-B(기본), L-BFGS, Nelder-Mead를 Rust 내부에서 수행하며 analytical score vector(sparse 탄젠트-선형 칼만 필터 + steady-state 최적화) 지원
 - **배치 병렬성**: Rayon work-stealing 스레드 풀로 N개 시계열 동시 적합/예측
+- **Grid Search 병렬화**: `sarimax_grid_search`로 여러 ARIMA 차수 조합을 Rayon 병렬 적합
+- **auto_arima**: Hyndman-Khandakar stepwise + Rayon 병렬 grid search 기반 자동 차수 선택
 - **메모리**: 스택 할당 + 연속적인 column-major 레이아웃으로 캐시 친화적
 - **Python 연동**: PyO3 + numpy 바인딩으로 `import sarimax_rs`
 
 ## 지원 모델
 
 ```
-SARIMA(p, d, q)(P, D, Q, s) + 외생 회귀변수
+SARIMA(p, d, q)(P, D, Q, s) + trend + 외생 회귀변수
 ```
 
 | 파라미터 | 의미 | 범위 |
@@ -35,7 +37,8 @@ SARIMA(p, d, q)(P, D, Q, s) + 외생 회귀변수
 | `P` | 계절 AR 차수 | 0–4 |
 | `D` | 계절 차분 차수 | 0–1 |
 | `Q` | 계절 MA 차수 | 0–4 |
-| `s` | 계절 주기(예: 12=월별, 4=분기별) | 2–365 |
+| `s` | 계절 주기(예: 12=월별, 7=일별, 24=시간별) | 2–365 |
+| `trend` | 추세 (`'n'`, `'c'`, `'t'`, `'ct'`) | — |
 | `exog` | 외생 회귀변수 | n_obs × n_exog 행렬 |
 
 ## 설치
@@ -85,10 +88,9 @@ res = sarimax_rs.sarimax_residuals(
 ### 고수준 API (`SARIMAXModel` — statsmodels 호환)
 
 ```python
-import sys; sys.path.insert(0, "python")
 from sarimax_py import SARIMAXModel
 
-model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0))
+model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="c")
 result = model.fit()
 
 # 파라미터 테이블 요약 (빠름, 추론 통계 없음)
@@ -100,22 +102,73 @@ print(result.summary(inference="hessian"))
 # Hessian vs statsmodels 추론을 나란히 비교
 print(result.summary(inference="both"))
 
-# 기계가 읽기 쉬운 파라미터 요약
-ps = result.parameter_summary(alpha=0.05, inference="hessian")
-print(ps["name"])       # ['ar.L1', 'ma.L1']
-print(ps["std_err"])    # 수치 Hessian 기반 표준오차
-print(ps["p_value"])    # 양측 p-value
+# Polars DataFrame으로 파라미터 테이블
+pt = result.params_table(inference="hessian")
+print(pt)  # shape: (k, 7) — name, coef, std_err, z, p_value, ci_lower, ci_upper
 
-print(f"AIC: {result.aic:.2f}, BIC: {result.bic:.2f}")
+print(f"AIC: {result.aic:.2f}, BIC: {result.bic:.2f}, HQIC: {result.hqic:.2f}")
 
-# 신뢰구간 포함 예측
+# 신뢰구간 포함 예측 + Polars DataFrame
 fcast = result.forecast(steps=10, alpha=0.05)
 print(fcast.predicted_mean)
+df = fcast.to_dataframe()  # Polars: step, mean, variance, ci_lower, ci_upper
 ci = fcast.conf_int()          # (10, 2) 배열 [lower, upper]
 ci_90 = fcast.conf_int(0.10)   # 다른 alpha로 재계산
 
+# In-sample 예측
+pred = result.get_prediction(start=0, end=210)
+pred_df = pred.to_dataframe()  # Polars: index, predicted_mean
+
 # 표준화 잔차
 residuals = result.resid
+
+# 잔차 진단 (Ljung-Box, Jarque-Bera, 이분산)
+diag = result.diagnostics()
+```
+
+### auto_arima — 자동 차수 선택
+
+```python
+from sarimax_py import auto_arima
+
+# Stepwise (Hyndman-Khandakar, 기본)
+res = auto_arima(y, max_p=5, max_q=5, s=12, stepwise=True, trace=True)
+print(res.summary())
+print(res.result.forecast(steps=12).to_dataframe())
+
+# Grid Search (Rayon 병렬 — 모든 조합 동시 적합)
+res = auto_arima(y, max_p=3, max_q=3, s=7, stepwise=False, criterion="bic")
+print(res.summary())
+
+# 탐색 이력 (Polars DataFrame)
+print(res.history_dataframe())
+```
+
+**auto_arima 주요 파라미터:**
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `max_p`, `max_q` | 5 | 최대 AR/MA 차수 |
+| `max_P`, `max_Q` | 2 | 최대 계절 AR/MA 차수 |
+| `s` | 0 | 계절 주기 (0=비계절) |
+| `d`, `D` | `None` | 차분 차수 (None=자동 탐지) |
+| `trend` | `"n"` | 추세: `'n'`, `'c'`, `'t'`, `'ct'` |
+| `criterion` | `"aic"` | 정보 기준: `"aic"`, `"bic"`, `"hqic"` |
+| `stepwise` | `True` | False면 exhaustive grid search (Rayon 병렬) |
+| `trace` | `False` | True면 각 모델 평가 결과 출력 |
+
+### Trend (추세) 지원
+
+```python
+# 상수항 (intercept)
+model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="c")
+# 선형 추세 (drift)
+model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="t")
+# 상수 + 선형 (intercept + drift)
+model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="ct")
+
+result = model.fit()
+print(result.param_names)  # ['intercept', 'drift', 'ar.L1', 'ma.L1'] (trend='ct')
 ```
 
 ### 외생 회귀변수 사용
@@ -152,6 +205,21 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 )
 ```
 
+### Grid Search 병렬 처리
+
+```python
+# 여러 ARIMA 차수를 Rayon으로 한꺼번에 적합
+results = sarimax_rs.sarimax_grid_search(
+    y,
+    order_list=[(0,1,0), (1,1,0), (1,1,1), (2,1,1)],
+    seasonal_list=[(0,0,0,0)] * 4,
+    trend="c",
+)
+for r in results:
+    if "error" not in r:
+        print(f"{r['order']}: AIC={r['aic']:.3f}")
+```
+
 ---
 
 ## 아키텍처
@@ -163,7 +231,9 @@ graph TB
     subgraph Python["Python Layer"]
         USER["User Code"]
         MODEL["SARIMAXModel<br/><i>python/sarimax_py/model.py</i>"]
+        AUTO["auto_arima<br/><i>python/sarimax_py/auto.py</i>"]
         USER --> MODEL
+        USER --> AUTO
     end
 
     subgraph PyO3["PyO3 Bindings — lib.rs"]
@@ -174,11 +244,18 @@ graph TB
         BF["sarimax_batch_fit()"]
         BFC["sarimax_batch_forecast()"]
         BLL["sarimax_batch_loglike()"]
+        GS["sarimax_grid_search()"]
+        INF["sarimax_inference()"]
+        DIAG["sarimax_diagnostics()"]
     end
 
     MODEL --> FIT
     MODEL --> FC
     MODEL --> RES
+    MODEL --> INF
+    MODEL --> DIAG
+    AUTO --> GS
+    AUTO --> FIT
     USER --> BF
     USER --> BFC
     USER --> BLL
@@ -194,6 +271,7 @@ graph TB
         POLY["polynomial.rs<br/>AR/MA polynomial expansion"]
         PAR["params.rs<br/>Monahan transform"]
         SCR["score.rs<br/>Analytical gradient"]
+        INFER["inference.rs<br/>Hessian / OPG"]
     end
 
     FIT --> OPT
@@ -203,6 +281,8 @@ graph TB
     BF --> BATCH
     BFC --> BATCH
     BLL --> BATCH
+    GS --> BATCH
+    INF --> INFER
 
     BATCH --> OPT
     BATCH --> FCAST
@@ -216,6 +296,7 @@ graph TB
     SS --> PAR
     OPT --> PAR
     SCR --> KAL
+    INFER --> KAL
 
     style Python fill:#3776ab,color:#fff
     style PyO3 fill:#f7a41d,color:#000
@@ -235,8 +316,8 @@ sequenceDiagram
     participant PR as params.rs
     participant SC as score.rs
 
-    P->>L: sarimax_fit(y, order, seasonal)
-    L->>L: Build SarimaxConfig
+    P->>L: sarimax_fit(y, order, seasonal, trend)
+    L->>L: Build SarimaxConfig (trend 포함)
     L->>O: fit(endog, config, method, maxiter)
 
     O->>S: compute_start_params(endog, config)
@@ -250,7 +331,7 @@ sequenceDiagram
         O->>PR: transform_params(x_k)
         PR-->>O: constrained θ_k
         O->>SS: StateSpace::new(config, θ_k, y)
-        SS->>SS: Build T, Z, R, Q matrices
+        SS->>SS: Build T, Z, R, Q matrices + state_intercept(c_t)
         SS-->>O: state_space
         O->>K: kalman_loglike(y, ss, init)
         K->>K: Predict → Observe → Update loop
@@ -282,7 +363,7 @@ sequenceDiagram
     participant K as kalman.rs
     participant SS as state_space.rs
 
-    P->>L: sarimax_forecast(y, order, seasonal, params, steps, alpha)
+    P->>L: sarimax_forecast(y, order, seasonal, params, steps, alpha, trend)
     L->>F: forecast_pipeline(endog, config, params, steps, alpha)
 
     F->>SS: StateSpace::new(config, params, endog)
@@ -298,7 +379,7 @@ sequenceDiagram
         F->>F: ŷ_h = Z' · â_h
         F->>F: Var_h = Z' · P̂_h · Z · σ²
         F->>F: CI_h = ŷ_h ± z(α/2) · √Var_h
-        F->>F: â_{h+1} = T · â_h
+        F->>F: â_{h+1} = T · â_h + c_{n+h}  (trend state_intercept)
         F->>F: P̂_{h+1} = T · P̂_h · T' + R·Q·R'
     end
 
@@ -306,7 +387,7 @@ sequenceDiagram
     L-->>P: dict
 ```
 
-### 배치 병렬 처리 흐름
+### 배치 & Grid Search 병렬 처리 흐름
 
 ```mermaid
 sequenceDiagram
@@ -324,15 +405,27 @@ sequenceDiagram
     par [Rayon parallel execution]
         R->>R: Thread 0: optimizer::fit(series[0])
         R->>R: Thread 1: optimizer::fit(series[1])
-        R->>R: Thread 2: optimizer::fit(series[2])
         R->>R: Thread N: optimizer::fit(series[N])
     end
 
     R-->>B: Vec<Result<FitResult>>
-
     B-->>L: results
-    L->>L: Result → PyDict conversion
-    Note over L: Error → {"error": "...", "converged": false}
+    L-->>P: List[dict]
+
+    Note over P,R: grid_search: 같은 데이터 + 다른 order 조합 병렬 적합
+
+    P->>L: sarimax_grid_search(y, order_list, seasonal_list)
+    L->>B: grid_search_fit(endog, configs)
+    B->>R: configs.par_iter()
+
+    par [Rayon parallel — order 조합]
+        R->>R: Thread 0: fit(endog, config[0])
+        R->>R: Thread 1: fit(endog, config[1])
+        R->>R: Thread N: fit(endog, config[N])
+    end
+
+    R-->>B: Vec<Result<FitResult>>
+    B-->>L: results (order 키 포함)
     L-->>P: List[dict]
 ```
 
@@ -343,7 +436,7 @@ graph LR
     subgraph Input
         ORDER["order (p,d,q)"]
         SEAS["seasonal (P,D,Q,s)"]
-        PARAMS["params [ar, ma, sar, sma]"]
+        PARAMS["params [trend, exog, ar, ma, sar, sma]"]
     end
 
     subgraph Polynomial["Polynomial Expansion"]
@@ -356,6 +449,7 @@ graph LR
         Z["Z observation<br/>k_states × 1"]
         R["R selection<br/>k_states × k_posdef"]
         Q["Q covariance<br/>k_posdef × k_posdef"]
+        C["c_t state_intercept<br/>(trend 반영)"]
     end
 
     ORDER --> RDAR
@@ -369,6 +463,7 @@ graph LR
     RDAR --> Z
     RDMA --> R
     RDMA --> Q
+    PARAMS --> C
 
     subgraph TBlocks["T Matrix Internal Structure"]
         DIFF["Differencing block<br/>(d × d)"]
@@ -397,6 +492,7 @@ ll = sarimax_rs.sarimax_loglike(
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
     params=np.array([0.5, 0.3, 0.2, -0.4]),  # [ar, ma, sar, sma]
     concentrate_scale=True,    # 우도에서 sigma2를 집중화
+    trend="c",                 # 추세: "n", "c", "t", "ct"
 )
 ```
 
@@ -413,6 +509,7 @@ result = sarimax_rs.sarimax_fit(
     enforce_invertibility=True,  # MA 가역성 제약
     method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "nelder-mead"
     maxiter=500,
+    trend="c",                   # 추세
 )
 ```
 
@@ -420,7 +517,7 @@ result = sarimax_rs.sarimax_fit(
 
 | Key | Type | 설명 |
 |-----|------|-------------|
-| `params` | `list[float]` | 추정 파라미터 `[ar..., ma..., sar..., sma...]` |
+| `params` | `list[float]` | 추정 파라미터 `[trend..., exog..., ar..., ma..., sar..., sma...]` |
 | `loglike` | `float` | 최종 로그우도 |
 | `scale` | `float` | 추정 분산(sigma2) |
 | `aic` | `float` | AIC |
@@ -445,6 +542,7 @@ fc = sarimax_rs.sarimax_forecast(
     alpha=0.05,        # 95% 신뢰구간
     exog=X_train,      # 모델이 exog를 쓰는 경우 과거 exog
     future_exog=X_future,  # 예측 기간 미래 exog
+    trend="c",
 )
 
 print(fc["mean"])       # 점예측 (list[float])
@@ -463,6 +561,7 @@ res = sarimax_rs.sarimax_residuals(
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
     params=np.array([0.5, 0.3]),
+    trend="c",
 )
 
 print(res["residuals"])                # 혁신항 v_t
@@ -481,6 +580,7 @@ results = sarimax_rs.sarimax_batch_fit(
     enforce_stationarity=True,
     method="lbfgsb",
     maxiter=500,
+    trend="c",
 )
 # 반환: list[dict] — sarimax_fit과 동일 키
 # 실패한 시계열: {"error": "...", "converged": false}
@@ -504,6 +604,60 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 # 반환: mean, variance, ci_lower, ci_upper를 포함한 list[dict]
 ```
 
+#### `sarimax_rs.sarimax_grid_search`
+
+단일 시계열에 여러 ARIMA 차수 조합을 Rayon 병렬로 적합합니다.
+
+```python
+results = sarimax_rs.sarimax_grid_search(
+    y,
+    order_list=[(1,0,0), (1,0,1), (2,0,0)],
+    seasonal_list=[(0,0,0,0)] * 3,
+    enforce_stationarity=True,
+    enforce_invertibility=True,
+    trend="c",
+    method="lbfgsb",
+    maxiter=500,
+)
+# 반환: list[dict] — sarimax_fit과 동일 키 + "order", "seasonal_order"
+# 실패한 조합: {"error": "...", "converged": false, "order": ..., "seasonal_order": ...}
+```
+
+#### `sarimax_rs.sarimax_inference`
+
+적합된 파라미터에서 Hessian 또는 OPG 기반 추론 통계를 계산합니다.
+
+```python
+inf = sarimax_rs.sarimax_inference(
+    y, order=(1,0,1), seasonal=(0,0,0,0),
+    params=np.array([0.5, 0.3]),
+    method="hessian",   # "hessian" | "opg"
+    alpha=0.05,
+    trend="c",
+)
+print(inf["std_err"])   # 표준오차
+print(inf["z_stat"])    # z 통계량
+print(inf["p_value"])   # 양측 p-value
+print(inf["ci_lower"])  # 신뢰구간 하한
+print(inf["ci_upper"])  # 신뢰구간 상한
+```
+
+#### `sarimax_rs.sarimax_diagnostics`
+
+잔차 진단 검정을 수행합니다.
+
+```python
+diag = sarimax_rs.sarimax_diagnostics(
+    y, order=(1,0,1), seasonal=(0,0,0,0),
+    params=np.array([0.5, 0.3]),
+    trend="c",
+)
+print(diag["ljung_box_stat"])     # Ljung-Box Q 통계량
+print(diag["ljung_box_pvalue"])   # Ljung-Box p-value
+print(diag["jarque_bera_stat"])   # Jarque-Bera 정규성
+print(diag["het_stat"])           # 이분산 검정
+```
+
 ### 고수준 클래스 (`sarimax_py`)
 
 Rust 엔진을 사용하는 statsmodels 호환 Python 래퍼입니다.
@@ -518,6 +672,7 @@ model = SARIMAXModel(
     order=(1, 1, 1),                # ARIMA(p, d, q)
     seasonal_order=(1, 0, 0, 12),   # (P, D, Q, s)
     exog=X,                         # 선택: 외생 회귀변수
+    trend="c",                      # 추세: 'n', 'c', 't', 'ct'
     enforce_stationarity=True,
     enforce_invertibility=True,
 )
@@ -532,10 +687,11 @@ result = model.fit(method="lbfgsb", maxiter=500)
 
 # 속성
 result.params          # np.ndarray — 추정 파라미터
-result.param_names     # list[str] — 파라미터 이름 (예: ['ar.L1', 'ma.L1'])
+result.param_names     # list[str] — 파라미터 이름 (예: ['intercept', 'ar.L1', 'ma.L1'])
 result.llf             # float — 로그우도
 result.aic             # float — AIC
 result.bic             # float — BIC
+result.hqic            # float — HQIC (Hannan-Quinn)
 result.scale           # float — sigma2
 result.nobs            # int — 관측치 개수
 result.converged       # bool — 수렴 상태
@@ -546,10 +702,13 @@ result.resid           # np.ndarray — 표준화 잔차(지연 계산)
 result.forecast(steps=10, alpha=0.05)     # → ForecastResult
 result.forecast(steps=10, exog=X_future)  # 미래 exog 포함
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels 호환)
+result.get_prediction(start=0, end=210)   # → PredictionResult (in-sample + out-of-sample)
 result.summary()                          # → str (기본 파라미터 테이블)
 result.summary(inference="hessian")       # → str (std err / z / p / CI 포함)
 result.summary(inference="statsmodels")   # → str (statsmodels 추론값 차용)
 result.summary(inference="both")          # → str (양쪽 비교)
+result.params_table(inference="hessian")  # → Polars DataFrame
+result.diagnostics()                      # → dict (Ljung-Box, Jarque-Bera, 이분산)
 
 # 파라미터 요약(기계 친화 dict)
 ps = result.parameter_summary(alpha=0.05, inference="hessian")
@@ -565,10 +724,19 @@ ps = result.parameter_summary(alpha=0.05, inference="hessian")
 #   inference_message: str  — 진단 메시지(상태가 "ok"가 아닐 때)
 ```
 
+**파라미터 벡터 레이아웃:**
+
+```
+[trend(kt) | exog(k) | ar(p) | ma(q) | sar(P) | sma(Q)]
+```
+
 **파라미터 이름 규칙** (statsmodels와 일치):
 
 | 구성 요소 | 이름 |
 |-----------|-------|
+| 상수항 (trend='c') | `intercept` |
+| 선형 추세 (trend='t') | `drift` |
+| 상수+선형 (trend='ct') | `intercept`, `drift` |
 | 외생 회귀변수 | `x1`, `x2`, ..., `xk` |
 | AR | `ar.L1`, `ar.L2`, ..., `ar.Lp` |
 | MA | `ma.L1`, `ma.L2`, ..., `ma.Lq` |
@@ -590,6 +758,33 @@ fcast.ci_upper         # np.ndarray — 신뢰구간 상한
 
 fcast.conf_int()       # np.ndarray (steps, 2) — 원래 alpha 기준 [lower, upper]
 fcast.conf_int(0.10)   # 다른 유의수준으로 재계산
+fcast.to_dataframe()   # Polars DataFrame (step, mean, variance, ci_lower, ci_upper)
+```
+
+#### `PredictionResult`
+
+```python
+pred = result.get_prediction(start=0, end=210)
+
+pred.predicted_mean    # np.ndarray — 예측값 (in-sample + out-of-sample)
+pred.to_dataframe()    # Polars DataFrame (index, predicted_mean)
+```
+
+#### `AutoARIMAResult`
+
+```python
+from sarimax_py import auto_arima
+
+res = auto_arima(y, max_p=5, max_q=5, s=12)
+
+res.result             # SARIMAXResult — 최적 모델 적합 결과
+res.order              # tuple (p, d, q) — 최적 차수
+res.seasonal_order     # tuple (P, D, Q, s)
+res.best_ic            # float — 최적 정보기준 값
+res.criterion          # str — 사용된 기준 ("aic", "bic", "hqic")
+res.history            # list[dict] — 탐색 이력
+res.summary()          # str — 요약 문자열
+res.history_dataframe()  # Polars DataFrame — 탐색 이력 테이블
 ```
 
 ---
@@ -609,6 +804,12 @@ y_t         = Z' * alpha_t + d_t + eps_t,        eps_t ~ N(0, H), H=0
 상태벡터 `alpha`의 차원은 `k_states = k_states_diff + k_order`이며,
 - `k_states_diff = d + s*D` (차분 상태)
 - `k_order = max(p + s*P, q + s*Q + 1)` (ARMA companion 행렬 차원)
+
+**state_intercept `c_t`** (trend 반영):
+- Trend::None → `c_t = 0`
+- Trend::Constant → `c_t[k_states_diff] = β₀`
+- Trend::Linear → `c_t[k_states_diff] = β₀ · t`
+- Trend::Both → `c_t[k_states_diff] = β₀ + β₁ · t`
 
 **전이행렬 T** (`k_states × k_states`)는 5개 블록으로 구성됩니다.
 
@@ -653,7 +854,7 @@ loglike = -n_eff/2 * ln(2π) - n_eff/2 * ln(σ²_hat) - n_eff/2 - 0.5 * Σ ln(F_
 - `kalman_filter()` — 예측/잔차용: 필터링 상태 + 혁신항 시퀀스 전체 저장
 
 구현 세부:
-- **초기화**: 근사 diffuse `a_0 = 0, P_0 = κ·I` (κ = 1e6)
+- **초기화**: 근사 diffuse `a_0 = 0, P_0 = κ·I` (κ = 1e6) 또는 DARE (정상 모델)
 - **burn-in**: 처음 `k_states` 관측은 우도 누적에서 제외
 - **수치 안정성**: Joseph form 공분산 업데이트로 양의 정부호 성질 유지
 
@@ -698,7 +899,7 @@ Gradient:   Analytical score (default) or center-difference (eps = 1e-7)
 3. **L-BFGS-B multi-start**: 강건성 확보를 위해 초기값 섭동 3회 재시작
 4. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
 5. **Nelder-Mead fallback**: L-BFGS 실패 시 자동 전환, 5% 스케일 simplex
-6. **정보 기준**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`
+6. **정보 기준**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`, `HQIC = -2·ll + 2·k·ln(ln(n))`
 
 **수렴 보고**: `converged=true`는 옵티마이저 고유 수렴 기준(gradient tolerance 또는 function value tolerance)을 만족할 때만 반환합니다. `maxiter` 도달만으로는 `converged=false`입니다.
 
@@ -711,21 +912,28 @@ For each forecast step h = 1, ..., steps:
   ŷ_h = Z' · â_h                   (point forecast)
   F_h = Z' · P̂_h · Z · σ²          (forecast variance)
   CI_h = ŷ_h ± z_{α/2} · √F_h      (confidence interval)
-  â_{h+1} = T · â_h                 (state propagation)
+  â_{h+1} = T · â_h + c_{n+h}       (state propagation + trend)
   P̂_{h+1} = T · P̂_h · T' + R·Q·R'  (covariance propagation)
 ```
 
 - `z_score()`: 역정규 CDF를 위한 Abramowitz & Stegun 26.2.23 유리근사
 - 예측 분산은 단조 비감소, 신뢰구간은 대칭
+- **Trend 반영**: forecast loop에서 `c_{n+h}`를 매 스텝 계산하여 state에 주입
 
-### 7. 배치 병렬 처리 (`batch.rs`)
+### 7. 배치 & Grid Search 병렬 처리 (`batch.rs`)
 
-Rayon `par_iter()`를 사용해 N개 시계열을 work-stealing 방식으로 병렬 처리합니다.
+Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니다.
 
+**배치 처리** (같은 order + 다른 시계열):
 - 모든 시계열은 동일한 `SarimaxConfig`를 공유(Clone, Send + Sync)
 - 각 시계열은 `StateSpace::new()` → `fit()` / `forecast_pipeline()`를 독립 수행
 - 실패한 시계열이 다른 시계열에 영향 주지 않음(`Vec<Result<T>>`)
 - 배치 연산 3종: `batch_loglike`, `batch_fit`, `batch_forecast`
+
+**Grid Search** (같은 시계열 + 다른 order):
+- `grid_search_fit(endog, configs)` — `configs.par_iter()`로 order 조합 병렬 처리
+- 각 조합은 독립된 `SarimaxConfig`를 가지고 `optimizer::fit()` 호출
+- `auto_arima`에서 사용: Python → `sarimax_grid_search` PyO3 → Rayon 병렬
 
 ### 8. 초기 파라미터 추정 (`start_params.rs`)
 
@@ -755,10 +963,6 @@ Rayon `par_iter()`를 사용해 N개 시계열을 work-stealing 방식으로 병
 ## 벤치마크
 
 모든 벤치마크는 macOS 15.1 (Apple Silicon arm64), Python 3.14, sarimax_rs 0.1.0 vs statsmodels 0.14.6 기준입니다.
-
-```bash
-.venv/bin/python python_tests/bench_readme.py
-```
 
 ### statsmodels 대비 정확도
 
@@ -811,37 +1015,49 @@ best-of-5 wall clock 시간(작을수록 좋음):
 
 | Model | sarimax_rs | statsmodels | Speedup |
 |-------|:----------:|:-----------:|:-------:|
-| AR(1) n=200 | 0.2 ms | 2.9 ms | **12.6x** |
-| AR(2) n=300 | 0.4 ms | 4.8 ms | **12.2x** |
-| MA(1) n=200 | 0.3 ms | 3.6 ms | **11.5x** |
-| ARMA(1,1) n=300 | 1.2 ms | 15.7 ms | **12.5x** |
-| ARIMA(1,1,1) n=300 | 1.4 ms | 12.4 ms | **8.9x** |
-| ARIMA(2,1,1) n=400 | 0.6 ms | 38.4 ms | **68.4x** |
-| SARIMA(1,0,0)(1,0,0,4) n=200 | 1.0 ms | 7.8 ms | **8.2x** |
-| SARIMA(0,1,1)(0,1,1,12) n=300 | 62.7 ms | 128.8 ms | **2.1x** |
-| SARIMA(1,1,1)(1,1,1,12) n=300 | 161.8 ms | 279.4 ms | **1.7x** |
+| AR(1) n=200 | 0.0 ms | 2.9 ms | **66.8x** |
+| ARMA(1,1) n=300 | 0.1 ms | 6.1 ms | **41.6x** |
+| ARIMA(1,1,1) n=300 | 0.4 ms | 7.6 ms | **17.9x** |
+| ARIMA(2,1,2) n=400 | 1.5 ms | 31.4 ms | **20.4x** |
+| SARIMA(1,1,1)(1,1,1,12) n=300 | 122.6 ms | 928.7 ms | **7.6x** |
+| SARIMA(1,0,0)(1,0,0,7) n=365 | 0.5 ms | 19.9 ms | **38.0x** |
+| SARIMA(1,1,1)(1,1,1,24) n=2160 | 2547.8 ms | 7364.5 ms | **2.9x** |
 
-**모든 모델에서 statsmodels를 상회합니다.** 비계절 모델은 **9~68배**, 고차 계절 SARIMA 모델도 **1.7~2.1배** 빠릅니다. 핵심 최적화: Hannan-Rissanen 시작값 추정, score steady-state 최적화, sparse companion matrix 활용.
+**평균 27.9x, 최대 66.8x.** 비계절 모델은 17~67배, 고차 계절 SARIMA도 2.9~7.6배 빠릅니다.
 
 ### 속도 — 배치 적합 (Rayon 병렬)
 
-AR(1) n=200/series, best-of-3:
+AR(1) n=200/series:
 
 | Batch Size | sarimax_rs | statsmodels | Speedup |
 |:----------:|:----------:|:-----------:|:-------:|
-| 10 series | 1.5 ms | 31.0 ms | **21x** |
-| 100 series | 9.6 ms | 388.3 ms | **41x** |
-| 500 series | 39.5 ms | 2,527 ms | **64x** |
+| 10 series | 0.2 ms | 32.2 ms | **165.7x** |
+| 50 series | 0.7 ms | 157.3 ms | **232.4x** |
+| 100 series | 1.2 ms | 312.2 ms | **269.8x** |
 
-배치 처리에서는 Rust + Rayon 병렬화 이점이 가장 큽니다. 시계열 수가 늘수록 Rayon이 가용 CPU 코어에 작업을 분배해 속도 이점이 커집니다.
+배치 처리에서는 Rust + Rayon 병렬화 이점이 극대화됩니다.
 
-### 속도 — 예측
+### 속도 — Grid Search 병렬 vs 순차
 
-ARIMA(1,1,1) 10-step 예측(적합 후), best-of-20:
+| 시나리오 | 병렬(ms) | 순차(ms) | Speedup |
+|---------|---------|---------|:-------:|
+| n=200, 9 combos | 1.2 | 1.8 | **1.53x** |
+| n=500, 9 combos | 2.0 | 4.3 | **2.16x** |
+| n=500, 25 combos | 0.9 | 4.3 | **4.59x** |
+| n=2000, 9 combos | 2.5 | 11.2 | **4.53x** |
 
-| | sarimax_rs | statsmodels | Speedup |
-|-|:----------:|:-----------:|:-------:|
-| Forecast | 0.01 ms | 0.39 ms | **31x** |
+### 속도 — auto_arima
+
+| 시나리오 | n | 모드 | 시간 | 탐색 모델 | AIC |
+|---------|---|-----|------|----------|-----|
+| 일단위 s=7 (2년) | 730 | stepwise | 5.68s | 23 | 1099.16 |
+| 일단위 s=7 (2년) | 730 | grid (병렬) | 4.52s | 81 | 1099.16 |
+| 시간단위 s=24 (90일) | 2160 | stepwise | 19.21s | 17 | 3222.21 |
+| 시간단위 s=24 (90일) | 2160 | grid (병렬) | **2.59s** | 16 | 3222.21 |
+| 시간단위 s=24 (30일) | 720 | stepwise | 20.04s | 17 | 1099.85 |
+| 시간단위 s=24 (30일) | 720 | grid (병렬) | **1.66s** | 16 | 1246.49 |
+
+Grid search의 Rayon 병렬화로 시간단위(s=24) 데이터에서 stepwise 대비 **최대 12x 빠른** 결과를 보입니다.
 
 ---
 
@@ -852,27 +1068,31 @@ sarimax_rs/
 ├── Cargo.toml                      # Rust 의존성 및 빌드 설정
 ├── pyproject.toml                   # Python 패키지 설정(maturin)
 │
-├── src/                             # Rust 엔진 (13 모듈, ~8,000 LOC)
-│   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 8개)
+├── src/                             # Rust 엔진 (16 모듈, ~10,600 LOC)
+│   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 11개)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror 기반)
 │   ├── params.rs                    # 파라미터 struct + Monahan/Jones 변환
 │   ├── polynomial.rs                # AR/MA 다항식 확장 (polymul, reduced_ar/ma)
-│   ├── state_space.rs               # Harvey 상태공간 T, Z, R, Q 구성
-│   ├── initialization.rs            # 근사 diffuse 초기화 (a₀=0, P₀=κI)
+│   ├── state_space.rs               # Harvey 상태공간 T, Z, R, Q, c_t 구성
+│   ├── initialization.rs            # 근사 diffuse / DARE 초기화
 │   ├── kalman.rs                    # 칼만 필터 (loglike + full filter)
 │   ├── score.rs                     # 해석적 gradient (sparse tangent-linear Kalman + steady-state)
+│   ├── css.rs                       # 조건부 최소 제곱 로그우도
+│   ├── inference.rs                 # 수치 Hessian / OPG 추론
 │   ├── start_params.rs              # Hannan-Rissanen + CSS 초기 파라미터 추정
 │   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
 │   ├── forecast.rs                  # h-step 예측 + 잔차 + z_score
-│   └── batch.rs                     # Rayon 기반 배치 병렬 처리
+│   ├── batch.rs                     # Rayon 기반 배치/grid search 병렬 처리
+│   └── test_helpers.rs              # 테스트 유틸리티
 │
 ├── python/
 │   └── sarimax_py/                  # Python 래퍼 레이어
 │       ├── __init__.py              # 패키지 export
-│       └── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult
+│       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
+│       └── auto.py                  # auto_arima, AutoARIMAResult
 │
-├── python_tests/                    # Python 통합 테스트 (235 tests)
+├── python_tests/                    # Python 통합 테스트 (323 tests)
 │   ├── conftest.py                  # pytest fixture
 │   ├── generate_fixtures.py         # statsmodels 레퍼런스 데이터 생성기
 │   ├── test_smoke.py                # import/version (2)
@@ -889,7 +1109,13 @@ sarimax_rs/
 │   ├── test_matrix_tier_a.py        # tier-A 행렬 테스트 (7)
 │   ├── test_matrix_tier_b.py        # tier-B 행렬 테스트 (5)
 │   ├── test_wheel_smoke.py          # wheel 설치 스모크 (8)
-│   └── test_perf_regression.py      # 성능 회귀 (7)
+│   ├── test_perf_regression.py      # 성능 회귀 (7)
+│   ├── test_parameter_summary.py    # 파라미터 요약 + 추론 모드 (59)
+│   ├── test_inference.py            # Rust 추론 검증
+│   ├── test_hourly_s24.py           # s=24 시간단위 모델
+│   ├── test_trend.py                # trend 파라미터 전면 검증 (16)
+│   ├── test_polars.py               # Polars DataFrame 검증 (14)
+│   └── test_auto.py                 # auto_arima + grid search (16)
 │
 ├── tests/fixtures/                  # statsmodels 레퍼런스 데이터(JSON)
 │   ├── statsmodels_reference.json          # 로그우도 레퍼런스
@@ -924,6 +1150,7 @@ sarimax_rs/
 | Package | 용도 |
 |---------|---------|
 | numpy >= 1.24 | 배열 연산(런타임 의존성) |
+| polars >= 1.0 | DataFrame 반환(런타임 의존성) |
 | pytest >= 7.0 | 테스트 프레임워크(dev) |
 | statsmodels >= 0.14 | 레퍼런스 결과 생성(dev) |
 | scipy >= 1.10 | 통계 유틸리티(dev) |
@@ -932,10 +1159,10 @@ sarimax_rs/
 ## 개발
 
 ```bash
-# Rust 단위 테스트 (114 tests)
-cargo test --all-targets
+# Rust 단위 테스트 (149 tests)
+cargo test
 
-# Python 통합 테스트 (252 tests, wheel 빌드 필요)
+# Python 통합 테스트 (323 tests, wheel 빌드 필요)
 maturin develop --release
 .venv/bin/python -m pytest python_tests/ -v
 
@@ -956,7 +1183,7 @@ cargo bench
 
 | Category | Tests | Coverage |
 |----------|:-----:|---------|
-| Rust unit tests | 114 | types, params, polynomial, state_space, initialization, kalman, score, start_params, optimizer, forecast, batch |
+| Rust unit tests | 149 | types, params, polynomial, state_space, initialization, kalman, score, css, inference, start_params, optimizer, forecast, batch |
 | Python smoke | 2 | import, version |
 | Python loglike | 4 | AR(1), ARMA(1,1), ARIMA(1,1,1) vs statsmodels |
 | Python fit | 9 | fitting, AIC/BIC, convergence, start_params, Nelder-Mead |
@@ -971,15 +1198,20 @@ cargo bench
 | Python matrix | 12 | tier-A and tier-B convergence matrices |
 | Python wheel smoke | 8 | installation, basic fit, model wrapper |
 | Python perf regression | 7 | accuracy regression, iteration count, batch |
-| Python parameter summary | 59 | param_names, inference modes, statsmodels parity, risk fixes |
-| **Total** | **366** | |
+| Python parameter summary | 59 | param_names, inference modes, statsmodels parity |
+| Python inference | — | Rust Hessian/OPG inference |
+| Python hourly s=24 | — | 시간별 고빈도 계절 모델 |
+| Python trend | 16 | trend='n','c','t','ct' fit/forecast/residuals/summary |
+| Python Polars | 14 | to_dataframe(), params_table(), PredictionResult, HQIC |
+| Python auto_arima | 16 | stepwise, grid, history, criterion, parallel grid_search |
+| **Total** | **472** | |
 
 ## 제한 사항
 
 - 계절 차분 `D > 1` 미지원(`D = 0` 또는 `1`만 지원)
-- Trend 파라미터는 내부 지원되지만 Python API에는 아직 노출되지 않음
 - 예측 스텝은 최대 10,000, `alpha`는 (0, 1) 범위여야 함
 - 상태 차원은 1,024로 제한(극단 차수에서 OOM 방지)
+- `auto_arima`의 자동 차분 탐지는 ADF test(scipy) 또는 분산 감소 휴리스틱 기반
 
 ## 라이선스
 
