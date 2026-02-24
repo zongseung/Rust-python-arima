@@ -279,3 +279,68 @@ def test_comprehensive_accuracy_report():
                 print(f"  {f['label']}: max_param_err={f['max_param_err']:.6f}, loglike_err={f['loglike_err']:.4f}")
 
     # 이 테스트는 리포트 출력 목적이므로 assertion 없음 (개별 테스트에서 처리)
+
+
+# ── Regression tests (merged from test_perf_regression.py) ──────────────────
+
+def _ar1_data(n=500):
+    return generate_ar1(n=n, seed=42)
+
+def _arima111_data(n=500):
+    return generate_random_walk(n=n, seed=42)
+
+
+class TestAccuracyRegression:
+    """Ensure optimization changes don't degrade accuracy."""
+
+    def test_ar1_param_near_true_value(self):
+        y = _ar1_data()
+        result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        assert result["converged"]
+        assert abs(result["params"][0] - 0.7) < 0.1, (
+            f"AR(1) param far from true value: {result['params'][0]}"
+        )
+
+    def test_arima111_converges(self):
+        y = _arima111_data()
+        result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
+        assert result["converged"]
+        assert len(result["params"]) == 2
+
+    def test_fit_forecast_roundtrip(self):
+        y = _ar1_data(200)
+        result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        fc = sarimax_rs.sarimax_forecast(
+            y, (1, 0, 0), (0, 0, 0, 0), np.array(result["params"]), steps=10
+        )
+        assert len(fc["mean"]) == 10 and all(np.isfinite(fc["mean"]))
+
+
+class TestIterationCount:
+    """Optimizer converges in a reasonable number of iterations."""
+
+    def test_ar1_iterations(self):
+        result = sarimax_rs.sarimax_fit(_ar1_data(), (1, 0, 0), (0, 0, 0, 0))
+        assert result["converged"]
+        assert result["n_iter"] < 30, f"AR(1) too many iters: {result['n_iter']}"
+
+    def test_arima111_iterations(self):
+        result = sarimax_rs.sarimax_fit(_arima111_data(), (1, 1, 1), (0, 0, 0, 0))
+        assert result["n_iter"] < 60, f"ARIMA(1,1,1) too many iters: {result['n_iter']}"
+
+
+class TestBatchRegression:
+    """Batch operations still correct after optimization changes."""
+
+    def test_batch_matches_single(self):
+        y = _ar1_data(200)
+        single = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        batch  = sarimax_rs.sarimax_batch_fit([y], (1, 0, 0), (0, 0, 0, 0))
+        assert abs(batch[0]["loglike"] - single["loglike"]) < 1e-8
+
+    def test_batch_100_all_converge(self):
+        series  = [_ar1_data(200) for _ in range(100)]
+        results = sarimax_rs.sarimax_batch_fit(series, (1, 0, 0), (0, 0, 0, 0))
+        assert len(results) == 100
+        conv = sum(1 for r in results if r.get("converged", False))
+        assert conv == 100, f"Only {conv}/100 converged"

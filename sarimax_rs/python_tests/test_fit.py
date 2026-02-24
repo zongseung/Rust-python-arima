@@ -149,3 +149,57 @@ def test_fit_returns_dict(statsmodels_fixtures):
         "n_obs", "n_params", "n_iter", "converged", "method"
     }
     assert set(result.keys()) == expected_keys
+
+
+# ── Loglike oracle tests (merged from test_loglike.py) ──────────────────────
+
+LOGLIKE_ORACLE_TOL = 1e-6
+
+
+def test_loglike_ar1_oracle(statsmodels_fixtures):
+    """AR(1) concentrated loglike at oracle params matches statsmodels."""
+    case = statsmodels_fixtures["ar1"]
+    y, params = np.array(case["data"]), np.array(case["params"])
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    assert abs(ll - case["loglike"]) < LOGLIKE_ORACLE_TOL
+
+
+def test_loglike_arma11_oracle(statsmodels_fixtures):
+    """ARMA(1,1) concentrated loglike at oracle params matches statsmodels."""
+    case = statsmodels_fixtures["arma11"]
+    y, params = np.array(case["data"]), np.array(case["params"])
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 1), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    assert abs(ll - case["loglike"]) < LOGLIKE_ORACLE_TOL
+
+
+def test_loglike_arima111_oracle(statsmodels_fixtures):
+    """ARIMA(1,1,1) concentrated loglike at oracle params matches statsmodels."""
+    case = statsmodels_fixtures["arima111"]
+    y, params = np.array(case["data"]), np.array(case["params"])
+    ll = sarimax_rs.sarimax_loglike(
+        y, (1, 1, 1), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    assert abs(ll - case["loglike"]) < LOGLIKE_ORACLE_TOL
+
+
+def test_loglike_concentrate_scale_default(statsmodels_fixtures):
+    """concentrate_scale=True is the default."""
+    case = statsmodels_fixtures["ar1"]
+    y, params = np.array(case["data"]), np.array(case["params"])
+    ll_default = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    ll_explicit = sarimax_rs.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        concentrate_scale=True,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    assert ll_default == ll_explicit

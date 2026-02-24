@@ -1,4 +1,11 @@
-"""Tier A combination matrix tests — PR gate (<60s).
+"""Model matrix tests: Tier A (PR gate, <60s) + Tier B (nightly, <10min).
+
+Tier A: 30 ARIMA/SARIMA combinations — validates loglike math, optimizer
+        convergence, param count, forecast sanity, residuals, AIC/BIC.
+
+Tier B: ~70 extended models (higher order, multiple seasonal periods,
+        exog, d=2) — same validation logic, marked @nightly, 95% pass rate.
+"""
 
 Tests 30 ARIMA/SARIMA model combinations against statsmodels reference
 fixtures. Two levels of testing:
@@ -316,3 +323,136 @@ class TestAicBicFinite:
                 )
 
         assert not failures, "AIC/BIC failures:\n" + "\n".join(failures)
+
+
+# ── Tier B — nightly gate ────────────────────────────────────────────────────
+
+FIXTURE_PATH_B = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "tests" / "fixtures" / "matrix_tier_b.json"
+)
+
+
+@pytest.fixture(scope="module")
+def tier_b_models():
+    """Load all Tier B model fixtures (skipped if not generated yet)."""
+    if not FIXTURE_PATH_B.exists():
+        pytest.skip("Tier B fixtures not generated yet")
+    with open(FIXTURE_PATH_B) as f:
+        return json.load(f)
+
+
+@pytest.mark.nightly
+class TestTierBLoglikeComputation:
+    ATOL = 0.5
+
+    def test_loglike_at_oracle_params(self, tier_b_models):
+        failures = []
+        for m in converged_models(tier_b_models):
+            order, seasonal = tuple(m["order"]), tuple(m["seasonal"])
+            y = np.array(m["data"])
+            exog = np.array(m["exog"]) if "exog" in m else None
+            try:
+                rust_ll = sarimax_rs.sarimax_loglike(
+                    y, order, seasonal, np.array(m["params"]), exog=exog,
+                    enforce_stationarity=False, enforce_invertibility=False,
+                )
+                diff = abs(rust_ll - m["loglike"])
+                if diff > self.ATOL:
+                    failures.append(f"{m['model_id']}: diff={diff:.4f}")
+            except Exception as e:
+                failures.append(f"{m['model_id']}: ERROR {e}")
+        n = len(converged_models(tier_b_models))
+        rate = (n - len(failures)) / n * 100 if n > 0 else 0
+        assert rate >= 95, f"Pass rate {rate:.1f}% < 95%:\n" + "\n".join(failures[:20])
+
+
+@pytest.mark.nightly
+class TestTierBFitConvergence:
+    def test_convergence_rate(self, tier_b_models):
+        n_total, n_conv, failures = len(converged_models(tier_b_models)), 0, []
+        for m in converged_models(tier_b_models):
+            order, seasonal = tuple(m["order"]), tuple(m["seasonal"])
+            y = np.array(m["data"])
+            exog = np.array(m["exog"]) if "exog" in m else None
+            try:
+                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                if result["converged"]:
+                    n_conv += 1
+                else:
+                    failures.append(f"{m['model_id']}: did not converge")
+            except Exception as e:
+                failures.append(f"{m['model_id']}: ERROR {e}")
+        rate = n_conv / n_total * 100 if n_total > 0 else 0
+        assert rate >= 95, f"Conv rate {rate:.1f}% ({n_conv}/{n_total}) < 95%:\n" + "\n".join(failures[:20])
+
+
+@pytest.mark.nightly
+class TestTierBParamLength:
+    def test_param_lengths(self, tier_b_models):
+        failures = []
+        for m in converged_models(tier_b_models):
+            order, seasonal = tuple(m["order"]), tuple(m["seasonal"])
+            expected = expected_k_params(order, seasonal, m.get("n_exog", 0))
+            y = np.array(m["data"])
+            exog = np.array(m["exog"]) if "exog" in m else None
+            try:
+                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                actual = len(result["params"])
+                if actual != expected:
+                    failures.append(f"{m['model_id']}: expected {expected}, got {actual}")
+            except Exception as e:
+                failures.append(f"{m['model_id']}: ERROR {e}")
+        assert not failures, "Param length mismatches:\n" + "\n".join(failures)
+
+
+@pytest.mark.nightly
+class TestTierBForecastSanity:
+    def test_all_forecasts_finite(self, tier_b_models):
+        failures = []
+        for m in converged_models(tier_b_models):
+            order, seasonal = tuple(m["order"]), tuple(m["seasonal"])
+            y = np.array(m["data"])
+            exog = np.array(m["exog"]) if "exog" in m else None
+            future_exog = np.array(m["future_exog"]) if "future_exog" in m else None
+            try:
+                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                if not result["converged"]:
+                    continue
+                fc = sarimax_rs.sarimax_forecast(
+                    y, order, seasonal, np.array(result["params"]),
+                    steps=10, exog=exog, future_exog=future_exog,
+                )
+                mean = np.array(fc["mean"])
+                if len(mean) != 10 or not np.all(np.isfinite(mean)):
+                    failures.append(f"{m['model_id']}: bad forecast")
+            except Exception as e:
+                failures.append(f"{m['model_id']}: ERROR {e}")
+        n = len(converged_models(tier_b_models))
+        rate = (n - len(failures)) / n * 100 if n > 0 else 0
+        assert rate >= 95, f"Forecast pass rate {rate:.1f}% < 95%:\n" + "\n".join(failures[:20])
+
+
+@pytest.mark.nightly
+class TestTierBResiduals:
+    def test_all_residuals_finite(self, tier_b_models):
+        failures = []
+        for m in converged_models(tier_b_models):
+            order, seasonal = tuple(m["order"]), tuple(m["seasonal"])
+            y = np.array(m["data"])
+            exog = np.array(m["exog"]) if "exog" in m else None
+            try:
+                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                if not result["converged"]:
+                    continue
+                resid = sarimax_rs.sarimax_residuals(
+                    y, order, seasonal, np.array(result["params"]), exog=exog,
+                )
+                std_resid = np.array(resid["standardized_residuals"])
+                if len(std_resid) != m["n_obs"] or np.sum(~np.isfinite(std_resid)) > 0:
+                    failures.append(f"{m['model_id']}: bad residuals")
+            except Exception as e:
+                failures.append(f"{m['model_id']}: ERROR {e}")
+        n = len(converged_models(tier_b_models))
+        rate = (n - len(failures)) / n * 100 if n > 0 else 0
+        assert rate >= 95, f"Residual pass rate {rate:.1f}% < 95%:\n" + "\n".join(failures[:20])

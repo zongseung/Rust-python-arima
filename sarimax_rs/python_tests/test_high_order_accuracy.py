@@ -463,3 +463,43 @@ def test_high_order_comprehensive_report():
                 print(f"  {f['label']}: {f['error']}")
             else:
                 print(f"  {f['label']}: rs_worse_by={f['rs_worse_by']:.4f}")
+
+
+# ── Hourly s=24 tests (merged from test_hourly_s24.py) ──────────────────────
+
+def _gen_hourly_s24(n_days=14):
+    """Synthetic hourly data: trend + daily seasonality (s=24) + AR noise."""
+    n = n_days * 24
+    t = np.arange(n)
+    trend    = 50.0 + 0.005 * t
+    seasonal = 10.0 * np.sin(2 * np.pi * t / 24) + 3.0 * np.cos(2 * np.pi * t / 12)
+    noise    = np.zeros(n)
+    rng = np.random.default_rng(2024)
+    for i in range(1, n):
+        noise[i] = 0.5 * noise[i - 1] + rng.normal(scale=1.5)
+    return trend + seasonal + noise
+
+
+def test_sarima_s24_110_100_fit():
+    """SARIMA(1,1,0)(1,0,0,24) — simplest s=24 seasonal AR fit."""
+    y = _gen_hourly_s24(14)
+    result = sarimax_rs.sarimax_fit(y, (1, 1, 0), (1, 0, 0, 24))
+    assert np.isfinite(result["loglike"])
+
+
+def test_sarima_s24_111_111_fit():
+    """SARIMA(1,1,1)(1,1,1,24) — full seasonal model (k_states≈51)."""
+    y = _gen_hourly_s24(14)
+    result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
+    assert np.isfinite(result["loglike"])
+
+
+def test_sarima_s24_forecast_48h():
+    """SARIMA(1,1,1)(1,1,1,24) fit + 48-step forecast — all values finite."""
+    y = _gen_hourly_s24(14)
+    result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
+    fc = sarimax_rs.sarimax_forecast(
+        y, (1, 1, 1), (1, 1, 1, 24), np.array(result["params"]), steps=48,
+    )
+    assert len(fc["mean"]) == 48
+    assert all(np.isfinite(fc["mean"]))
