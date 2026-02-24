@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import sarimax_rs
 import statsmodels.api as sm
-from conftest import generate_stationary_data, generate_random_walk
+from conftest import generate_ar1, generate_stationary_data, generate_random_walk
 
 PARAM_TOL = 0.05      # 파라미터 허용 오차
 LOGLIKE_TOL = 5.0     # 로그우도 허용 오차
