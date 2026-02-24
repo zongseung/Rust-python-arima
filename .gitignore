@@ -1,0 +1,26 @@
+# ─── 로컬 작업 디렉토리 (커밋 제외) ───
+paper/
+planner/
+claudedocs/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+
+# Rust build artifacts
+target/
+target_wheel/
+**/target_wheel/
+
+# Editor
+.idea/
+.vscode/
+*.swp
