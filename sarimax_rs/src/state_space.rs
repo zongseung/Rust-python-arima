@@ -134,6 +134,13 @@ impl StateSpace {
         let ko = order.k_order();
         let n = endog.len();
 
+        // Defensive: exog columns must match endog length (callers should pre-validate).
+        debug_assert!(
+            exog.map_or(true, |cols| cols.iter().all(|c| c.len() == n)),
+            "update_params: exog column length != endog length ({})",
+            n
+        );
+
         // 1. Update ARMA companion first column in T: T[sd+i, sd] = -reduced_ar[i+1]
         let red_ar = reduced_ar(params, order);
         for i in 0..ko {

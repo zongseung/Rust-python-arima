@@ -19,7 +19,7 @@ def _sample_series(n: int = 30) -> np.ndarray:
 
 def test_loglike_rejects_wrong_param_length():
     y = _sample_series()
-    with pytest.raises(ValueError, match="parameter length mismatch"):
+    with pytest.raises(ValueError, match="length mismatch"):
         sarimax_rs.sarimax_loglike(
             y,
             (1, 0, 1),
@@ -30,7 +30,7 @@ def test_loglike_rejects_wrong_param_length():
 
 def test_fit_rejects_wrong_start_params_length():
     y = _sample_series()
-    with pytest.raises(ValueError, match="parameter length mismatch"):
+    with pytest.raises(ValueError, match="length mismatch"):
         sarimax_rs.sarimax_fit(
             y,
             (1, 0, 1),

@@ -125,7 +125,15 @@ where
         }
     }
 
-    pub fn minimize(&mut self) -> Result<()> {
+    /// Run the L-BFGS-B optimizer loop.
+    ///
+    /// Returns the final Fortran task code on success:
+    /// - CONVERGENCE (20-25): solver converged normally
+    /// - STOP (30-40): solver stopped (e.g. iteration/CPU limit)
+    /// - WARNING (100-110): solver terminated with a warning
+    ///
+    /// Returns `Err` for ERROR (200+) or ABNORMAL (3) terminations.
+    pub fn minimize(&mut self) -> Result<i64> {
         let f = &mut self.problem.f;
         let x = &mut self.problem.x;
         let g = &mut self.problem.g;
@@ -168,7 +176,15 @@ where
             }
         }
 
-        Ok(())
+        // Classify final task code
+        if lbfgsb_ffi::is_error(self.task) || self.task == lbfgsb_ffi::ABNORMAL {
+            return Err(anyhow::anyhow!(
+                "L-BFGS-B terminated with error (task code {})",
+                self.task
+            ));
+        }
+
+        Ok(self.task)
     }
 
     pub fn fx(&self) -> f64 {

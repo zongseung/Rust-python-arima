@@ -15,25 +15,38 @@ use crate::types::SarimaxConfig;
 /// Returns `(eff_endog, eff_exog)`:
 /// - `eff_endog`: differenced series of length n - d - s*D
 /// - `eff_exog`: exog columns trimmed to the same length (drop first `n_drop` rows)
+///
+/// Returns `Err` if any exog column is shorter than `n_drop`.
 pub(crate) fn prepare_endog<'a>(
     endog: &[f64],
     config: &SarimaxConfig,
     exog: Option<&'a [Vec<f64>]>,
-) -> (Vec<f64>, Option<Vec<Vec<f64>>>) {
+) -> Result<(Vec<f64>, Option<Vec<Vec<f64>>>)> {
     if !config.simple_differencing {
-        return (endog.to_vec(), None);
+        return Ok((endog.to_vec(), None));
     }
 
     let eff = apply_differencing(endog, config);
     let n_drop = endog.len() - eff.len();
 
-    let eff_exog = exog.map(|cols| {
-        cols.iter()
-            .map(|col| col[n_drop..].to_vec())
-            .collect::<Vec<_>>()
-    });
+    let eff_exog = match exog {
+        Some(cols) => {
+            let mut trimmed = Vec::with_capacity(cols.len());
+            for (j, col) in cols.iter().enumerate() {
+                if col.len() < n_drop {
+                    return Err(crate::error::SarimaxError::InvalidInput(format!(
+                        "exog column {} has {} rows, but simple_differencing requires dropping {} rows",
+                        j, col.len(), n_drop
+                    )));
+                }
+                trimmed.push(col[n_drop..].to_vec());
+            }
+            Some(trimmed)
+        }
+        None => None,
+    };
 
-    (eff, eff_exog)
+    Ok((eff, eff_exog))
 }
 
 /// Run Kalman filter loglikelihood from a `SarimaxParams` struct.
@@ -45,7 +58,7 @@ pub(crate) fn kalman_eval(
     exog: Option<&[Vec<f64>]>,
 ) -> Result<kalman::KalmanOutput> {
     if config.simple_differencing {
-        let (eff_endog, eff_exog_owned) = prepare_endog(endog, config, exog);
+        let (eff_endog, eff_exog_owned) = prepare_endog(endog, config, exog)?;
         let ss = StateSpace::new(config, params, &eff_endog, eff_exog_owned.as_deref())?;
         let init = KalmanInit::from_config_default(&ss, config);
         kalman::kalman_loglike(&eff_endog, &ss, &init, config.concentrate_scale)
@@ -89,7 +102,7 @@ pub(crate) fn kalman_filter_full(
     exog: Option<&[Vec<f64>]>,
 ) -> Result<kalman::KalmanFilterOutput> {
     if config.simple_differencing {
-        let (eff_endog, eff_exog_owned) = prepare_endog(endog, config, exog);
+        let (eff_endog, eff_exog_owned) = prepare_endog(endog, config, exog)?;
         let ss = StateSpace::new(config, params, &eff_endog, eff_exog_owned.as_deref())?;
         let init = KalmanInit::from_config_default(&ss, config);
         kalman::kalman_filter(&eff_endog, &ss, &init, config.concentrate_scale)

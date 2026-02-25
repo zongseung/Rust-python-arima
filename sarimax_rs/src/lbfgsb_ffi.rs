@@ -34,16 +34,42 @@ extern "C" {
     ) -> std::os::raw::c_int;
 }
 
-// Task constants from lbfgsb.h
+// Task constants from lbfgsb.h — full set for proper termination handling.
 pub const START: i64 = 1;
 pub const NEW_X: i64 = 2;
+pub const ABNORMAL: i64 = 3;
 
 pub const FG: i64 = 10;
 pub const FG_END: i64 = 15;
 
 pub const CONVERGENCE: i64 = 20;
+pub const CONVERGENCE_END: i64 = 25;
+
+pub const STOP: i64 = 30;
+pub const STOP_END: i64 = 40;
+
+pub const WARNING: i64 = 100;
+pub const WARNING_END: i64 = 110;
+
+pub const ERROR: i64 = 200;
+pub const ERROR_END: i64 = 240;
 
 #[inline]
 pub fn is_fg(task: i64) -> bool {
     task >= FG && task <= FG_END
+}
+
+#[inline]
+pub fn is_converged(task: i64) -> bool {
+    task >= CONVERGENCE && task <= CONVERGENCE_END
+}
+
+#[inline]
+pub fn is_warning(task: i64) -> bool {
+    task >= WARNING && task <= WARNING_END
+}
+
+#[inline]
+pub fn is_error(task: i64) -> bool {
+    task >= ERROR && task <= ERROR_END
 }

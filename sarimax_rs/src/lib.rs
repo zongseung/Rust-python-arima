@@ -52,15 +52,19 @@ fn numpy2d_to_cols(arr: &PyReadonlyArray2<f64>) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// Parse optional exog numpy array → (column-major vecs, n_exog).
-fn parse_exog(exog: Option<&PyReadonlyArray2<f64>>) -> (Option<Vec<Vec<f64>>>, usize) {
+/// Parse optional exog numpy array → (column-major vecs, n_exog, n_rows).
+///
+/// Returns `n_rows` from the original numpy shape so that row-count validation
+/// works even for 0-column exog arrays (shape `(m, 0)`).
+fn parse_exog(exog: Option<&PyReadonlyArray2<f64>>) -> (Option<Vec<Vec<f64>>>, usize, usize) {
     match exog {
         Some(e) => {
+            let n_rows = e.shape()[0];
             let cols = numpy2d_to_cols(e);
             let n = cols.len();
-            (Some(cols), n)
+            (Some(cols), n, n_rows)
         }
-        None => (None, 0),
+        None => (None, 0, 0),
     }
 }
 
@@ -366,19 +370,15 @@ fn prepare_single_request(
     simple_differencing: bool,
 ) -> PyResult<(SarimaxConfig, Option<Vec<Vec<f64>>>)> {
     validate_endog_finite(endog)?;
-    let (exog_cols, n_exog) = parse_exog(exog);
+    let (exog_cols, n_exog, exog_nrows) = parse_exog(exog);
     validate_exog(&exog_cols)?;
-    // Early exog row-count validation at PyO3 boundary
-    if let Some(ref cols) = exog_cols {
-        if let Some(first_col) = cols.first() {
-            if first_col.len() != endog.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "exog has {} rows but endog has {} observations; they must match",
-                    first_col.len(),
-                    endog.len()
-                )));
-            }
-        }
+    // Early exog row-count validation at PyO3 boundary (shape-based, works for 0-col exog too)
+    if exog_cols.is_some() && exog_nrows != endog.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "exog has {} rows but endog has {} observations; they must match",
+            exog_nrows,
+            endog.len()
+        )));
     }
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
@@ -889,8 +889,15 @@ fn sarimax_grid_search<'py>(
 
     let endog = y.as_slice()?;
     validate_endog_finite(endog)?;
-    let (exog_cols, n_exog) = parse_exog(exog.as_ref());
+    let (exog_cols, n_exog, exog_nrows) = parse_exog(exog.as_ref());
     validate_exog(&exog_cols)?;
+    if exog_cols.is_some() && exog_nrows != endog.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "exog has {} rows but endog has {} observations; they must match",
+            exog_nrows,
+            endog.len()
+        )));
+    }
 
     let trend_val = parse_trend(trend)?;
 

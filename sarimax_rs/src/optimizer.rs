@@ -706,7 +706,7 @@ fn run_lbfgsb(
     problem.set_bounds(bounds_vec);
 
     let mut state = crate::lbfgsb_wrapper::LbfgsbState::new(problem, param);
-    state
+    let final_task = state
         .minimize()
         .map_err(|e| format!("L-BFGS-B failed: {}", e))?;
 
@@ -714,10 +714,12 @@ fn run_lbfgsb(
     let cost = state.fx();
     let n_eval = eval_count.load(std::sync::atomic::Ordering::Relaxed);
 
-    // Determine convergence: minimize() returning Ok means the Fortran code
-    // terminated normally (either via gradient tolerance pgtol OR function
-    // value tolerance factr). If we hit our eval limit, report not converged.
-    let converged = !hit_limit.load(std::sync::atomic::Ordering::Relaxed);
+    // Determine convergence from Fortran task code:
+    // - CONVERGENCE (20-25): solver converged via pgtol or factr
+    // - STOP/WARNING: solver stopped but not converged
+    // Additionally, if we hit our eval limit, report not converged.
+    let converged_by_solver = crate::lbfgsb_ffi::is_converged(final_task);
+    let converged = converged_by_solver && !hit_limit.load(std::sync::atomic::Ordering::Relaxed);
 
     Ok((x, cost, n_eval, converged))
 }
@@ -1166,7 +1168,11 @@ fn try_ar_fast_path(
     }
 }
 
-/// Build result for maxiter=0: no optimization, return start params as-is.
+/// Build result for maxiter=0 or zero-parameter models: no optimization needed.
+///
+/// `converged` is `true` when `n_params == 0` (trivially converged — nothing to
+/// optimize), `false` when the caller explicitly requested `maxiter=0` but there
+/// are free parameters remaining.
 fn build_zero_iter_result(
     endog: &[f64],
     config: &SarimaxConfig,
@@ -1179,6 +1185,8 @@ fn build_zero_iter_result(
     let init = KalmanInit::from_config_default(&ss, config);
     let output = kalman_loglike(endog, &ss, &init, config.concentrate_scale)?;
     let n_params = SarimaxParams::n_estimated_params(config);
+    let k_free = expected_param_len(config);
+    let converged = k_free == 0;
     Ok(FitResult {
         params: constrained_start.to_vec(),
         loglike: output.loglike,
@@ -1186,7 +1194,7 @@ fn build_zero_iter_result(
         n_obs: endog.len(),
         n_params,
         n_iter: 0,
-        converged: false,
+        converged,
         method: method.to_string(),
         aic: 0.0,
         bic: 0.0,
@@ -1616,9 +1624,33 @@ pub fn fit(
     let maxiter = maxiter.unwrap_or(500);
     let method = method.unwrap_or("lbfgsb");
 
+    // --- Early validation (before any fast-path) ---
+    // (a) Method whitelist: reject unknown methods immediately.
+    const VALID_METHODS: &[&str] = &[
+        "lbfgsb", "lbfgsb-multi", "lbfgsb-strict", "lbfgsb_single",
+        "lbfgs", "nelder-mead", "nm",
+    ];
+    if !VALID_METHODS.contains(&method) {
+        return Err(SarimaxError::OptimizationFailed(format!(
+            "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-strict', 'lbfgs', or 'nelder-mead'",
+            method
+        )));
+    }
+
+    // (b) start_params length: must match expected free param count if provided.
+    if let Some(sp) = start_params {
+        let expected = expected_param_len(config);
+        if sp.len() != expected {
+            return Err(SarimaxError::InvalidInput(format!(
+                "start_params length mismatch: expected {}, got {}",
+                expected, sp.len()
+            )));
+        }
+    }
+
     // simple_differencing: pre-difference the data so the Kalman filter sees
     // a stationary ARMA-only series. n_obs = eff_endog.len() for AIC/BIC.
-    let (eff_endog, eff_exog_owned) = pipeline::prepare_endog(endog, config, exog);
+    let (eff_endog, eff_exog_owned) = pipeline::prepare_endog(endog, config, exog)?;
     let eff_endog: &[f64] = &eff_endog;
     let eff_exog: Option<&[Vec<f64>]> = if config.simple_differencing {
         eff_exog_owned.as_deref()

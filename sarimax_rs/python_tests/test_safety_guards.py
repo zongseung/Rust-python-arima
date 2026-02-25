@@ -154,3 +154,95 @@ def test_valid_trends_accepted(trend):
         trend=trend,
     )
     assert np.isfinite(result["loglike"])
+
+
+# ---------------------------------------------------------------------------
+# 11-4. P0-1 regression: zero-param fast-path must NOT bypass validation
+# ---------------------------------------------------------------------------
+
+def test_zero_param_invalid_method_raises():
+    """(0,0,0) with method='foo' should raise, not silently succeed."""
+    y = np.random.default_rng(42).normal(size=100)
+    with pytest.raises(RuntimeError, match="unknown method"):
+        sarimax_rs.sarimax_fit(
+            y,
+            order=(0, 0, 0),
+            seasonal=(0, 0, 0, 0),
+            method="foo",
+        )
+
+
+def test_zero_param_invalid_start_params_raises():
+    """(0,0,0) with start_params=[1.0] should raise — expected 0 params."""
+    y = np.random.default_rng(42).normal(size=100)
+    with pytest.raises((ValueError, RuntimeError), match="(length|mismatch)"):
+        sarimax_rs.sarimax_fit(
+            y,
+            order=(0, 0, 0),
+            seasonal=(0, 0, 0, 0),
+            start_params=np.array([1.0]),
+        )
+
+
+def test_zero_param_converged_true():
+    """Zero-parameter model (0,0,0) should report converged=True."""
+    y = np.random.default_rng(42).normal(size=100)
+    result = sarimax_rs.sarimax_fit(
+        y,
+        order=(0, 0, 0),
+        seasonal=(0, 0, 0, 0),
+    )
+    assert result["converged"] is True, "zero-param model should be trivially converged"
+
+
+# ---------------------------------------------------------------------------
+# 11-5. V8.2 regression tests
+# ---------------------------------------------------------------------------
+
+def test_zero_col_exog_row_mismatch_raises():
+    """Exog with shape (80, 0) — 0 columns but wrong row count — should raise."""
+    y = np.random.default_rng(42).normal(size=100)
+    exog_bad = np.empty((80, 0), dtype=np.float64)  # 80 != 100
+
+    with pytest.raises(ValueError, match="exog has 80 rows but endog has 100"):
+        sarimax_rs.sarimax_fit(
+            y,
+            order=(1, 0, 0),
+            seasonal=(0, 0, 0, 0),
+            exog=exog_bad,
+        )
+
+
+def test_auto_arima_grid_only_candidate_returns_result():
+    """Grid-search with only one candidate should return a result, not None."""
+    from sarimax_py.auto import auto_arima
+
+    y = np.random.default_rng(42).normal(size=100)
+    res = auto_arima(
+        y,
+        max_p=0, max_q=0, max_d=0,
+        max_P=0, max_Q=0, max_D=0,
+        s=0, d=0, D=0,
+        stepwise=False,
+    )
+    assert res.result is not None, "only-candidate grid search should return a result"
+
+
+def test_auto_arima_stepwise_s0_no_seasonal_explored():
+    """Stepwise with s=0 should never explore P>0 or Q>0."""
+    from sarimax_py.auto import auto_arima
+
+    y = np.random.default_rng(42).normal(size=100)
+    res = auto_arima(
+        y,
+        max_p=2, max_q=2, max_d=0,
+        max_P=2, max_Q=2, max_D=0,
+        s=0, d=0, D=0,
+        stepwise=True,
+    )
+    for entry in res.history:
+        seasonal = entry["seasonal_order"]
+        P, D, Q, s_val = seasonal
+        assert P == 0 and Q == 0, (
+            f"stepwise with s=0 explored P={P}, Q={Q} (should be 0)"
+        )

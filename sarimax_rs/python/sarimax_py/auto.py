@@ -94,7 +94,7 @@ def _trace_print(p, d, q, P, D, Q, s, criterion, ic_val):
 def _try_fit(endog, order, seasonal_order, trend="n",
              enforce_stationarity=True, enforce_invertibility=True,
              method=None, maxiter=None,
-             exog=None, simple_differencing=False):
+             exog=None, simple_differencing=False, trace=False):
     """Attempt to fit a model, returning result or None."""
     try:
         model = SARIMAXModel(
@@ -107,7 +107,9 @@ def _try_fit(endog, order, seasonal_order, trend="n",
         )
         result = model.fit(method=method, maxiter=maxiter)
         return result
-    except Exception:
+    except Exception as exc:
+        if trace:
+            print(f"    [FAILED] ARIMA{order}{seasonal_order}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -211,6 +213,11 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
               method, maxiter, trace,
               exog=None, simple_differencing=False):
     """Hyndman-Khandakar stepwise algorithm."""
+    # Non-seasonal model: suppress seasonal order exploration entirely
+    if s == 0:
+        max_P = 0
+        max_Q = 0
+
     history = []
     visited = set()
 
@@ -229,6 +236,7 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
             enforce_invertibility=enforce_invertibility,
             method=method, maxiter=maxiter,
             exog=exog, simple_differencing=simple_differencing,
+            trace=trace,
         )
         if result is None:
             ic_val = math.inf
@@ -363,7 +371,7 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         converged = raw.get("converged", False)
         has_error = "error" in raw
 
-        if not has_error and converged:
+        if not has_error:
             ic_val = raw.get("aic", math.inf)
             if criterion == "bic":
                 ic_val = raw.get("bic", math.inf)
