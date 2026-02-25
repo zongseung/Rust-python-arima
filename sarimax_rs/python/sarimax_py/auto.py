@@ -72,14 +72,17 @@ def _ic(result, criterion="aic"):
 
 def _try_fit(endog, order, seasonal_order, trend="n",
              enforce_stationarity=True, enforce_invertibility=True,
-             method=None, maxiter=None):
-    """Attempt to fit a model, returning (result, ic) or (None, inf)."""
+             method=None, maxiter=None,
+             exog=None, simple_differencing=False):
+    """Attempt to fit a model, returning result or None."""
     try:
         model = SARIMAXModel(
             endog, order=order, seasonal_order=seasonal_order,
+            exog=exog,
             trend=trend,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
+            simple_differencing=simple_differencing,
         )
         result = model.fit(method=method, maxiter=maxiter)
         return result
@@ -89,6 +92,7 @@ def _try_fit(endog, order, seasonal_order, trend="n",
 
 def auto_arima(
     endog,
+    exog=None,
     max_p=5,
     max_q=5,
     max_d=2,
@@ -105,6 +109,7 @@ def auto_arima(
     enforce_invertibility=True,
     method=None,
     maxiter=None,
+    simple_differencing=False,
     trace=False,
 ):
     """Automatic ARIMA order selection.
@@ -147,6 +152,10 @@ def auto_arima(
         Best fit result with search history.
     """
     endog = np.asarray(endog, dtype=np.float64)
+    if exog is not None:
+        exog = np.asarray(exog, dtype=np.float64)
+        if exog.ndim == 1:
+            exog = exog.reshape(-1, 1)
 
     # Auto-detect differencing
     if d is None:
@@ -162,6 +171,7 @@ def auto_arima(
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
             method=method, maxiter=maxiter, trace=trace,
+            exog=exog, simple_differencing=simple_differencing,
         )
     else:
         return _grid_search(
@@ -171,12 +181,14 @@ def auto_arima(
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
             method=method, maxiter=maxiter, trace=trace,
+            exog=exog, simple_differencing=simple_differencing,
         )
 
 
 def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
               trend, criterion, enforce_stationarity, enforce_invertibility,
-              method, maxiter, trace):
+              method, maxiter, trace,
+              exog=None, simple_differencing=False):
     """Hyndman-Khandakar stepwise algorithm."""
     history = []
     visited = set()
@@ -195,6 +207,7 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
             method=method, maxiter=maxiter,
+            exog=exog, simple_differencing=simple_differencing,
         )
         if result is None:
             ic_val = math.inf
@@ -285,7 +298,8 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
 
 def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
                  trend, criterion, enforce_stationarity, enforce_invertibility,
-                 method, maxiter, trace):
+                 method, maxiter, trace,
+                 exog=None, simple_differencing=False):
     """Exhaustive grid search using Rust Rayon-parallel grid_search."""
     import sarimax_rs
 
@@ -305,7 +319,10 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         enforce_stationarity=enforce_stationarity,
         enforce_invertibility=enforce_invertibility,
         trend=trend,
+        simple_differencing=simple_differencing,
     )
+    if exog is not None:
+        kwargs["exog"] = exog
     if method is not None:
         kwargs["method"] = method
     if maxiter is not None:
@@ -364,9 +381,11 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
     if best_ic < math.inf:
         model = SARIMAXModel(
             endog, order=best_order, seasonal_order=best_seasonal,
+            exog=exog,
             trend=trend,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
+            simple_differencing=simple_differencing,
         )
         model._fit_result = True  # Mark as fitted
         from .model import SARIMAXResult
