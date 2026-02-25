@@ -108,15 +108,18 @@ fn validate_batch_finite(series_list: &[PyReadonlyArray1<'_, f64>]) -> PyResult<
     Ok(result)
 }
 
-/// Parse and validate a batch exog list: matching lengths, finite values, consistent column counts.
+/// Parse and validate a batch exog list: matching lengths, finite values, consistent column counts,
+/// and per-series row count matching endog length.
 ///
 /// Converts numpy arrays to column-major Vecs and validates:
 /// - `exog_list` length matches `series_len`
 /// - All values are finite
 /// - All series have the same number of exog columns
+/// - Each exog's row count matches the corresponding series length
 fn parse_and_validate_batch_exog(
     exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
     series_len: usize,
+    series_lengths: &[usize],
 ) -> PyResult<(Option<Vec<Vec<Vec<f64>>>>, usize)> {
     if let Some(ref el) = exog_list {
         if el.len() != series_len {
@@ -136,6 +139,14 @@ fn parse_and_validate_batch_exog(
                     i,
                     cols.len(),
                     n_exog
+                )));
+            }
+            // Per-series row count validation (shape-based via numpy shape[0])
+            let exog_nrows = el[i].shape()[0];
+            if exog_nrows != series_lengths[i] {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "exog_list[{}] has {} rows but series[{}] has {} observations; they must match",
+                    i, exog_nrows, i, series_lengths[i]
                 )));
             }
         }
@@ -311,12 +322,14 @@ fn validate_exog(exog_cols: &Option<Vec<Vec<f64>>>) -> PyResult<()> {
     Ok(())
 }
 
-/// Validate batch exog list: matching lengths, finite values, consistent column counts.
+/// Validate batch exog list: matching lengths, finite values, consistent column counts,
+/// and per-series row count matching endog length.
 fn validate_batch_exog(
     exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
     series_len: usize,
+    series_lengths: &[usize],
 ) -> PyResult<(Option<Vec<Vec<Vec<f64>>>>, usize)> {
-    parse_and_validate_batch_exog(exog_list, series_len)
+    parse_and_validate_batch_exog(exog_list, series_len, series_lengths)
 }
 
 /// Build SarimaxConfig from Python-facing tuples and flags.
@@ -392,6 +405,9 @@ fn prepare_single_request(
 }
 
 /// Convert a FitResult to a PyDict with standard keys.
+///
+/// Warnings from the Rust fit path are emitted via Python's `warnings.warn()`
+/// and also stored in the `"warnings"` key (V8.5 P2-1).
 fn fit_result_to_pydict<'py>(py: Python<'py>, result: &crate::types::FitResult) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("params", &result.params)?;
@@ -404,6 +420,14 @@ fn fit_result_to_pydict<'py>(py: Python<'py>, result: &crate::types::FitResult) 
     dict.set_item("n_iter", result.n_iter)?;
     dict.set_item("converged", result.converged)?;
     dict.set_item("method", &result.method)?;
+    dict.set_item("warnings", &result.warnings)?;
+
+    // Emit warnings via Python warnings module
+    for msg in &result.warnings {
+        let warn_mod = py.import("warnings")?;
+        warn_mod.call_method1("warn", (msg.as_str(),))?;
+    }
+
     Ok(dict)
 }
 
@@ -742,7 +766,8 @@ fn sarimax_batch_loglike<'py>(
     simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
+    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
 
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
@@ -807,7 +832,8 @@ fn sarimax_batch_fit<'py>(
     simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
+    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
 
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
@@ -990,7 +1016,8 @@ fn sarimax_batch_forecast<'py>(
     validate_alpha(alpha)?;
 
     let series = validate_batch_finite(&series_list)?;
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len())?;
+    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
+    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
     let future_exog_vecs = parse_and_validate_batch_forecast_exog(
         &exog_forecast_list,
         series_list.len(),

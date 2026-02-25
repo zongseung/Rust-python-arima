@@ -143,6 +143,8 @@ pub struct FitResult {
     pub method: String,
     pub aic: f64,
     pub bic: f64,
+    /// Runtime warnings (e.g., near-cancellation detection).
+    pub warnings: Vec<String>,
 }
 
 impl FitResult {

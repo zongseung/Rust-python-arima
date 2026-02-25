@@ -249,7 +249,9 @@ def _resolve_inference_mode(inference=None, include_inference=None):
 def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
                                    exog=None, n_params_rs=None,
                                    enforce_stationarity=True,
-                                   enforce_invertibility=True):
+                                   enforce_invertibility=True,
+                                   trend="n",
+                                   simple_differencing=False):
     """Compute inference statistics using statsmodels as reference.
 
     Parameters
@@ -264,6 +266,10 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
     enforce_stationarity : bool
         Pass through to statsmodels SARIMAX.
     enforce_invertibility : bool
+        Pass through to statsmodels SARIMAX.
+    trend : str
+        Trend specification ('n', 'c', 't', 'ct').
+    simple_differencing : bool
         Pass through to statsmodels SARIMAX.
 
     Returns
@@ -281,6 +287,8 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
             exog=exog,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
+            trend=trend,
+            simple_differencing=simple_differencing,
         )
         res_sm = model_sm.fit(disp=False)
 
@@ -288,14 +296,31 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
         k = n_params_rs if n_params_rs is not None else len(res_sm.params) - 1
         ci = res_sm.conf_int(alpha=alpha)
 
+        # Shape guard: statsmodels may return fewer params than expected
+        if len(res_sm.bse) < k:
+            return _inference_nan_dict(
+                n_params_rs or 0, "failed",
+                f"statsmodels returned {len(res_sm.bse)} params but expected >= {k}",
+                prefix="sm",
+            )
+
+        # Check convergence status
+        sm_converged = getattr(res_sm, "mle_retvals", {}).get("converged", True)
+        if sm_converged:
+            status = "ok"
+            message = None
+        else:
+            status = "warning"
+            message = "statsmodels optimizer did not converge"
+
         return dict(
             sm_std_err=np.array(res_sm.bse[:k]),
             sm_z=np.array(res_sm.zvalues[:k]),
             sm_p_value=np.array(res_sm.pvalues[:k]),
             sm_ci_lower=np.array(ci[:k, 0]),
             sm_ci_upper=np.array(ci[:k, 1]),
-            inference_status_sm="ok",
-            inference_message_sm=None,
+            inference_status_sm=status,
+            inference_message_sm=message,
         )
     except Exception as e:
         return _inference_nan_dict(n_params_rs or 0, "failed", str(e), prefix="sm")
@@ -369,7 +394,8 @@ def _compute_inference(loglike_fn, params, alpha=0.05):
 
 def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=0.05,
                             exog=None, enforce_stationarity=True,
-                            enforce_invertibility=True, trend="n"):
+                            enforce_invertibility=True, trend="n",
+                            simple_differencing=False):
     """Compute inference using the Rust sarimax_inference function.
 
     Parameters
@@ -385,6 +411,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
     enforce_stationarity : bool
     enforce_invertibility : bool
     trend : str
+    simple_differencing : bool
 
     Returns
     -------
@@ -400,6 +427,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
             trend=trend,
+            simple_differencing=simple_differencing,
         )
         if exog is not None:
             kwargs["exog"] = exog
@@ -476,9 +504,16 @@ class SARIMAXModel:
         simple_differencing=False,
     ):
         self.endog = np.asarray(endog, dtype=np.float64)
+        if self.endog.ndim != 1:
+            raise ValueError(f"endog must be 1-dimensional, got ndim={self.endog.ndim}")
         self.order = order
         self.seasonal_order = seasonal_order
-        self.exog = np.asarray(exog, dtype=np.float64) if exog is not None else None
+        if exog is not None:
+            self.exog = np.asarray(exog, dtype=np.float64)
+            if self.exog.ndim == 1:
+                self.exog = self.exog.reshape(-1, 1)
+        else:
+            self.exog = None
         self.trend = trend
         self.enforce_stationarity = enforce_stationarity
         self.enforce_invertibility = enforce_invertibility
@@ -519,6 +554,8 @@ class SARIMAXModel:
         -------
         SARIMAXResult
         """
+        if start_params is not None:
+            start_params = np.asarray(start_params, dtype=np.float64)
         kwargs = self._model_kwargs(
             start_params=start_params,
             method=method,
@@ -608,7 +645,10 @@ class SARIMAXResult:
 
     def _rs_kwargs(self, **extra):
         """Build common kwargs dict for sarimax_rs function calls."""
-        kw = dict(trend=self.model.trend)
+        kw = dict(
+            trend=self.model.trend,
+            simple_differencing=self.model.simple_differencing,
+        )
         if self.model.exog is not None:
             kw["exog"] = self.model.exog
         kw.update(extra)
@@ -648,6 +688,7 @@ class SARIMAXResult:
                 enforce_stationarity=self.model.enforce_stationarity,
                 enforce_invertibility=self.model.enforce_invertibility,
                 trend=self.model.trend,
+                simple_differencing=self.model.simple_differencing,
             )
         return self._inference_cache[cache_key]
 
@@ -664,6 +705,8 @@ class SARIMAXResult:
                 n_params_rs=len(self.params),
                 enforce_stationarity=self.model.enforce_stationarity,
                 enforce_invertibility=self.model.enforce_invertibility,
+                trend=self.model.trend,
+                simple_differencing=self.model.simple_differencing,
             )
         return self._inference_cache[cache_key]
 
@@ -826,7 +869,10 @@ class SARIMAXResult:
         """
         kwargs = self._rs_kwargs(steps=steps, alpha=alpha)
         if exog is not None:
-            kwargs["future_exog"] = np.asarray(exog, dtype=np.float64)
+            exog = np.asarray(exog, dtype=np.float64)
+            if exog.ndim == 1:
+                exog = exog.reshape(-1, 1)
+            kwargs["future_exog"] = exog
 
         result = sarimax_rs.sarimax_forecast(*self._rs_args, **kwargs)
         return ForecastResult(result, alpha=alpha)
@@ -901,19 +947,32 @@ class SARIMAXResult:
         -------
         PredictionResult
         """
-        n = self.nobs
+        n_endog = len(self.model.endog)
         if start is None:
             start = 0
         if end is None:
-            end = n
+            end = n_endog
 
         # In-sample: one-step-ahead predictions = endog - residuals (innovations)
         resid_out = sarimax_rs.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
-        in_sample_pred = self.model.endog - np.array(resid_out["residuals"])
+        residuals = np.array(resid_out["residuals"])
+
+        # When simple_differencing=True, Rust returns residuals of length
+        # n_eff = n - d - s*D (dropped observations).  Pad the front with
+        # NaN so the prediction array aligns with the original endog index.
+        n_drop = n_endog - len(residuals)
+        if n_drop > 0:
+            endog_eff = self.model.endog[n_drop:]
+            in_sample_pred = np.concatenate([
+                np.full(n_drop, np.nan),
+                endog_eff - residuals,
+            ])
+        else:
+            in_sample_pred = self.model.endog - residuals
 
         # Out-of-sample
-        if end > n:
-            fc = self.forecast(steps=end - n, alpha=alpha, exog=exog)
+        if end > n_endog:
+            fc = self.forecast(steps=end - n_endog, alpha=alpha, exog=exog)
             all_pred = np.concatenate([in_sample_pred, fc.predicted_mean])
         else:
             all_pred = in_sample_pred

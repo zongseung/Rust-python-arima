@@ -7,13 +7,13 @@
 
 
 
- /* You could have to modify these
- * Noticed that on windows, long int is 32-bit
- * while on linux and mac long int is 64-bit.
-  *Use long long to force 64-bit if you want */
-typedef long int integer;
-typedef long int ftnlen;
-typedef long int logical;
+ /* Force 64-bit integers on all platforms (including Windows LLP64
+  * where long int is 32-bit).  Rust FFI side declares integer = i64,
+  * so the C side must match exactly to avoid ABI mismatch. */
+#include <stdint.h>
+typedef int64_t integer;
+typedef int64_t ftnlen;
+typedef int64_t logical;
 #define TRUE_ (1)
 #define FALSE_ (0)
 

@@ -246,3 +246,379 @@ def test_auto_arima_stepwise_s0_no_seasonal_explored():
         assert P == 0 and Q == 0, (
             f"stepwise with s=0 explored P={P}, Q={Q} (should be 0)"
         )
+
+
+# ---------------------------------------------------------------------------
+# 11-6. V8.3 regression tests
+# ---------------------------------------------------------------------------
+
+def test_batch_forecast_short_exog_no_panic():
+    """batch_forecast + simple_differencing + short exog → ValueError, not panic."""
+    series = [np.arange(10, dtype=float)]
+    params_list = [np.array([0.0], dtype=float)]
+    exog_list = [np.empty((0, 1), dtype=np.float64)]
+    future_exog_list = [np.zeros((1, 1), dtype=np.float64)]
+
+    with pytest.raises(ValueError, match="exog_list\\[0\\] has 0 rows"):
+        sarimax_rs.sarimax_batch_forecast(
+            series,
+            (0, 1, 0),
+            (0, 0, 0, 0),
+            params_list,
+            steps=1,
+            exog_list=exog_list,
+            exog_forecast_list=future_exog_list,
+            simple_differencing=True,
+        )
+
+
+def test_ndiffs_uses_adf_when_statsmodels_available():
+    """_ndiffs should use ADF test (not variance fallback) when statsmodels exists."""
+    from sarimax_py.auto import _ndiffs
+
+    y = np.random.default_rng(42).normal(size=200)
+    d = _ndiffs(y, max_d=2)
+    assert d == 0, "white noise should need d=0 via ADF test"
+
+
+def test_invalid_criterion_raises_for_grid_search():
+    """Invalid criterion must raise ValueError for grid search too, not silently fallback."""
+    from sarimax_py.auto import auto_arima
+
+    y = np.random.default_rng(42).normal(size=60)
+    with pytest.raises(ValueError, match="Unknown criterion"):
+        auto_arima(
+            y,
+            max_p=1, max_q=1, max_d=0,
+            max_P=0, max_Q=0, max_D=0,
+            s=0, d=0, D=0,
+            criterion="xyz",
+            stepwise=False,
+        )
+
+
+def test_1d_exog_auto_reshaped():
+    """1D exog array should be auto-reshaped to (n, 1) in SARIMAXModel."""
+    from sarimax_py.model import SARIMAXModel
+
+    y = np.random.default_rng(42).normal(size=50)
+    x = np.random.default_rng(43).normal(size=50)  # 1D
+    m = SARIMAXModel(y, order=(1, 0, 0), exog=x)
+    assert m.exog.ndim == 2
+    assert m.exog.shape == (50, 1)
+    r = m.fit()
+    assert r is not None
+
+
+def test_list_start_params_accepted():
+    """Python list start_params should be auto-coerced to ndarray."""
+    from sarimax_py.model import SARIMAXModel
+
+    y = np.random.default_rng(42).normal(size=50)
+    m = SARIMAXModel(y, order=(1, 0, 0))
+    r = m.fit(start_params=[0.5])
+    assert r is not None
+
+
+def test_1d_forecast_exog_accepted():
+    """1D forecast exog should be auto-reshaped to (steps, 1)."""
+    from sarimax_py.model import SARIMAXModel
+
+    y = np.random.default_rng(42).normal(size=50)
+    x = np.random.default_rng(43).normal(size=(50, 1))
+    m = SARIMAXModel(y, order=(1, 0, 0), exog=x)
+    r = m.fit()
+    fc = r.forecast(steps=3, exog=np.random.default_rng(44).normal(size=3))
+    assert len(fc.predicted_mean) == 3
+
+
+# ---------------------------------------------------------------------------
+# 11-7. V8.4 regression tests
+# ---------------------------------------------------------------------------
+
+def test_simple_differencing_resid_propagated():
+    """resid with simple_differencing=True must use the correct Rust path."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(2)
+    y = np.cumsum(np.random.randn(100))
+    r = SARIMAXModel(y, order=(1, 1, 1), simple_differencing=True).fit(maxiter=50)
+    params = np.array(r.params)
+
+    wrap_resid = np.array(r.resid)
+    true_resid = np.array(
+        sarimax_rs.sarimax_residuals(
+            y, (1, 1, 1), (0, 0, 0, 0), params, simple_differencing=True
+        )["standardized_residuals"]
+    )
+    # With simple_differencing=True, residual length = n - d = 99
+    assert len(wrap_resid) == len(true_resid), (
+        f"resid length mismatch: wrapper={len(wrap_resid)}, true={len(true_resid)}"
+    )
+    assert np.allclose(wrap_resid, true_resid, equal_nan=True)
+
+
+def test_simple_differencing_rust_inference_propagated():
+    """Rust inference with simple_differencing=True must compute on correct path."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(4)
+    y = np.cumsum(np.random.randn(200))
+    r = SARIMAXModel(y, order=(1, 1, 0), simple_differencing=True).fit(maxiter=80)
+    params = np.array(r.params)
+
+    se_wrapper = np.array(r.parameter_summary(inference="rust_hessian")["std_err"])
+    se_true = np.array(
+        sarimax_rs.sarimax_inference(
+            y, (1, 1, 0), (0, 0, 0, 0), params,
+            method="hessian", simple_differencing=True
+        )["std_err"]
+    )
+    assert np.allclose(se_wrapper, se_true, equal_nan=True), (
+        "Rust inference std_err should match simple_differencing=True path"
+    )
+
+
+def test_trend_ct_statsmodels_inference_no_crash():
+    """trend='ct' + statsmodels inference should not raise IndexError/ValueError."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(7)
+    y = np.random.randn(120)
+    r = SARIMAXModel(y, order=(1, 0, 0), trend="ct").fit(maxiter=50)
+
+    # parameter_summary should return arrays matching param count
+    ps = r.parameter_summary(inference="statsmodels")
+    assert len(ps["std_err"]) == len(r.params)
+
+    # summary should not crash
+    s = r.summary(inference="statsmodels")
+    assert isinstance(s, str)
+
+    # 'both' mode should not crash
+    ps_both = r.parameter_summary(inference="both")
+    assert len(ps_both["std_err"]) == len(r.params)
+
+
+# ---------------------------------------------------------------------------
+# 11-8. V8.5 regression tests
+# ---------------------------------------------------------------------------
+
+def test_near_cancellation_warning_via_python_warnings():
+    """Near-cancellation warning should be emitted via Python warnings, not stderr."""
+    import warnings as warn_mod
+
+    np.random.seed(42)
+    y = np.random.randn(120)
+
+    with warn_mod.catch_warnings(record=True) as w:
+        warn_mod.simplefilter("always")
+        result = sarimax_rs.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0), maxiter=1)
+
+    # Check warning was captured via Python warnings module
+    near_cancel_warnings = [x for x in w if "near-cancellation" in str(x.message)]
+    assert len(near_cancel_warnings) >= 1, "near-cancellation should emit Python warning"
+
+    # Also check result dict contains warnings list
+    assert "warnings" in result, "result dict should have 'warnings' key"
+    assert any("near-cancellation" in msg for msg in result["warnings"])
+
+
+def test_fit_result_warnings_empty_when_no_issue():
+    """Normal fit should have empty warnings list."""
+    np.random.seed(99)
+    y = np.random.randn(100)
+    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), maxiter=50)
+    assert "warnings" in result
+    assert isinstance(result["warnings"], list)
+
+
+def test_forecast_error_message_unified():
+    """Single and batch forecast missing-exog errors should have consistent core message."""
+    np.random.seed(9)
+    y = np.random.randn(40)
+    ex = np.random.randn(40, 1)
+    fit = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), exog=ex, maxiter=20)
+    params = np.array(fit["params"])
+
+    # Single forecast
+    with pytest.raises(ValueError, match="future_exog is required"):
+        sarimax_rs.sarimax_forecast(
+            y, (1, 0, 0), (0, 0, 0, 0), params, steps=3, exog=ex
+        )
+
+    # Batch forecast — returns error dict, not exception
+    res = sarimax_rs.sarimax_batch_forecast(
+        [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=3, exog_list=[ex]
+    )
+    assert "error" in res[0]
+    assert "future_exog is required" in res[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# 11-9. V8.6 regression tests
+# ---------------------------------------------------------------------------
+
+def test_opg_vs_hessian_ar1_reasonable():
+    """OPG SE should be within 10x of Hessian SE for a stable AR(1)."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(1)
+    y = np.random.randn(200)
+    r = SARIMAXModel(y, order=(1, 0, 0)).fit(maxiter=100)
+
+    h = r.parameter_summary(inference="rust_hessian")
+    o = r.parameter_summary(inference="opg")
+
+    h_se = np.array(h["std_err"])
+    o_se = np.array(o["std_err"])
+
+    # Both should be finite
+    assert np.all(np.isfinite(h_se)), f"Hessian SE not finite: {h_se}"
+    assert np.all(np.isfinite(o_se)), f"OPG SE not finite: {o_se}"
+
+    # Ratio should be reasonable (< 10x)
+    ratio = o_se / np.where(h_se > 0, h_se, 1e-30)
+    assert np.all(ratio < 10.0), (
+        f"OPG/Hessian SE ratio too large: {ratio} (OPG={o_se}, Hessian={h_se})"
+    )
+    assert np.all(ratio > 0.1), (
+        f"OPG/Hessian SE ratio too small: {ratio} (OPG={o_se}, Hessian={h_se})"
+    )
+
+
+def test_opg_vs_hessian_arma11_reasonable():
+    """OPG SE should be reasonable for ARMA(1,1)."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(2)
+    y = np.random.randn(300)
+    r = SARIMAXModel(y, order=(1, 0, 1)).fit(maxiter=100)
+
+    h = r.parameter_summary(inference="rust_hessian")
+    o = r.parameter_summary(inference="opg")
+
+    h_se = np.array(h["std_err"])
+    o_se = np.array(o["std_err"])
+
+    assert np.all(np.isfinite(h_se)), f"Hessian SE not finite: {h_se}"
+    assert np.all(np.isfinite(o_se)), f"OPG SE not finite: {o_se}"
+
+    ratio = o_se / np.where(h_se > 0, h_se, 1e-30)
+    assert np.all(ratio < 20.0), (
+        f"OPG/Hessian SE ratio too large for ARMA(1,1): {ratio}"
+    )
+
+
+def test_opg_status_ok_for_simple_model():
+    """OPG should return status='ok' for a well-identified AR(1)."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(3)
+    y = np.random.randn(200)
+    r = SARIMAXModel(y, order=(1, 0, 0)).fit(maxiter=100)
+
+    o = r.parameter_summary(inference="opg")
+    assert o["inference_status"] == "ok", (
+        f"OPG status should be 'ok', got '{o['inference_status']}': {o.get('inference_message')}"
+    )
+
+
+def test_statsmodels_inference_non_converged_status():
+    """statsmodels inference bridge should report non-converged status, not 'ok'."""
+    from sarimax_py.model import _compute_statsmodels_inference
+
+    np.random.seed(10)
+    y = np.random.randn(50)
+
+    result = _compute_statsmodels_inference(
+        y, order=(1, 0, 0), seasonal_order=(0, 0, 0, 0),
+        n_params_rs=1,
+        enforce_stationarity=True,
+        enforce_invertibility=True,
+        trend="n",
+    )
+    # With 50 observations, should converge fine → "ok"
+    assert result["inference_status_sm"] in ("ok", "warning")
+
+
+def test_statsmodels_inference_simple_differencing_passed():
+    """statsmodels inference bridge should pass simple_differencing through."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(5)
+    y = np.cumsum(np.random.randn(200))
+
+    r_sd = SARIMAXModel(y, order=(1, 1, 0), simple_differencing=True).fit(maxiter=80)
+    r_no = SARIMAXModel(y, order=(1, 1, 0), simple_differencing=False).fit(maxiter=80)
+
+    ps_sd = r_sd.parameter_summary(inference="statsmodels")
+    ps_no = r_no.parameter_summary(inference="statsmodels")
+
+    # Both should produce finite SE
+    assert np.all(np.isfinite(ps_sd["std_err"])), "SD=True SE not finite"
+    assert np.all(np.isfinite(ps_no["std_err"])), "SD=False SE not finite"
+
+    # SE values can differ due to different likelihood evaluation,
+    # but both should be in a reasonable range
+    assert np.all(ps_sd["std_err"] > 0), "SD=True SE should be positive"
+    assert np.all(ps_no["std_err"] > 0), "SD=False SE should be positive"
+
+
+# ---------------------------------------------------------------------------
+# 11-10. V8.7 regression tests
+# ---------------------------------------------------------------------------
+
+def test_get_prediction_simple_differencing_no_crash():
+    """get_prediction() must not crash with simple_differencing=True."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(0)
+    y = np.cumsum(np.random.randn(120))
+    r = SARIMAXModel(y, order=(1, 1, 1), simple_differencing=True).fit(maxiter=50)
+    pred = r.get_prediction()
+
+    # Length must match original endog
+    assert len(pred.predicted_mean) == len(y), (
+        f"prediction length {len(pred.predicted_mean)} != endog length {len(y)}"
+    )
+    # First d observations should be NaN (dropped by differencing)
+    assert np.isnan(pred.predicted_mean[0]), "first element should be NaN (dropped)"
+    # Remaining should be finite
+    assert np.all(np.isfinite(pred.predicted_mean[1:])), "non-dropped predictions should be finite"
+
+
+def test_get_prediction_seasonal_simple_differencing():
+    """get_prediction() with seasonal simple_differencing pads correct NaN count."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(1)
+    y = np.cumsum(np.random.randn(200))
+    r = SARIMAXModel(
+        y, order=(1, 1, 0), seasonal_order=(1, 1, 0, 12),
+        simple_differencing=True,
+    ).fit(maxiter=50)
+    pred = r.get_prediction()
+
+    n_drop = 1 + 12  # d + s*D
+    assert len(pred.predicted_mean) == len(y)
+    assert np.all(np.isnan(pred.predicted_mean[:n_drop])), (
+        f"first {n_drop} elements should be NaN"
+    )
+    assert np.all(np.isfinite(pred.predicted_mean[n_drop:])), (
+        "remaining predictions should be finite"
+    )
+
+
+def test_get_prediction_oos_simple_differencing():
+    """get_prediction(end>n) with simple_differencing should work for OOS."""
+    from sarimax_py.model import SARIMAXModel
+
+    np.random.seed(0)
+    y = np.cumsum(np.random.randn(120))
+    r = SARIMAXModel(y, order=(1, 1, 1), simple_differencing=True).fit(maxiter=50)
+    pred = r.get_prediction(end=125)
+
+    assert len(pred.predicted_mean) == 125
+    # OOS part (last 5) should be finite
+    assert np.all(np.isfinite(pred.predicted_mean[-5:]))

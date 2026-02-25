@@ -97,7 +97,7 @@ def test_batch_fit_returns_list_of_dicts():
     r = results[0]
     expected_keys = {
         "params", "loglike", "scale", "aic", "bic",
-        "n_obs", "n_params", "n_iter", "converged", "method"
+        "n_obs", "n_params", "n_iter", "converged", "method", "warnings"
     }
     assert set(r.keys()) == expected_keys
 

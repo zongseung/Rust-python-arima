@@ -1160,6 +1160,7 @@ fn try_ar_fast_path(
                 method: "burg-direct".to_string(),
                 aic: 0.0,
                 bic: 0.0,
+                warnings: vec![],
             }
             .with_information_criteria(),
         ))
@@ -1198,6 +1199,7 @@ fn build_zero_iter_result(
         method: method.to_string(),
         aic: 0.0,
         bic: 0.0,
+        warnings: vec![],
     }
     .with_information_criteria())
 }
@@ -1215,14 +1217,15 @@ fn build_fit_result(
     let final_constrained = transform_params(best_unconstrained, config)?;
     let final_params = SarimaxParams::from_flat(&final_constrained, config)?;
 
-    // A-2: Warn if final result has near-cancellation (α=0.05, VER5.2 P6)
+    // A-2: Collect near-cancellation warning into result (VER5.2 P6, V8.5 P2-1)
+    let mut warnings = Vec::new();
     if !validate_no_near_cancellation(&final_params, config, 0.05) {
-        eprintln!(
-            "[sarimax_rs] WARNING: near-cancellation detected in fitted ARMA({},{}) \
+        warnings.push(format!(
+            "near-cancellation detected in fitted ARMA({},{}) \
              parameters (min inverted-root distance < 0.05). \
              Model may be non-identifiable.",
             config.order.p, config.order.q
-        );
+        ));
     }
 
     let ss = StateSpace::new(config, &final_params, endog, exog)?;
@@ -1241,6 +1244,7 @@ fn build_fit_result(
         method: used_method,
         aic: 0.0,
         bic: 0.0,
+        warnings,
     }
     .with_information_criteria())
 }

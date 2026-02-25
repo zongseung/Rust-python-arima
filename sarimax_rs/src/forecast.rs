@@ -49,7 +49,7 @@ pub fn forecast(
     // Validate: exog model requires future_exog for forecasting
     if !exog_coeffs.is_empty() && future_exog.is_none() && steps > 0 {
         return Err(SarimaxError::InvalidInput(
-            "model has exogenous variables but future_exog was not provided for forecast".into(),
+            "model has exogenous variables: future_exog is required for forecasting".into(),
         ));
     }
     if let Some(cols) = future_exog {
@@ -201,9 +201,22 @@ pub fn forecast_pipeline(
         // Pre-difference the data
         let eff_endog = apply_differencing(endog, config);
         let n_drop = endog.len() - eff_endog.len();
-        let eff_exog_owned: Option<Vec<Vec<f64>>> = exog.map(|cols| {
-            cols.iter().map(|col| col[n_drop..].to_vec()).collect()
-        });
+        let eff_exog_owned: Option<Vec<Vec<f64>>> = match exog {
+            Some(cols) => {
+                let mut trimmed = Vec::with_capacity(cols.len());
+                for (j, col) in cols.iter().enumerate() {
+                    if col.len() < n_drop {
+                        return Err(crate::error::SarimaxError::InvalidInput(format!(
+                            "exog column {} has {} rows, but simple_differencing requires dropping {} rows",
+                            j, col.len(), n_drop
+                        )));
+                    }
+                    trimmed.push(col[n_drop..].to_vec());
+                }
+                Some(trimmed)
+            }
+            None => None,
+        };
         let eff_exog = eff_exog_owned.as_deref();
 
         let ss = StateSpace::new(config, params, &eff_endog, eff_exog)?;

@@ -636,10 +636,15 @@ pub fn score(
     Ok(result)
 }
 
-/// Compute per-observation score vectors dloglike_t/dtheta via numerical differences.
+/// Compute per-observation score vectors dl_t/dtheta using Harvey (1989) analytical formula.
 ///
-/// For each parameter i, evaluates loglike at theta ± h_i and distributes the
-/// score across observations using the innovation weights v_t²/F_t.
+/// Runs the same tangent-linear Kalman filter as `score()`, but stores per-observation
+/// derivatives (dv_t, dF_t, v_t, 1/F_t) and assembles true per-obs scores:
+///
+///   dl_t/dθ_i = -(v_t / (σ²·F_t)) · dv_t/dθ_i
+///              + ½ · [v_t²/(σ²·F_t²) - 1/F_t] · dF_t/dθ_i
+///
+/// where σ² = σ²_hat = (1/n_eff) · Σ(v_t²/F_t) (concentrated MLE).
 ///
 /// Returns n_eff score vectors of length n_params (constrained space).
 /// Used by OPG inference: I_opg = (1/n_eff) * sum(s_t * s_t')
@@ -653,7 +658,9 @@ pub fn score_obs(
     exog: Option<&[Vec<f64>]>,
 ) -> Result<Vec<Vec<f64>>> {
     let n = endog.len();
+    let k = ss.k_states;
     let burn = init.loglikelihood_burn;
+
     if n <= burn {
         return Err(SarimaxError::DataError(format!(
             "Not enough observations: n={} <= burn={}",
@@ -662,46 +669,318 @@ pub fn score_obs(
     }
     let n_eff = n - burn;
 
-    // First: compute the total score (summed) using the analytical tangent-linear method
-    let total_score = score(endog, ss, init, config, params, concentrate_scale, exog)?;
-    let np = total_score.len();
+    let derivs = precompute_derivatives(config, params, ss, n, exog);
+    let np = derivs.n_params;
     if np == 0 {
         return Ok(vec![vec![]; n_eff]);
     }
 
-    // Compute innovation weights: w_t = v_t² / F_t for t >= burn
-    // These are proportional to each observation's contribution to the likelihood.
-    let output = crate::kalman::kalman_loglike(endog, ss, init, concentrate_scale)?;
-    let innovations = &output.innovations; // length = n_eff
+    let z = &ss.design;
+    let t_mat = &ss.transition;
+    let r_mat = &ss.selection;
+    let q_mat = &ss.state_cov;
+    let rqr = r_mat * q_mat * r_mat.transpose();
+    let t_mat_t = t_mat.transpose();
+    let has_state_intercept = ss.state_intercept.len() == n * k;
 
-    // Compute F_t for each effective observation by running the filter
-    // (innovations are already available; we need F_t from the filter output)
-    //
-    // Approach: use the relationship sum(v²/F) = n_eff * sigma² (concentrated)
-    // and distribute score proportionally to v²/(v² total)
-    //
-    // Under concentrated scale: ℓ = const - (n_eff/2)*log(σ²) - n_eff/2
-    // and the per-obs contribution is approximately:
-    //   s_t[i] ≈ score[i] * (v_t² / Σ v_t²)
-    //
-    // This is an approximation, but it preserves:
-    //   Σ s_t[i] = score[i]  (exact by construction)
-    let v2_sum: f64 = innovations.iter().map(|v| v * v).sum();
+    let sparse_t = SparseT::from_dense(t_mat, k);
+    let use_sparse_t = sparse_t.is_sparse();
+    let sparse_z = SparseZ::from_dense(z, k);
 
-    if v2_sum <= 0.0 {
-        // Degenerate: return uniform distribution
-        let weight = 1.0 / n_eff as f64;
-        let scores = (0..n_eff)
-            .map(|_| total_score.iter().map(|&s| s * weight).collect())
-            .collect();
-        return Ok(scores);
+    // Standard KF state
+    let mut a = init.initial_state.clone();
+    let mut p = init.initial_state_cov.clone();
+
+    // Tangent linear state
+    let mut da: Vec<DVector<f64>> = vec![DVector::zeros(k); np];
+    let mut dp: Vec<DMatrix<f64>> = vec![DMatrix::zeros(k, k); np];
+
+    // Work buffers
+    let mut pz = DVector::<f64>::zeros(k);
+    let mut a_next = DVector::<f64>::zeros(k);
+    let mut temp_kk = DMatrix::<f64>::zeros(k, k);
+    let mut dv_buf = vec![0.0_f64; np];
+    let mut df_buf = vec![0.0_f64; np];
+    let mut dpz_buf: Vec<DVector<f64>> = (0..np).map(|_| DVector::zeros(k)).collect();
+    let mut da_next_i = DVector::<f64>::zeros(k);
+    let mut dp_next_i = DMatrix::<f64>::zeros(k, k);
+    let mut dt_a = DVector::<f64>::zeros(k);
+    let mut temp2 = DMatrix::<f64>::zeros(k, k);
+
+    // Per-observation storage for Harvey score assembly
+    let mut obs_v: Vec<f64> = Vec::with_capacity(n_eff);
+    let mut obs_f_inv: Vec<f64> = Vec::with_capacity(n_eff);
+    let mut obs_dv: Vec<Vec<f64>> = Vec::with_capacity(n_eff);
+    let mut obs_df: Vec<Vec<f64>> = Vec::with_capacity(n_eff);
+    let mut sum_v2_f = 0.0_f64;
+
+    // Steady-state detection
+    let mut pz_prev = DVector::<f64>::zeros(k);
+    let mut ss_converged = false;
+    let mut ss_consec = 0_usize;
+    let mut f_inv_steady = 0.0;
+    let mut k_gain = DVector::<f64>::zeros(k);
+
+    for t in 0..n {
+        let d_t = if t < ss.obs_intercept.len() {
+            ss.obs_intercept[t]
+        } else {
+            0.0
+        };
+        let v_t = endog[t] - sparse_z.dot(&a) - d_t;
+
+        if ss_converged {
+            let f_inv = f_inv_steady;
+
+            for i in 0..np {
+                let dd_i_t = if !derivs.dd[i].is_empty() && t < derivs.dd[i].len() {
+                    derivs.dd[i][t]
+                } else {
+                    0.0
+                };
+                dv_buf[i] = -dd_i_t - sparse_z.dot(&da[i]);
+            }
+
+            if t >= burn {
+                sum_v2_f += v_t * v_t * f_inv;
+                obs_v.push(v_t);
+                obs_f_inv.push(f_inv);
+                obs_dv.push(dv_buf.clone());
+                obs_df.push(df_buf.clone()); // df_buf frozen at steady-state values
+            }
+
+            // Tangent linear update + predict for da (no dP update)
+            for i in 0..np {
+                let coeff1 = dv_buf[i] * f_inv - v_t * df_buf[i] * f_inv * f_inv;
+                let coeff2 = v_t * f_inv;
+                {
+                    let da_s = da[i].as_mut_slice();
+                    let pz_s = pz.as_slice();
+                    let dpz_s = dpz_buf[i].as_slice();
+                    for r in 0..k {
+                        da_s[r] += coeff1 * pz_s[r] + coeff2 * dpz_s[r];
+                    }
+                }
+
+                sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
+                {
+                    for &(row, col, val) in &derivs.dt[i] {
+                        dt_a.as_mut_slice()[row] += val * v_t * f_inv * pz[col];
+                    }
+                }
+                da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
+                for r in 0..k {
+                    da_next_i[r] += dt_a[r];
+                }
+                if !derivs.dc[i].is_empty() {
+                    let base = t * k;
+                    for r in 0..k {
+                        da_next_i[r] += derivs.dc[i][base + r];
+                    }
+                }
+                da[i].copy_from(&da_next_i);
+            }
+
+            a.axpy(v_t * f_inv, &pz, 1.0);
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
+                for r in 0..k {
+                    a_next[r] += ss.state_intercept[t * k + r];
+                }
+            }
+            std::mem::swap(&mut a, &mut a_next);
+            continue;
+        }
+
+        // ---- NON-STEADY-STATE PATH ----
+        sparse_z.p_mul_z_into(&p, &mut pz, k);
+        let f_t = sparse_z.z_dot_pz(&pz);
+
+        if f_t <= 0.0 {
+            if t >= burn {
+                return Err(SarimaxError::DataError(format!(
+                    "F_t <= 0 at t={} in score_obs computation",
+                    t
+                )));
+            }
+            // Burn-in with F<=0: skip update, just predict
+            a_next.gemv(1.0, t_mat, &a, 0.0);
+            if has_state_intercept {
+                for r in 0..k {
+                    a_next[r] += ss.state_intercept[t * k + r];
+                }
+            }
+            if use_sparse_t {
+                sparse_t.t_mul_p_into(&p, &mut temp_kk);
+                sparse_t.temp_tt_plus_rqr_into(&temp_kk, &rqr, &mut p);
+            } else {
+                temp_kk.gemm(1.0, t_mat, &p, 0.0);
+                p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+                p += &rqr;
+            }
+            for i in 0..np {
+                sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
+                da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
+                for r in 0..k {
+                    da_next_i[r] += dt_a[r];
+                }
+                if !derivs.dc[i].is_empty() {
+                    let base = t * k;
+                    for r in 0..k {
+                        da_next_i[r] += derivs.dc[i][base + r];
+                    }
+                }
+                da[i].copy_from(&da_next_i);
+                compute_dp_predict(
+                    &derivs.dt[i], &derivs.drqr[i], t_mat, &t_mat_t,
+                    &sparse_t, use_sparse_t, &p, &dp[i], k,
+                    &mut dp_next_i, &mut temp_kk, &mut temp2,
+                );
+                dp[i].copy_from(&dp_next_i);
+            }
+            std::mem::swap(&mut a, &mut a_next);
+            continue;
+        }
+
+        let f_inv = 1.0 / f_t;
+
+        // Tangent linear innovation
+        for i in 0..np {
+            let dd_i_t = if !derivs.dd[i].is_empty() && t < derivs.dd[i].len() {
+                derivs.dd[i][t]
+            } else {
+                0.0
+            };
+            dv_buf[i] = -dd_i_t - sparse_z.dot(&da[i]);
+            sparse_z.p_mul_z_into(&dp[i], &mut dpz_buf[i], k);
+            df_buf[i] = sparse_z.z_dot_pz(&dpz_buf[i]);
+        }
+
+        if t >= burn {
+            sum_v2_f += v_t * v_t * f_inv;
+            obs_v.push(v_t);
+            obs_f_inv.push(f_inv);
+            obs_dv.push(dv_buf.clone());
+            obs_df.push(df_buf.clone());
+        }
+
+        // Standard KF update
+        a.axpy(v_t * f_inv, &pz, 1.0);
+        p.ger(-f_inv, &pz, &pz, 1.0);
+
+        // Tangent linear update
+        for i in 0..np {
+            let coeff1 = dv_buf[i] * f_inv - v_t * df_buf[i] * f_inv * f_inv;
+            let coeff2 = v_t * f_inv;
+            {
+                let da_s = da[i].as_mut_slice();
+                let pz_s = pz.as_slice();
+                let dpz_s = dpz_buf[i].as_slice();
+                for r in 0..k {
+                    da_s[r] += coeff1 * pz_s[r] + coeff2 * dpz_s[r];
+                }
+            }
+            {
+                let dp_data = dp[i].as_mut_slice();
+                let pz_s = pz.as_slice();
+                let dpz_s = dpz_buf[i].as_slice();
+                let coeff_dpz = -f_inv;
+                let coeff_df = df_buf[i] * f_inv * f_inv;
+                for col in 0..k {
+                    let col_off = col * k;
+                    for row in 0..k {
+                        dp_data[col_off + row] += coeff_dpz
+                            * (dpz_s[row] * pz_s[col] + pz_s[row] * dpz_s[col])
+                            + coeff_df * pz_s[row] * pz_s[col];
+                    }
+                }
+            }
+        }
+
+        // Tangent linear predict
+        for i in 0..np {
+            sparse_dt_vec(&derivs.dt[i], a.as_slice(), k, &mut dt_a);
+            da_next_i.gemv(1.0, t_mat, &da[i], 0.0);
+            for r in 0..k {
+                da_next_i[r] += dt_a[r];
+            }
+            if !derivs.dc[i].is_empty() {
+                let base = t * k;
+                for r in 0..k {
+                    da_next_i[r] += derivs.dc[i][base + r];
+                }
+            }
+            da[i].copy_from(&da_next_i);
+            compute_dp_predict(
+                &derivs.dt[i], &derivs.drqr[i], t_mat, &t_mat_t,
+                &sparse_t, use_sparse_t, &p, &dp[i], k,
+                &mut dp_next_i, &mut temp_kk, &mut temp2,
+            );
+            dp[i].copy_from(&dp_next_i);
+        }
+
+        // Standard KF predict
+        a_next.gemv(1.0, t_mat, &a, 0.0);
+        if has_state_intercept {
+            for r in 0..k {
+                a_next[r] += ss.state_intercept[t * k + r];
+            }
+        }
+        if use_sparse_t {
+            sparse_t.t_mul_p_into(&p, &mut temp_kk);
+            sparse_t.temp_tt_plus_rqr_into(&temp_kk, &rqr, &mut p);
+        } else {
+            temp_kk.gemm(1.0, t_mat, &p, 0.0);
+            p.gemm(1.0, &temp_kk, &t_mat_t, 0.0);
+            p += &rqr;
+        }
+
+        // Steady-state convergence check
+        if t >= burn + STEADY_STATE_MIN_STEPS {
+            sparse_z.p_mul_z_into(&p, &mut pz, k);
+            if check_convergence(&pz, &pz_prev, &mut ss_consec) {
+                ss_converged = true;
+                let f_steady = sparse_z.z_dot_pz(&pz);
+                f_inv_steady = 1.0 / f_steady;
+                k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
+            }
+            pz_prev.copy_from(&pz);
+        } else if t >= burn {
+            sparse_z.p_mul_z_into(&p, &mut pz, k);
+            pz_prev.copy_from(&pz);
+        }
+
+        std::mem::swap(&mut a, &mut a_next);
     }
 
-    let scores: Vec<Vec<f64>> = innovations
-        .iter()
-        .map(|&v_t| {
-            let w = v_t * v_t / v2_sum;
-            total_score.iter().map(|&s| s * w).collect()
+    // ---- Assemble per-observation Harvey scores ----
+    let sigma2 = if concentrate_scale {
+        let s = sum_v2_f / n_eff as f64;
+        if s <= 0.0 {
+            return Err(SarimaxError::DataError(
+                "concentrated sigma^2 <= 0 in score_obs computation".into(),
+            ));
+        }
+        s
+    } else {
+        ss.state_cov[(0, 0)]
+    };
+
+    // Harvey (1989) per-obs score:
+    //   dl_t/dθ_i = -(v_t / (σ²·F_t)) · dv_t/dθ_i
+    //              + ½ · [v_t²/(σ²·F_t²) - 1/F_t] · dF_t/dθ_i
+    let scores: Vec<Vec<f64>> = (0..obs_v.len())
+        .map(|t| {
+            let vt = obs_v[t];
+            let fi = obs_f_inv[t];
+            (0..np)
+                .map(|i| {
+                    let dv_i = obs_dv[t][i];
+                    let df_i = obs_df[t][i];
+                    -vt * fi * dv_i / sigma2
+                        + 0.5 * (vt * vt * fi * fi * df_i / sigma2 - fi * df_i)
+                })
+                .collect()
         })
         .collect();
 

@@ -146,7 +146,7 @@ def test_fit_returns_dict(statsmodels_fixtures):
 
     expected_keys = {
         "params", "loglike", "scale", "aic", "bic",
-        "n_obs", "n_params", "n_iter", "converged", "method"
+        "n_obs", "n_params", "n_iter", "converged", "method", "warnings"
     }
     assert set(result.keys()) == expected_keys
 

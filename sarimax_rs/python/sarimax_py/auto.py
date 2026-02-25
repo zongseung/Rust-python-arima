@@ -15,13 +15,13 @@ from .model import SARIMAXModel
 def _ndiffs(y, max_d=2, test="adf"):
     """Estimate the number of non-seasonal differences needed.
 
-    Uses a simple ADF-like variance reduction heuristic when scipy
-    is not available, otherwise delegates to an ADF test.
+    Uses the ADF test from statsmodels when available, otherwise falls
+    back to a simple variance reduction heuristic.
     """
     if max_d == 0:
         return 0
     try:
-        from scipy.stats import adfuller
+        from statsmodels.tsa.stattools import adfuller
         for d in range(max_d + 1):
             yd = np.diff(y, n=d) if d > 0 else y
             if len(yd) < 10:
@@ -179,6 +179,13 @@ def auto_arima(
         exog = np.asarray(exog, dtype=np.float64)
         if exog.ndim == 1:
             exog = exog.reshape(-1, 1)
+
+    # Validate criterion early (before branching to stepwise/grid)
+    _VALID_CRITERIA = {"aic", "bic", "hqic"}
+    if criterion not in _VALID_CRITERIA:
+        raise ValueError(
+            f"Unknown criterion: {criterion!r}. Must be one of {sorted(_VALID_CRITERIA)}"
+        )
 
     # Auto-detect differencing
     if d is None:
