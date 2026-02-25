@@ -67,12 +67,16 @@ impl Trend {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
-            "c" => Trend::Constant,
-            "t" => Trend::Linear,
-            "ct" | "tc" => Trend::Both,
-            _ => Trend::None,
+            "n" => Ok(Trend::None),
+            "c" => Ok(Trend::Constant),
+            "t" => Ok(Trend::Linear),
+            "ct" | "tc" => Ok(Trend::Both),
+            _ => Err(format!(
+                "unknown trend '{}', expected one of: 'n', 'c', 't', 'ct'",
+                s
+            )),
         }
     }
 }
@@ -204,12 +208,13 @@ mod tests {
 
     #[test]
     fn test_trend_from_str() {
-        assert_eq!(Trend::from_str("n"), Trend::None);
-        assert_eq!(Trend::from_str("c"), Trend::Constant);
-        assert_eq!(Trend::from_str("t"), Trend::Linear);
-        assert_eq!(Trend::from_str("ct"), Trend::Both);
-        assert_eq!(Trend::from_str("tc"), Trend::Both);
-        assert_eq!(Trend::from_str("unknown"), Trend::None);
+        assert_eq!(Trend::from_str("n").unwrap(), Trend::None);
+        assert_eq!(Trend::from_str("c").unwrap(), Trend::Constant);
+        assert_eq!(Trend::from_str("t").unwrap(), Trend::Linear);
+        assert_eq!(Trend::from_str("ct").unwrap(), Trend::Both);
+        assert_eq!(Trend::from_str("tc").unwrap(), Trend::Both);
+        assert!(Trend::from_str("unknown").is_err());
+        assert!(Trend::from_str("xyz").is_err());
     }
 
     #[test]

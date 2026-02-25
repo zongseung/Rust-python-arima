@@ -5,6 +5,8 @@ pub mod forecast;
 pub mod inference;
 pub mod initialization;
 pub mod kalman;
+pub(crate) mod lbfgsb_ffi;
+pub(crate) mod lbfgsb_wrapper;
 pub mod optimizer;
 pub mod params;
 pub mod pipeline;
@@ -343,8 +345,9 @@ fn build_config(
 }
 
 /// Parse optional trend string from Python into Trend enum.
-fn parse_trend(trend: Option<&str>) -> Trend {
+fn parse_trend(trend: Option<&str>) -> PyResult<Trend> {
     Trend::from_str(trend.unwrap_or("n"))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
 }
 
 /// Common validation and config-building for single-series PyO3 functions.
@@ -365,13 +368,25 @@ fn prepare_single_request(
     validate_endog_finite(endog)?;
     let (exog_cols, n_exog) = parse_exog(exog);
     validate_exog(&exog_cols)?;
+    // Early exog row-count validation at PyO3 boundary
+    if let Some(ref cols) = exog_cols {
+        if let Some(first_col) = cols.first() {
+            if first_col.len() != endog.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "exog has {} rows but endog has {} observations; they must match",
+                    first_col.len(),
+                    endog.len()
+                )));
+            }
+        }
+    }
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
     validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
     let config = build_config(
         order, seasonal, n_exog,
         enforce_stationarity, enforce_invertibility,
-        concentrate_scale, parse_trend(trend), simple_differencing,
+        concentrate_scale, parse_trend(trend)?, simple_differencing,
     );
     Ok((config, exog_cols))
 }
@@ -739,7 +754,7 @@ fn sarimax_batch_loglike<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-        parse_trend(trend),
+        parse_trend(trend)?,
         simple_differencing,
     );
 
@@ -804,7 +819,7 @@ fn sarimax_batch_fit<'py>(
         enforce_stationarity,
         enforce_invertibility,
         concentrate_scale,
-        parse_trend(trend),
+        parse_trend(trend)?,
         simple_differencing,
     );
 
@@ -877,7 +892,7 @@ fn sarimax_grid_search<'py>(
     let (exog_cols, n_exog) = parse_exog(exog.as_ref());
     validate_exog(&exog_cols)?;
 
-    let trend_val = parse_trend(trend);
+    let trend_val = parse_trend(trend)?;
 
     // Validate each combination and build configs
     let mut configs: Vec<SarimaxConfig> = Vec::with_capacity(order_list.len());
@@ -979,7 +994,7 @@ fn sarimax_batch_forecast<'py>(
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
     validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale, parse_trend(trend), simple_differencing);
+    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale, parse_trend(trend)?, simple_differencing);
 
     let params_vecs: Vec<Vec<f64>> = params_list
         .iter()

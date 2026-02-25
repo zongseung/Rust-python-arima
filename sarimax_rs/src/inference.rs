@@ -296,7 +296,24 @@ fn inference_from_information(
         })
         .collect();
 
-    let norm = Normal::new(0.0, 1.0).unwrap();
+    let norm = match Normal::new(0.0, 1.0) {
+        Ok(n) => n,
+        Err(_) => {
+            // Unreachable with constant args, but keep panic-free for policy
+            return InferenceResult {
+                method: method.to_string(),
+                cov_params: vec![f64::NAN; k * k],
+                std_err: vec![f64::NAN; k],
+                z_stat: vec![f64::NAN; k],
+                p_value: vec![f64::NAN; k],
+                ci_lower: vec![f64::NAN; k],
+                ci_upper: vec![f64::NAN; k],
+                n_params: k,
+                status: "failed".to_string(),
+                message: Some("internal error: could not create Normal distribution".into()),
+            };
+        }
+    };
     let p_value: Vec<f64> = z_stat
         .iter()
         .map(|&z| {

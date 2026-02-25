@@ -695,17 +695,17 @@ fn run_lbfgsb(
         Ok(cost)
     };
 
-    let param = lbfgsb::LbfgsbParameter {
+    let param = crate::lbfgsb_wrapper::LbfgsbParameter {
         m: 10,       // memory size (scipy default: 10)
         factr: 1e7,  // cost tolerance: factr * eps_mach ≈ 1e-9 (scipy default)
         pgtol: 1e-5, // projected gradient tolerance (scipy default)
         iprint: -1,  // silent
     };
 
-    let mut problem = lbfgsb::LbfgsbProblem::build(init_params, evaluate);
+    let mut problem = crate::lbfgsb_wrapper::LbfgsbProblem::build(init_params, evaluate);
     problem.set_bounds(bounds_vec);
 
-    let mut state = lbfgsb::LbfgsbState::new(problem, param);
+    let mut state = crate::lbfgsb_wrapper::LbfgsbState::new(problem, param);
     state
         .minimize()
         .map_err(|e| format!("L-BFGS-B failed: {}", e))?;
@@ -1531,17 +1531,17 @@ fn run_lbfgsb_css(
     let bounds_vec: Vec<(Option<f64>, Option<f64>)> =
         vec![(Some(-10.0), Some(10.0)); n];
 
-    let param = lbfgsb::LbfgsbParameter {
+    let param = crate::lbfgsb_wrapper::LbfgsbParameter {
         m: 10,
         factr: 1e7,
         pgtol: 1e-5,
         iprint: -1,
     };
 
-    let mut problem = lbfgsb::LbfgsbProblem::build(unconstrained_start.to_vec(), evaluate);
+    let mut problem = crate::lbfgsb_wrapper::LbfgsbProblem::build(unconstrained_start.to_vec(), evaluate);
     problem.set_bounds(bounds_vec);
 
-    let mut state = lbfgsb::LbfgsbState::new(problem, param);
+    let mut state = crate::lbfgsb_wrapper::LbfgsbState::new(problem, param);
     state.minimize().ok()?;
 
     Some(state.x().to_vec())
@@ -1625,6 +1625,22 @@ pub fn fit(
     } else {
         exog
     };
+
+    // 0. Zero-parameter fast path: models like (0,d,0) with concentrate_scale
+    //    have no free parameters to optimize. Return closed-form result directly
+    //    to avoid entering L-BFGS-B FFI with n=0.
+    {
+        let k_params = config.trend.k_trend()
+            + config.n_exog
+            + config.order.p
+            + config.order.q
+            + config.order.pp
+            + config.order.qq
+            + if config.concentrate_scale { 0 } else { 1 };
+        if k_params == 0 {
+            return build_zero_iter_result(eff_endog, config, &[], eff_exog, method);
+        }
+    }
 
     // 1. Validate + compute start params (always use original endog: CSS init
     //    applies differencing internally via apply_differencing)
