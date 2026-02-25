@@ -444,13 +444,15 @@ impl Gradient for SarimaxObjective {
 // CSS pre-optimization objective
 // ---------------------------------------------------------------------------
 
-/// CSS-based objective for fast Nelder-Mead pre-optimization.
+/// CSS-based objective for pre-optimization.
 ///
 /// CSS is O(n·(p'+q')) per evaluation vs O(n·k³) for KF.
 /// Used as a pre-optimization step to find better MLE starting parameters.
+/// Supports exogenous variables: subtracts X·β from differenced endog.
 struct CssObjective {
     endog: Vec<f64>,
     config: SarimaxConfig,
+    exog: Option<Vec<Vec<f64>>>,
 }
 
 impl CostFunction for CssObjective {
@@ -461,7 +463,10 @@ impl CostFunction for CssObjective {
         match transform_params(unconstrained, &self.config) {
             Ok(constrained) => match SarimaxParams::from_flat(&constrained, &self.config) {
                 Ok(sparams) => {
-                    let ll = css::css_loglike(&self.endog, &self.config, &sparams);
+                    let ll = css::css_loglike_with_exog(
+                        &self.endog, &self.config, &sparams,
+                        self.exog.as_deref(),
+                    );
                     Ok(if ll.is_finite() { -ll } else { f64::MAX / 2.0 })
                 }
                 Err(_) => Ok(f64::MAX / 2.0),
@@ -978,7 +983,6 @@ where
 fn fit_lbfgsb_multi(
     objective: &SarimaxObjective,
     unconstrained_start: &[f64],
-    css_hint: Option<&[f64]>,
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
@@ -1004,20 +1008,6 @@ fn fit_lbfgsb_multi(
         if let Ok((p, c, n, conv)) = run_lbfgsb(objective, zeros, bounds.clone(), remaining) {
             consume_budget(&mut remaining, &mut total_work, n);
             try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
-        }
-
-        // 1b. CSS hint start — additional basin from CSS pre-optimization (A-1).
-        // Run alongside (not replacing) the original start so LCG perturbations
-        // remain centered on unconstrained_start.
-        if let Some(css_start) = css_hint {
-            if remaining > 0 {
-                if let Ok((p, c, n, conv)) =
-                    run_lbfgsb(objective, css_start.to_vec(), bounds.clone(), remaining)
-                {
-                    consume_budget(&mut remaining, &mut total_work, n);
-                    try_update_best(&mut best, p, c, conv, "lbfgsb-multi");
-                }
-            }
         }
 
         // 2. Grid MA initialization (sequential NM, gradient-free)
@@ -1441,15 +1431,18 @@ fn passes_cancellation_filter(unconstrained: &[f64], config: &SarimaxConfig) -> 
     validate_no_near_cancellation(&sparams, config, 0.01)
 }
 
-/// Run CSS pre-optimization via Nelder-Mead in unconstrained space.
+/// Run CSS pre-optimization: L-BFGS-B first, NM fallback (R-style CSS-ML).
 ///
 /// CSS is O(n·(p'+q')) per evaluation, ~100x faster than KF for large k.
-/// Returns updated constrained parameters only if they improve KF loglike.
+/// L-BFGS-B with finite-difference gradient on CSS matches R's optim(BFGS)
+/// approach for the CSS stage.
+/// Returns updated constrained parameters if optimization succeeds.
 fn run_css_optimization(
     endog: &[f64],
     config: &SarimaxConfig,
     constrained_start: &[f64],
     maxiter: u64,
+    exog: Option<&[Vec<f64>]>,
 ) -> Option<Vec<f64>> {
     let unconstrained_start = untransform_params(constrained_start, config).ok()?;
     let n = unconstrained_start.len();
@@ -1457,15 +1450,126 @@ fn run_css_optimization(
         return None;
     }
 
+    // 1st: L-BFGS-B on CSS (R-style gradient-based optimization)
+    if let Some(result) = run_lbfgsb_css(endog, config, &unconstrained_start, maxiter, exog) {
+        if let Ok(constrained) = transform_params(&result, config) {
+            return Some(constrained);
+        }
+    }
+
+    // 2nd: NM fallback (gradient-free, more robust for ill-conditioned cases)
+    run_nm_css(endog, config, &unconstrained_start, maxiter, exog)
+}
+
+/// L-BFGS-B optimization on CSS objective with finite-difference gradient.
+fn run_lbfgsb_css(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    unconstrained_start: &[f64],
+    maxiter: u64,
+    exog: Option<&[Vec<f64>]>,
+) -> Option<Vec<f64>> {
+    let n = unconstrained_start.len();
+    let endog_owned = endog.to_vec();
+    let config_owned = config.clone();
+    let exog_owned: Option<Vec<Vec<f64>>> = exog.map(|e| e.to_vec());
+    let eval_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let eval_count_inner = eval_count.clone();
+    let hit_limit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hit_limit_inner = hit_limit.clone();
+
+    let css_eval = |unconstrained: &[f64]| -> f64 {
+        match transform_params(&unconstrained.to_vec(), &config_owned) {
+            Ok(constrained) => match SarimaxParams::from_flat(&constrained, &config_owned) {
+                Ok(sparams) => {
+                    let ll = css::css_loglike_with_exog(
+                        &endog_owned, &config_owned, &sparams,
+                        exog_owned.as_deref(),
+                    );
+                    if ll.is_finite() { -ll } else { f64::MAX / 2.0 }
+                }
+                Err(_) => f64::MAX / 2.0,
+            },
+            Err(_) => f64::MAX / 2.0,
+        }
+    };
+
+    let evaluate = move |x: &[f64], g: &mut [f64]| -> anyhow::Result<f64> {
+        let count = eval_count_inner.load(std::sync::atomic::Ordering::Relaxed);
+        if count >= maxiter {
+            hit_limit_inner.store(true, std::sync::atomic::Ordering::Relaxed);
+            for g_i in g.iter_mut() {
+                *g_i = 0.0;
+            }
+            return Ok(css_eval(x));
+        }
+        eval_count_inner.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let cost = css_eval(x);
+        if !cost.is_finite() || cost >= f64::MAX / 4.0 {
+            for g_i in g.iter_mut() {
+                *g_i = 0.0;
+            }
+            return Ok(f64::MAX / 2.0);
+        }
+
+        // Central finite-difference gradient (eps=1e-7)
+        let eps = 1e-7;
+        let mut x_work = x.to_vec();
+        for i in 0..n {
+            let orig = x_work[i];
+            x_work[i] = orig + eps;
+            let f_fwd = css_eval(&x_work);
+            x_work[i] = orig - eps;
+            let f_bwd = css_eval(&x_work);
+            x_work[i] = orig;
+            g[i] = (f_fwd - f_bwd) / (2.0 * eps);
+            if !g[i].is_finite() {
+                g[i] = 0.0;
+            }
+        }
+        Ok(cost)
+    };
+
+    // Box bounds: [-10, 10] for all params (unconstrained space)
+    let bounds_vec: Vec<(Option<f64>, Option<f64>)> =
+        vec![(Some(-10.0), Some(10.0)); n];
+
+    let param = lbfgsb::LbfgsbParameter {
+        m: 10,
+        factr: 1e7,
+        pgtol: 1e-5,
+        iprint: -1,
+    };
+
+    let mut problem = lbfgsb::LbfgsbProblem::build(unconstrained_start.to_vec(), evaluate);
+    problem.set_bounds(bounds_vec);
+
+    let mut state = lbfgsb::LbfgsbState::new(problem, param);
+    state.minimize().ok()?;
+
+    Some(state.x().to_vec())
+}
+
+/// NM fallback for CSS optimization.
+fn run_nm_css(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    unconstrained_start: &[f64],
+    maxiter: u64,
+    exog: Option<&[Vec<f64>]>,
+) -> Option<Vec<f64>> {
+    let n = unconstrained_start.len();
     let obj = CssObjective {
         endog: endog.to_vec(),
         config: config.clone(),
+        exog: exog.map(|e| e.to_vec()),
     };
 
     // Build simplex: initial point + n perturbations
-    let mut simplex = vec![unconstrained_start.clone()];
+    let mut simplex = vec![unconstrained_start.to_vec()];
     for i in 0..n {
-        let mut vertex = unconstrained_start.clone();
+        let mut vertex = unconstrained_start.to_vec();
         let delta = if vertex[i].abs() > 0.1 {
             vertex[i] * 0.05
         } else {
@@ -1538,37 +1642,30 @@ pub fn fit(
         return build_zero_iter_result(eff_endog, config, &constrained_start, eff_exog, method);
     }
 
-    // 2.5. CSS pre-optimization (VER5.2 P2: A-1): for models with MA terms
-    // (q+qq >= 2) or seasonal SMA (qq>0, s>=4), run fast CSS Nelder-Mead.
+    // 2.5. CSS-ML 2-stage pre-optimization (R-style):
+    // R's stats::arima(method="CSS-ML") runs CSS → ML for ALL ARMA models.
+    // CSS is O(n·(p'+q')) per eval vs O(n·k³) for KF, so even with L-BFGS-B
+    // gradient (2n+1 evals), CSS is much cheaper than a single KF evaluation.
     //
-    // Strategy split:
-    //   - Seasonal models (original scope): REPLACE constrained_start when CSS
-    //     gives better KF loglike — preserves the behaviour that made seasonal
-    //     models converge reliably before A-1.
-    //   - Non-seasonal models (A-1 new scope): pass CSS result as HINT to
-    //     fit_lbfgsb_multi so LCG perturbations stay centred on the original
-    //     start (prevents basin-trapping regression, e.g. ARIMA(2,1,2) seed=73).
-    let mut css_hint: Option<Vec<f64>> = None;
+    // Strategy:
+    //   - Seasonal models: REPLACE when CSS gives any KF improvement (R-matching)
+    //   - Non-seasonal models: REPLACE only when improvement > 2.0 loglike units
+    //     (avoids near-cancellation basin-trapping for borderline ARIMA cases)
     if start_params.is_none() {
-        let has_ma = config.order.q > 0 || config.order.qq > 0;
-        let benefit_from_css = has_ma
-            && (config.order.q + config.order.qq >= 2
-                || (config.order.qq > 0 && config.order.s >= 4));
+        let n_arma = config.order.p + config.order.q + config.order.pp + config.order.qq;
+        let is_seasonal = config.order.s >= 2
+            && (config.order.pp > 0 || config.order.qq > 0);
+        let benefit_from_css = n_arma >= 1 && (is_seasonal || n_arma >= 2);
         if benefit_from_css {
             // CSS optimization uses original endog (CSS applies differencing internally)
-            if let Some(css_params) = run_css_optimization(endog, config, &constrained_start, 100) {
+            if let Some(css_params) = run_css_optimization(endog, config, &constrained_start, 300, exog) {
                 // KF evaluation uses eff_endog (already differenced)
                 let css_kf_ll = eval_kf_loglike_constrained(eff_endog, config, &css_params, eff_exog);
                 let orig_kf_ll =
                     eval_kf_loglike_constrained(eff_endog, config, &constrained_start, eff_exog);
-                if css_kf_ll > orig_kf_ll {
-                    let is_seasonal_model =
-                        config.order.s >= 2 && (config.order.pp > 0 || config.order.qq > 0);
-                    if is_seasonal_model {
-                        constrained_start = css_params;
-                    } else {
-                        css_hint = untransform_params(&css_params, config).ok();
-                    }
+                let threshold = if is_seasonal { 0.0 } else { 2.0 };
+                if css_kf_ll > orig_kf_ll + threshold {
+                    constrained_start = css_params;
                 }
             }
         }
@@ -1602,7 +1699,6 @@ pub fn fit(
         "lbfgsb-multi" => fit_lbfgsb_multi(
             &objective,
             &unconstrained_start,
-            css_hint.as_deref(),
             config,
             maxiter,
             n_restarts,

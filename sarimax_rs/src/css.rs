@@ -49,14 +49,52 @@ pub fn apply_differencing(y: &[f64], config: &SarimaxConfig) -> Vec<f64> {
 /// AR coefficients (product of non-seasonal and seasonal polynomials). Similarly,
 /// the reduced MA polynomial is `[1, β₁, β₂, ...]`.
 ///
+/// When `exog` is provided, the exogenous contribution (X·β) is subtracted from
+/// the differenced series before the ARMA recursion, matching R's approach of
+/// fitting ARMA on y - X·β.
+///
 /// Cost: O(n × (p' + q')) where p', q' are expanded polynomial orders.
 /// For SARIMA(1,1,1)(1,1,1,24): p' = 25, q' = 25, so ~50 ops/observation.
 /// Compare to Kalman filter O(n × k³) where k = 51: ~132,651 ops/observation.
 pub fn css_loglike(endog: &[f64], config: &SarimaxConfig, params: &SarimaxParams) -> f64 {
+    css_loglike_with_exog(endog, config, params, None)
+}
+
+/// CSS log-likelihood with optional exogenous variables.
+///
+/// `exog`: column-major `exog[j][t]` where j is regressor index, t is time.
+pub fn css_loglike_with_exog(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    params: &SarimaxParams,
+    exog: Option<&[Vec<f64>]>,
+) -> f64 {
     let ar_poly = reduced_ar(params, &config.order);
     let ma_poly = reduced_ma(params, &config.order);
 
     let diffed = apply_differencing(endog, config);
+
+    // If exog provided, difference each regressor and subtract X_diff · β
+    let diffed = if let Some(exog_cols) = exog {
+        if !params.exog_coeffs.is_empty() && exog_cols.len() == params.exog_coeffs.len() {
+            let mut residual = diffed;
+            for (j, col) in exog_cols.iter().enumerate() {
+                let diffed_xj = apply_differencing(col, config);
+                let n = residual.len().min(diffed_xj.len());
+                // Align from the end (differencing may produce different lengths)
+                let offset_r = residual.len().saturating_sub(n);
+                let offset_x = diffed_xj.len().saturating_sub(n);
+                for t in 0..n {
+                    residual[offset_r + t] -= params.exog_coeffs[j] * diffed_xj[offset_x + t];
+                }
+            }
+            residual
+        } else {
+            diffed
+        }
+    } else {
+        diffed
+    };
 
     // Expanded polynomial orders (excluding leading 1.0)
     let p = ar_poly.len().saturating_sub(1);
