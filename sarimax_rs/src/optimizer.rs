@@ -216,6 +216,24 @@ impl SarimaxObjective {
         *self.ss_cache.borrow_mut() = Some(ss);
     }
 
+    /// Transform unconstrained params → constrained → SarimaxParams → StateSpace → KalmanInit.
+    ///
+    /// Common pipeline for eval_loglike, analytical_gradient_negloglike, and
+    /// eval_negloglike_with_gradient. StateSpace is taken from cache when available.
+    /// Caller MUST return the StateSpace to cache via `return_ss()`.
+    fn eval_pipeline(
+        &self,
+        unconstrained: &[f64],
+    ) -> std::result::Result<(SarimaxParams, StateSpace, KalmanInit), String> {
+        let constrained =
+            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
+        let sparams =
+            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
+        let ss = self.take_or_build_ss(&sparams)?;
+        let init = KalmanInit::from_config_default(&ss, &self.config);
+        Ok((sparams, ss, init))
+    }
+
     /// Evaluate negative log-likelihood for given unconstrained parameters.
     /// Used by L-BFGS-B which minimizes directly.
     fn eval_negloglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
@@ -224,17 +242,9 @@ impl SarimaxObjective {
 
     /// Evaluate log-likelihood for given unconstrained parameters.
     fn eval_loglike(&self, unconstrained: &[f64]) -> std::result::Result<f64, String> {
-        let constrained =
-            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
-
-        let sparams =
-            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
-
-        let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config_default(&ss, &self.config);
+        let (_sparams, ss, init) = self.eval_pipeline(unconstrained)?;
 
         let result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);
-        // Always return SS to cache (even on error, the matrices are still valid)
         self.return_ss(ss);
 
         let output = result.map_err(|e| e.to_string())?;
@@ -256,14 +266,7 @@ impl SarimaxObjective {
         &self,
         unconstrained: &[f64],
     ) -> std::result::Result<Vec<f64>, String> {
-        let constrained =
-            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
-
-        let sparams =
-            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
-
-        let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config_default(&ss, &self.config);
+        let (sparams, ss, init) = self.eval_pipeline(unconstrained)?;
 
         // Score in constrained space: ∂ll/∂θ_constrained
         let score_result = score::score(
@@ -296,14 +299,7 @@ impl SarimaxObjective {
         &self,
         unconstrained: &[f64],
     ) -> std::result::Result<(f64, Vec<f64>), String> {
-        let constrained =
-            transform_params(unconstrained, &self.config).map_err(|e| e.to_string())?;
-
-        let sparams =
-            SarimaxParams::from_flat(&constrained, &self.config).map_err(|e| e.to_string())?;
-
-        let ss = self.take_or_build_ss(&sparams)?;
-        let init = KalmanInit::from_config_default(&ss, &self.config);
+        let (sparams, ss, init) = self.eval_pipeline(unconstrained)?;
 
         // 1. Log-likelihood (forward KF)
         let kf_result = kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale);

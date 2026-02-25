@@ -392,6 +392,53 @@ fn fit_result_to_pydict<'py>(py: Python<'py>, result: &crate::types::FitResult) 
     Ok(dict)
 }
 
+/// Convert a ForecastResult to a PyDict.
+fn forecast_to_pydict<'py>(py: Python<'py>, result: &crate::forecast::ForecastResult) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("mean", &result.mean)?;
+    dict.set_item("variance", &result.variance)?;
+    dict.set_item("ci_lower", &result.ci_lower)?;
+    dict.set_item("ci_upper", &result.ci_upper)?;
+    Ok(dict)
+}
+
+/// Convert a ResidualOutput to a PyDict.
+fn residuals_to_pydict<'py>(py: Python<'py>, result: &crate::forecast::ResidualOutput) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("residuals", &result.residuals)?;
+    dict.set_item("standardized_residuals", &result.standardized_residuals)?;
+    Ok(dict)
+}
+
+/// Convert an InferenceResult to a PyDict.
+fn inference_to_pydict<'py>(py: Python<'py>, result: &crate::inference::InferenceResult) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("method", &result.method)?;
+    dict.set_item("std_err", &result.std_err)?;
+    dict.set_item("z_stat", &result.z_stat)?;
+    dict.set_item("p_value", &result.p_value)?;
+    dict.set_item("ci_lower", &result.ci_lower)?;
+    dict.set_item("ci_upper", &result.ci_upper)?;
+    dict.set_item("cov_params", &result.cov_params)?;
+    dict.set_item("n_params", result.n_params)?;
+    dict.set_item("status", &result.status)?;
+    dict.set_item("message", &result.message)?;
+    Ok(dict)
+}
+
+/// Convert a DiagnosticsResult to a PyDict.
+fn diagnostics_to_pydict<'py>(py: Python<'py>, result: &crate::inference::DiagnosticsResult) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("ljung_box_stat", result.ljung_box_stat)?;
+    dict.set_item("ljung_box_pvalue", result.ljung_box_pvalue)?;
+    dict.set_item("ljung_box_df", result.ljung_box_df)?;
+    dict.set_item("jarque_bera_stat", result.jarque_bera_stat)?;
+    dict.set_item("jarque_bera_pvalue", result.jarque_bera_pvalue)?;
+    dict.set_item("het_stat", result.het_stat)?;
+    dict.set_item("het_pvalue", result.het_pvalue)?;
+    Ok(dict)
+}
+
 /// Validate that alpha is in the open interval (0, 1).
 fn validate_alpha(alpha: f64) -> PyResult<()> {
     if alpha <= 0.0 || alpha >= 1.0 {
@@ -617,13 +664,7 @@ fn sarimax_forecast<'py>(
         })
         .map_err(to_pyerr)?;
 
-    let dict = PyDict::new(py);
-    dict.set_item("mean", result.mean)?;
-    dict.set_item("variance", result.variance)?;
-    dict.set_item("ci_lower", result.ci_lower)?;
-    dict.set_item("ci_upper", result.ci_upper)?;
-
-    Ok(dict.into())
+    Ok(forecast_to_pydict(py, &result)?.into())
 }
 
 /// Compute residuals and standardized residuals for a SARIMAX model.
@@ -660,11 +701,7 @@ fn sarimax_residuals<'py>(
         })
         .map_err(to_pyerr)?;
 
-    let dict = PyDict::new(py);
-    dict.set_item("residuals", result.residuals)?;
-    dict.set_item("standardized_residuals", result.standardized_residuals)?;
-
-    Ok(dict.into())
+    Ok(residuals_to_pydict(py, &result)?.into())
 }
 
 /// Compute log-likelihood for multiple time series in parallel (Rayon).
@@ -964,19 +1001,16 @@ fn sarimax_batch_forecast<'py>(
 
     let mut py_results: Vec<Py<PyDict>> = Vec::with_capacity(results.len());
     for r in results {
-        let dict = PyDict::new(py);
         match r {
             Ok(result) => {
-                dict.set_item("mean", result.mean)?;
-                dict.set_item("variance", result.variance)?;
-                dict.set_item("ci_lower", result.ci_lower)?;
-                dict.set_item("ci_upper", result.ci_upper)?;
+                py_results.push(forecast_to_pydict(py, &result)?.into());
             }
             Err(e) => {
+                let dict = PyDict::new(py);
                 dict.set_item("error", e.to_string())?;
+                py_results.push(dict.into());
             }
         }
-        py_results.push(dict.into());
     }
 
     let list = PyList::new(py, &py_results)?;
@@ -1035,19 +1069,7 @@ fn sarimax_inference<'py>(
         })
         .map_err(to_pyerr)?;
 
-    let dict = PyDict::new(py);
-    dict.set_item("method", result.method)?;
-    dict.set_item("std_err", result.std_err)?;
-    dict.set_item("z_stat", result.z_stat)?;
-    dict.set_item("p_value", result.p_value)?;
-    dict.set_item("ci_lower", result.ci_lower)?;
-    dict.set_item("ci_upper", result.ci_upper)?;
-    dict.set_item("cov_params", result.cov_params)?;
-    dict.set_item("n_params", result.n_params)?;
-    dict.set_item("status", result.status)?;
-    dict.set_item("message", result.message)?;
-
-    Ok(dict.into())
+    Ok(inference_to_pydict(py, &result)?.into())
 }
 
 /// Compute residual diagnostic tests (Ljung-Box, Jarque-Bera, heteroskedasticity).
@@ -1092,16 +1114,7 @@ fn sarimax_diagnostics<'py>(
         })
         .map_err(to_pyerr)?;
 
-    let dict = PyDict::new(py);
-    dict.set_item("ljung_box_stat", result.ljung_box_stat)?;
-    dict.set_item("ljung_box_pvalue", result.ljung_box_pvalue)?;
-    dict.set_item("ljung_box_df", result.ljung_box_df)?;
-    dict.set_item("jarque_bera_stat", result.jarque_bera_stat)?;
-    dict.set_item("jarque_bera_pvalue", result.jarque_bera_pvalue)?;
-    dict.set_item("het_stat", result.het_stat)?;
-    dict.set_item("het_pvalue", result.het_pvalue)?;
-
-    Ok(dict.into())
+    Ok(diagnostics_to_pydict(py, &result)?.into())
 }
 
 /// Python module definition.

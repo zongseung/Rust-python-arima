@@ -70,6 +70,27 @@ def _ic(result, criterion="aic"):
     raise ValueError(f"Unknown criterion: {criterion}")
 
 
+def _safe_ic(value):
+    """Convert non-finite IC to None for history storage."""
+    return value if math.isfinite(value) else None
+
+
+def _make_history_entry(order, seasonal, criterion, ic_val, converged):
+    """Build a history dict entry for auto_arima search tracking."""
+    return {
+        "order": order,
+        "seasonal_order": seasonal,
+        criterion: _safe_ic(ic_val),
+        "converged": converged,
+    }
+
+
+def _trace_print(p, d, q, P, D, Q, s, criterion, ic_val):
+    """Print a trace line for auto_arima model evaluation."""
+    status = f"{ic_val:.3f}" if math.isfinite(ic_val) else "FAILED"
+    print(f"  ARIMA({p},{d},{q})({P},{D},{Q})[{s}] : {criterion}={status}")
+
+
 def _try_fit(endog, order, seasonal_order, trend="n",
              enforce_stationarity=True, enforce_invertibility=True,
              method=None, maxiter=None,
@@ -216,15 +237,12 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
             if not math.isfinite(ic_val):
                 ic_val = math.inf
 
-        history.append({
-            "order": order,
-            "seasonal_order": seasonal,
-            criterion: ic_val if math.isfinite(ic_val) else None,
-            "converged": result.converged if result else False,
-        })
+        history.append(_make_history_entry(
+            order, seasonal, criterion, ic_val,
+            result.converged if result else False,
+        ))
         if trace:
-            status = f"{ic_val:.3f}" if math.isfinite(ic_val) else "FAILED"
-            print(f"  ARIMA({p},{d},{q})({P},{D},{Q})[{s}] : {criterion}={status}")
+            _trace_print(p, d, q, P, D, Q, s, criterion, ic_val)
         return result, ic_val
 
     # Initial candidates (Hyndman-Khandakar starting models)
@@ -360,15 +378,11 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         else:
             ic_val = math.inf
 
-        history.append({
-            "order": order,
-            "seasonal_order": seasonal,
-            criterion: ic_val if math.isfinite(ic_val) else None,
-            "converged": converged,
-        })
+        history.append(_make_history_entry(
+            order, seasonal, criterion, ic_val, converged,
+        ))
         if trace:
-            status = f"{ic_val:.3f}" if math.isfinite(ic_val) else "FAILED"
-            print(f"  ARIMA({p},{_d},{q})({P},{_D},{Q})[{_s}] : {criterion}={status}")
+            _trace_print(p, _d, q, P, _D, Q, _s, criterion, ic_val)
 
         if ic_val < best_ic:
             best_ic = ic_val

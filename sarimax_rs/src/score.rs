@@ -724,6 +724,60 @@ fn sparse_dt_vec(dt: &[(usize, usize, f64)], x: &[f64], k: usize, result: &mut D
     }
 }
 
+/// Accumulate `result += src * sparse_T'` using the sparse T representation.
+///
+/// O(nnz * k) per call, matching the Kalman predict sparse pattern.
+#[inline(always)]
+fn sparse_accum_right_t_transpose(
+    result: &mut DMatrix<f64>,
+    src: &DMatrix<f64>,
+    sparse_t: &SparseT,
+    k: usize,
+) {
+    let src_data = src.as_slice();
+    let res = result.as_mut_slice();
+    for &(j, l, val) in &sparse_t.entries {
+        let col_l = l * k;
+        let col_j = j * k;
+        for i in 0..k {
+            res[col_j + i] += val * src_data[col_l + i];
+        }
+    }
+}
+
+/// Accumulate `result += src * T'` using either sparse or dense path.
+#[inline(always)]
+fn accum_mul_t_transpose(
+    result: &mut DMatrix<f64>,
+    src: &DMatrix<f64>,
+    sparse_t: &SparseT,
+    t_mat_t: &DMatrix<f64>,
+    use_sparse_t: bool,
+    k: usize,
+) {
+    if use_sparse_t {
+        sparse_accum_right_t_transpose(result, src, sparse_t, k);
+    } else {
+        result.gemm(1.0, src, t_mat_t, 1.0);
+    }
+}
+
+/// Compute `out = T * mat` using either sparse or dense path.
+#[inline(always)]
+fn t_mul_into(
+    out: &mut DMatrix<f64>,
+    mat: &DMatrix<f64>,
+    sparse_t: &SparseT,
+    t_mat: &DMatrix<f64>,
+    use_sparse_t: bool,
+) {
+    if use_sparse_t {
+        sparse_t.t_mul_p_into(mat, out);
+    } else {
+        out.gemm(1.0, t_mat, mat, 0.0);
+    }
+}
+
 /// Compute dP prediction step:
 ///   dP_next = dT*P*T' + T*dP*T' + T*P*dT' + dRQR
 ///
@@ -751,33 +805,15 @@ fn compute_dp_predict(
         result.fill(0.0);
     }
 
-    // Term: T * dP * T'
-    if use_sparse_t {
-        // Sparse path: O(nnz*k) per step -- same as kalman.rs
-        // Step 1: temp = sparse_T * dP  -- O(nnz * k)
-        sparse_t.t_mul_p_into(dp_upd, temp);
-        // Step 2: result += temp * T'  -- O(nnz * k)
-        let tmp_data = temp.as_slice();
-        let res = result.as_mut_slice();
-        for &(j, l, val) in &sparse_t.entries {
-            let col_l = l * k;
-            let col_j = j * k;
-            for i in 0..k {
-                res[col_j + i] += val * tmp_data[col_l + i];
-            }
-        }
-    } else {
-        // Dense path: O(k^3) -- used when T is not sparse enough
-        temp.gemm(1.0, t_mat, dp_upd, 0.0);
-        result.gemm(1.0, temp, t_mat_t, 1.0);
-    }
+    // Term 1: T * dP * T'
+    t_mul_into(temp, dp_upd, sparse_t, t_mat, use_sparse_t);
+    accum_mul_t_transpose(result, temp, sparse_t, t_mat_t, use_sparse_t, k);
 
     if dt_sparse.is_empty() {
         return;
     }
 
-    // Term: dT * P * T'
-    // Compute temp2 = dT * P (sparse dT x dense P)
+    // Term 2: dT * P * T'  (dT is always sparse)
     temp2.fill(0.0);
     let p_data = p_upd.as_slice();
     let tmp2 = temp2.as_mut_slice();
@@ -786,31 +822,10 @@ fn compute_dp_predict(
             tmp2[i + j * k] += val * p_data[l + j * k];
         }
     }
+    accum_mul_t_transpose(result, temp2, sparse_t, t_mat_t, use_sparse_t, k);
 
-    if use_sparse_t {
-        // result += temp2 * T' (sparse)
-        let tmp2_data = temp2.as_slice();
-        let res = result.as_mut_slice();
-        for &(j, l, val) in &sparse_t.entries {
-            let col_l = l * k;
-            let col_j = j * k;
-            for i in 0..k {
-                res[col_j + i] += val * tmp2_data[col_l + i];
-            }
-        }
-    } else {
-        result.gemm(1.0, temp2, t_mat_t, 1.0);
-    }
-
-    // Term: T * P * dT'
-    if use_sparse_t {
-        // Compute temp = sparse_T * P  -- O(nnz * k)
-        sparse_t.t_mul_p_into(p_upd, temp);
-    } else {
-        // Compute temp = T * P  -- O(k^3)
-        temp.gemm(1.0, t_mat, p_upd, 0.0);
-    }
-    // result += temp * dT'
+    // Term 3: T * P * dT'  (dT' is always sparse)
+    t_mul_into(temp, p_upd, sparse_t, t_mat, use_sparse_t);
     let tmp_data = temp.as_slice();
     let res = result.as_mut_slice();
     for &(i, l, val) in dt_sparse {

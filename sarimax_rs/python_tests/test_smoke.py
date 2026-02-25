@@ -37,10 +37,8 @@ def test_public_api_surface():
 def test_basic_fit():
     """AR(1) fit completes and converges."""
     import sarimax_rs
-    rng = np.random.default_rng(42)
-    y = np.zeros(100)
-    for t in range(1, 100):
-        y[t] = 0.5 * y[t - 1] + rng.normal()
+    from conftest import generate_ar1_rng
+    y = generate_ar1_rng(n=100, phi=0.5, seed=42)
     result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
     assert result["converged"]
     assert np.isfinite(result["loglike"])
@@ -49,10 +47,8 @@ def test_basic_fit():
 def test_basic_forecast():
     """Forecast produces finite values of correct length."""
     import sarimax_rs
-    rng = np.random.default_rng(42)
-    y = np.zeros(100)
-    for t in range(1, 100):
-        y[t] = 0.5 * y[t - 1] + rng.normal()
+    from conftest import generate_ar1_rng
+    y = generate_ar1_rng(n=100, phi=0.5, seed=42)
     result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
     fc = sarimax_rs.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), np.array(result["params"]), steps=10,
@@ -72,10 +68,8 @@ def test_batch_fit_length():
 def test_model_wrapper_end_to_end():
     """SARIMAXModel fit + forecast end-to-end."""
     from sarimax_py import SARIMAXModel
-    rng = np.random.default_rng(42)
-    y = np.zeros(100)
-    for t in range(1, 100):
-        y[t] = 0.5 * y[t - 1] + rng.normal()
+    from conftest import generate_ar1_rng
+    y = generate_ar1_rng(n=100, phi=0.5, seed=42)
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     assert result.converged
     fc = result.forecast(steps=5)

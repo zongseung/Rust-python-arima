@@ -362,6 +362,14 @@ pub(crate) fn check_convergence(
 // Core Kalman filter with strategy-based dispatch
 // ---------------------------------------------------------------------------
 
+/// Compute the scalar innovation: v_t = y_t - Z'*a_t - d_t.
+///
+/// Uses the sparse Z representation for O(nnz_z) instead of O(k).
+#[inline(always)]
+fn compute_innovation(endog_t: f64, sparse_z: &SparseZ, a: &DVector<f64>, d_t: f64) -> f64 {
+    endog_t - sparse_z.dot(a) - d_t
+}
+
 /// Unified Kalman filter core with strategy-based dispatch.
 ///
 /// When `store_full=false`, skips storing innovation_vars and filtered state
@@ -471,34 +479,23 @@ fn kalman_core(
             // ---- STEADY-STATE PATH: O(nnz) per step ----
             // P has converged to P_inf, so K_inf and F_inf are constant.
             // Only the state mean recursion is computed; covariance is frozen.
-            let v_t = endog[t] - sparse_z.dot(&a) - d_t;
+            let v_t = compute_innovation(endog[t], &sparse_z, &a, d_t);
             innovations.push(v_t);
             if store_full {
                 innovation_vars.push(cache.f_steady);
             }
 
-            // Predict state: a_next = T_sparse * a + K_inf * (v_t / F_inf) + c_t
-            sparse_t.t_mul_vec_into(&a, &mut a_next);
-            let scale_v = v_t / cache.f_steady;
-            let k_slice = cache.k_gain.as_slice();
-            let an_s = a_next.as_mut_slice();
-            for i in 0..k {
-                an_s[i] += scale_v * k_slice[i];
-            }
-            if has_state_intercept {
-                for i in 0..k {
-                    a_next[i] += ss.state_intercept[t * k + i];
-                }
-            }
+            // Predict: a_next = T*a + c_t + K_inf * (v_t / F_inf)
+            strategy.predict_state(
+                t_mat, &sparse_t, &a, &mut a_next,
+                &ss.state_intercept, t, k, has_state_intercept,
+            );
+            a_next.axpy(v_t / cache.f_steady, &cache.k_gain, 1.0);
 
             if store_full {
                 // Filtered state: a_{t|t} = a_{t|t-1} + (v_t / F_inf) * pz_inf
                 a_filtered.copy_from(&a);
-                let af_s = a_filtered.as_mut_slice();
-                let pz_s = cache.pz_inf.as_slice();
-                for i in 0..k {
-                    af_s[i] += scale_v * pz_s[i];
-                }
+                a_filtered.axpy(v_t / cache.f_steady, &cache.pz_inf, 1.0);
             }
 
             std::mem::swap(&mut a, &mut a_next);
@@ -509,7 +506,7 @@ fn kalman_core(
             }
         } else {
             // ---- NON-CONVERGED PATH: Dense or Sparse strategy ----
-            let v_t = endog[t] - z.dot(&a) - d_t;
+            let v_t = compute_innovation(endog[t], &sparse_z, &a, d_t);
             innovations.push(v_t);
 
             let f_t = strategy.compute_pz_and_f(&p, z, &sparse_z, &sparse_t, &mut pz);

@@ -396,8 +396,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
 
     try:
         kwargs = dict(
-            method=method,
-            alpha=alpha,
+            method=method, alpha=alpha,
             enforce_stationarity=enforce_stationarity,
             enforce_invertibility=enforce_invertibility,
             trend=trend,
@@ -496,6 +495,23 @@ class SARIMAXModel:
             return 0
         return self.exog.shape[1] if self.exog.ndim == 2 else 1
 
+    def _model_kwargs(self, **extra):
+        """Build common kwargs dict for Rust calls that need model config.
+
+        Includes: enforce_stationarity, enforce_invertibility, trend,
+        simple_differencing, and exog (if present).
+        """
+        kw = dict(
+            enforce_stationarity=self.enforce_stationarity,
+            enforce_invertibility=self.enforce_invertibility,
+            trend=self.trend,
+            simple_differencing=self.simple_differencing,
+        )
+        if self.exog is not None:
+            kw["exog"] = self.exog
+        kw.update(extra)
+        return kw
+
     def fit(self, method=None, maxiter=None, start_params=None):
         """Fit the SARIMAX model via MLE.
 
@@ -503,17 +519,11 @@ class SARIMAXModel:
         -------
         SARIMAXResult
         """
-        kwargs = dict(
+        kwargs = self._model_kwargs(
             start_params=start_params,
-            enforce_stationarity=self.enforce_stationarity,
-            enforce_invertibility=self.enforce_invertibility,
             method=method,
             maxiter=maxiter,
-            trend=self.trend,
-            simple_differencing=self.simple_differencing,
         )
-        if self.exog is not None:
-            kwargs["exog"] = self.exog
 
         result_dict = sarimax_rs.sarimax_fit(
             self.endog,
@@ -585,13 +595,7 @@ class SARIMAXResult:
     def _loglike_fn(self, params):
         """Evaluate log-likelihood at given params (for Hessian computation)."""
         try:
-            kwargs = dict(
-                enforce_stationarity=self.model.enforce_stationarity,
-                enforce_invertibility=self.model.enforce_invertibility,
-                trend=self.model.trend,
-            )
-            if self.model.exog is not None:
-                kwargs["exog"] = self.model.exog
+            kwargs = self.model._model_kwargs()
             return sarimax_rs.sarimax_loglike(
                 self.model.endog,
                 self.model.order,
@@ -615,137 +619,58 @@ class SARIMAXResult:
         """Common positional args: (endog, order, seasonal_order, params)."""
         return (self.model.endog, self.model.order, self.model.seasonal_order, self.params)
 
-    def parameter_summary(self, alpha=0.05, include_inference=None, inference=None):
-        """Return parameter summary as a machine-readable dict.
+    # ------------------------------------------------------------------
+    # Cached inference helpers (used by parameter_summary)
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        alpha : float
-            Significance level for confidence intervals (0 < alpha < 1).
-        include_inference : bool, optional
-            **Deprecated.** Use ``inference`` instead.
-            ``True`` maps to ``inference="hessian"``,
-            ``False`` maps to ``inference="none"``.
-        inference : str, optional
-            Inference mode. One of:
-
-            - ``"none"``  — coefficients only (fastest).
-            - ``"hessian"``  — numerical Hessian-based std err / z / CI.
-            - ``"statsmodels"``  — fit statsmodels SARIMAX internally and
-              borrow its inference statistics.
-            - ``"both"``  — compute both hessian and statsmodels, include
-              delta columns for comparison.
-
-            Default is ``"none"`` when neither parameter is given, or
-            ``"hessian"`` when legacy ``include_inference=True`` is used.
-
-        Returns
-        -------
-        dict
-            Always contains ``name`` and ``coef``.
-            Additional keys depend on the inference mode.
-        """
-        mode = _resolve_inference_mode(inference, include_inference)
-
-        if not (0.0 < alpha < 1.0):
-            raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
-
-        names = self.param_names
-        k = len(self.params)
-        nan_arr = lambda: np.full(k, np.nan)  # noqa: E731
-
-        # Parameter fingerprint for cache invalidation on param mutation
-        params_sig = tuple(np.round(self.params, 12))
-
-        result = dict(
-            name=names,
-            coef=self.params.copy(),
-        )
-
-        if mode == "none":
-            result.update(
-                std_err=nan_arr(), z=nan_arr(), p_value=nan_arr(),
-                ci_lower=nan_arr(), ci_upper=nan_arr(),
-                inference_status="skipped", inference_message=None,
-            )
-            return result
-
-        if mode == "hessian":
-            cache_key = ("hessian", alpha, params_sig)
-            if cache_key not in self._inference_cache:
-                self._inference_cache[cache_key] = _compute_inference(
-                    self._loglike_fn, self.params, alpha=alpha,
-                )
-            result.update(self._inference_cache[cache_key])
-            return result
-
-        if mode in ("rust_hessian", "opg"):
-            rust_method = "hessian" if mode == "rust_hessian" else "opg"
-            cache_key = (mode, alpha, params_sig)
-            if cache_key not in self._inference_cache:
-                self._inference_cache[cache_key] = _compute_rust_inference(
-                    self.model.endog,
-                    self.model.order,
-                    self.model.seasonal_order,
-                    self.params,
-                    method=rust_method,
-                    alpha=alpha,
-                    exog=self.model.exog,
-                    enforce_stationarity=self.model.enforce_stationarity,
-                    enforce_invertibility=self.model.enforce_invertibility,
-                    trend=self.model.trend,
-                )
-            result.update(self._inference_cache[cache_key])
-            return result
-
-        if mode == "statsmodels":
-            cache_key = ("statsmodels", alpha, params_sig)
-            if cache_key not in self._inference_cache:
-                self._inference_cache[cache_key] = _compute_statsmodels_inference(
-                    self.model.endog,
-                    self.model.order,
-                    self.model.seasonal_order,
-                    alpha=alpha,
-                    exog=self.model.exog,
-                    n_params_rs=k,
-                    enforce_stationarity=self.model.enforce_stationarity,
-                    enforce_invertibility=self.model.enforce_invertibility,
-                )
-            sm = self._inference_cache[cache_key]
-            result.update(
-                std_err=sm["sm_std_err"],
-                z=sm["sm_z"],
-                p_value=sm["sm_p_value"],
-                ci_lower=sm["sm_ci_lower"],
-                ci_upper=sm["sm_ci_upper"],
-                inference_status=sm["inference_status_sm"],
-                inference_message=sm["inference_message_sm"],
-            )
-            return result
-
-        # mode == "both"
-        # Hessian
-        hess_key = ("hessian", alpha, params_sig)
-        if hess_key not in self._inference_cache:
-            self._inference_cache[hess_key] = _compute_inference(
+    def _get_hessian_inference(self, alpha, params_sig):
+        """Return cached numerical Hessian inference dict."""
+        cache_key = ("hessian", alpha, params_sig)
+        if cache_key not in self._inference_cache:
+            self._inference_cache[cache_key] = _compute_inference(
                 self._loglike_fn, self.params, alpha=alpha,
             )
-        hess = self._inference_cache[hess_key]
+        return self._inference_cache[cache_key]
 
-        # statsmodels
-        sm_key = ("statsmodels", alpha, params_sig)
-        if sm_key not in self._inference_cache:
-            self._inference_cache[sm_key] = _compute_statsmodels_inference(
+    def _get_rust_inference(self, mode, alpha, params_sig):
+        """Return cached Rust-based (hessian/OPG) inference dict."""
+        cache_key = (mode, alpha, params_sig)
+        if cache_key not in self._inference_cache:
+            rust_method = "hessian" if mode == "rust_hessian" else "opg"
+            self._inference_cache[cache_key] = _compute_rust_inference(
+                self.model.endog,
+                self.model.order,
+                self.model.seasonal_order,
+                self.params,
+                method=rust_method,
+                alpha=alpha,
+                exog=self.model.exog,
+                enforce_stationarity=self.model.enforce_stationarity,
+                enforce_invertibility=self.model.enforce_invertibility,
+                trend=self.model.trend,
+            )
+        return self._inference_cache[cache_key]
+
+    def _get_sm_inference(self, alpha, params_sig):
+        """Return cached statsmodels inference dict."""
+        cache_key = ("statsmodels", alpha, params_sig)
+        if cache_key not in self._inference_cache:
+            self._inference_cache[cache_key] = _compute_statsmodels_inference(
                 self.model.endog,
                 self.model.order,
                 self.model.seasonal_order,
                 alpha=alpha,
                 exog=self.model.exog,
-                n_params_rs=k,
+                n_params_rs=len(self.params),
                 enforce_stationarity=self.model.enforce_stationarity,
                 enforce_invertibility=self.model.enforce_invertibility,
             )
-        sm = self._inference_cache[sm_key]
+        return self._inference_cache[cache_key]
+
+    def _build_both_result(self, result, alpha, params_sig):
+        """Build combined hessian + statsmodels result for 'both' mode."""
+        hess = self._get_hessian_inference(alpha, params_sig)
+        sm = self._get_sm_inference(alpha, params_sig)
 
         # Legacy keys from hessian (default view)
         result.update(
@@ -801,6 +726,86 @@ class SARIMAXResult:
         result["inference_message"] = "; ".join(msgs) if msgs else None
 
         return result
+
+    # ------------------------------------------------------------------
+
+    def parameter_summary(self, alpha=0.05, include_inference=None, inference=None):
+        """Return parameter summary as a machine-readable dict.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance level for confidence intervals (0 < alpha < 1).
+        include_inference : bool, optional
+            **Deprecated.** Use ``inference`` instead.
+            ``True`` maps to ``inference="hessian"``,
+            ``False`` maps to ``inference="none"``.
+        inference : str, optional
+            Inference mode. One of:
+
+            - ``"none"``  — coefficients only (fastest).
+            - ``"hessian"``  — numerical Hessian-based std err / z / CI.
+            - ``"statsmodels"``  — fit statsmodels SARIMAX internally and
+              borrow its inference statistics.
+            - ``"both"``  — compute both hessian and statsmodels, include
+              delta columns for comparison.
+
+            Default is ``"none"`` when neither parameter is given, or
+            ``"hessian"`` when legacy ``include_inference=True`` is used.
+
+        Returns
+        -------
+        dict
+            Always contains ``name`` and ``coef``.
+            Additional keys depend on the inference mode.
+        """
+        mode = _resolve_inference_mode(inference, include_inference)
+
+        if not (0.0 < alpha < 1.0):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+
+        names = self.param_names
+        k = len(self.params)
+        nan_arr = lambda: np.full(k, np.nan)  # noqa: E731
+
+        params_sig = tuple(np.round(self.params, 12))
+
+        result = dict(
+            name=names,
+            coef=self.params.copy(),
+        )
+
+        if mode == "none":
+            result.update(
+                std_err=nan_arr(), z=nan_arr(), p_value=nan_arr(),
+                ci_lower=nan_arr(), ci_upper=nan_arr(),
+                inference_status="skipped", inference_message=None,
+            )
+            return result
+
+        if mode == "hessian":
+            result.update(self._get_hessian_inference(alpha, params_sig))
+            return result
+
+        if mode in ("rust_hessian", "opg"):
+            result.update(self._get_rust_inference(mode, alpha, params_sig))
+            return result
+
+        if mode == "statsmodels":
+            sm = self._get_sm_inference(alpha, params_sig)
+            result.update(
+                std_err=sm["sm_std_err"],
+                z=sm["sm_z"],
+                p_value=sm["sm_p_value"],
+                ci_lower=sm["sm_ci_lower"],
+                ci_upper=sm["sm_ci_upper"],
+                inference_status=sm["inference_status_sm"],
+                inference_message=sm["inference_message_sm"],
+            )
+            return result
+
+        # mode == "both"
+        return self._build_both_result(result, alpha, params_sig)
 
     def forecast(self, steps=1, alpha=0.05, exog=None):
         """H-step ahead forecast.
