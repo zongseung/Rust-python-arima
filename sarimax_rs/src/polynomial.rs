@@ -21,7 +21,7 @@ pub fn make_ar_poly(coeffs: &[f64], max_lag: usize) -> Vec<f64> {
     let mut p = vec![0.0; max_lag + 1];
     p[0] = 1.0;
     for (i, &c) in coeffs.iter().enumerate() {
-        if i + 1 <= max_lag {
+        if i < max_lag {
             p[i + 1] = -c;
         }
     }
@@ -47,7 +47,7 @@ pub fn make_ma_poly(coeffs: &[f64], max_lag: usize) -> Vec<f64> {
     let mut p = vec![0.0; max_lag + 1];
     p[0] = 1.0;
     for (i, &c) in coeffs.iter().enumerate() {
-        if i + 1 <= max_lag {
+        if i < max_lag {
             p[i + 1] = c;
         }
     }
@@ -144,8 +144,8 @@ mod tests {
         let p = make_seasonal_ar_poly(&[0.3], 12);
         assert_eq!(p.len(), 13);
         assert!((p[0] - 1.0).abs() < 1e-10);
-        for i in 1..12 {
-            assert!((p[i]).abs() < 1e-10, "p[{}] should be 0", i);
+        for (i, &val) in p[1..12].iter().enumerate() {
+            assert!(val.abs() < 1e-10, "p[{}] should be 0", i + 1);
         }
         assert!((p[12] - (-0.3)).abs() < 1e-10);
     }
@@ -185,8 +185,8 @@ mod tests {
         assert_eq!(r.len(), 14); // degree 13 → 14 elements
         assert!((r[0] - 1.0).abs() < 1e-10);
         assert!((r[1] - (-0.5)).abs() < 1e-10);
-        for i in 2..12 {
-            assert!((r[i]).abs() < 1e-10, "r[{}] = {} should be 0", i, r[i]);
+        for (i, &val) in r[2..12].iter().enumerate() {
+            assert!(val.abs() < 1e-10, "r[{}] = {} should be 0", i + 2, val);
         }
         assert!((r[12] - (-0.3)).abs() < 1e-10);
         assert!((r[13] - 0.15).abs() < 1e-10);

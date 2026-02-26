@@ -145,7 +145,16 @@ pub fn forecast(
                 }
                 crate::types::Trend::None => 0.0,
             };
-            a[ss.k_states_diff] += val;
+            let idx = ss.k_states_diff;
+            if idx < a.len() {
+                a[idx] += val;
+            } else {
+                return Err(SarimaxError::StateSpaceError(format!(
+                    "trend state index {} out of bounds (state dim={})",
+                    idx,
+                    a.len()
+                )));
+            }
         }
         // Propagate covariance: P_{h+1} = T * P_h * T' + R * Q * R'
         p = t_mat * &p * t_mat.transpose() + &rqr;
@@ -279,15 +288,15 @@ fn undifference_forecast(
         let undo_inits = compute_undo_d_initials(endog, d, dd, s);
         for &init in &undo_inits {
             let mut prev = init;
-            for h in 0..steps {
-                x_mean[h] += prev;
-                prev = x_mean[h];
+            for xm in x_mean.iter_mut() {
+                *xm += prev;
+                prev = *xm;
             }
             // Variance: cumulative sum (each step adds uncertainty from prior step)
             let mut cum = 0.0;
-            for h in 0..steps {
-                cum += x_var[h];
-                x_var[h] = cum;
+            for xv in x_var.iter_mut() {
+                cum += *xv;
+                *xv = cum;
             }
         }
     }
@@ -403,6 +412,7 @@ fn z_score(p: f64) -> f64 {
     }
 
     // Rational approximation coefficients (Moro / Beasley-Springer-Moro)
+    #[allow(clippy::excessive_precision)]
     let a = [
         -3.969683028665376e+01,
         2.209460984245205e+02,

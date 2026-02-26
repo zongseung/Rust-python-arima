@@ -351,12 +351,18 @@ fn inference_from_information(
             Some("all standard errors are non-finite; information matrix may be singular".into()),
         )
     } else if n_bad > 0 || singular {
-        (
-            "partial".to_string(),
-            Some(format!(
+        let detail = if singular && n_bad == 0 {
+            "information matrix is near-singular; standard errors may be unreliable. \
+             Consider inference='opg'.".to_string()
+        } else {
+            format!(
                 "{} of {} parameters have non-finite SE (singular information matrix)",
                 n_bad, k
-            )),
+            )
+        };
+        (
+            "partial".to_string(),
+            Some(detail),
         )
     } else {
         ("ok".to_string(), None)
@@ -702,7 +708,7 @@ mod tests {
 
         for (i, &p) in result.p_value.iter().enumerate() {
             assert!(
-                p >= 0.0 && p <= 1.0,
+                (0.0..=1.0).contains(&p),
                 "p-value[{}] = {} should be in [0, 1]",
                 i,
                 p

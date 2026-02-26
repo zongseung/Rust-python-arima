@@ -291,7 +291,7 @@ impl KalmanStrategy {
             Self::Dense => {
                 temp_kk.gemm(1.0, t_mat, p, 0.0);
                 p.gemm(1.0, temp_kk, t_mat_t, 0.0);
-                *p += &*rqr;
+                *p += rqr;
             }
         }
     }
@@ -479,6 +479,11 @@ fn kalman_core(
             // ---- STEADY-STATE PATH: O(nnz) per step ----
             // P has converged to P_inf, so K_inf and F_inf are constant.
             // Only the state mean recursion is computed; covariance is frozen.
+            debug_assert!(
+                cache.f_steady > 0.0 && cache.f_steady.is_finite(),
+                "steady-state F must be positive and finite, got {}",
+                cache.f_steady
+            );
             let v_t = compute_innovation(endog[t], &sparse_z, &a, d_t);
             innovations.push(v_t);
             if store_full {
@@ -557,19 +562,23 @@ fn kalman_core(
 
                     if check_convergence(&pz, &pz_prev, &mut consec_count) {
                         let f_steady = z.dot(&pz);
-                        let log_f_steady = f_steady.ln();
-                        let pz_inf = pz.clone();
+                        // Guard: only adopt steady-state if F_inf is positive and finite
+                        if f_steady > 0.0 && f_steady.is_finite() {
+                            let log_f_steady = f_steady.ln();
+                            let pz_inf = pz.clone();
 
-                        // K_inf = T * pz_inf
-                        let mut k_gain = DVector::<f64>::zeros(k);
-                        strategy.compute_k_gain(t_mat, &sparse_t, &pz, &mut k_gain);
+                            // K_inf = T * pz_inf
+                            let mut k_gain = DVector::<f64>::zeros(k);
+                            strategy.compute_k_gain(t_mat, &sparse_t, &pz, &mut k_gain);
 
-                        ss_cache = Some(SteadyStateCache {
-                            k_gain,
-                            f_steady,
-                            log_f_steady,
-                            pz_inf,
-                        });
+                            ss_cache = Some(SteadyStateCache {
+                                k_gain,
+                                f_steady,
+                                log_f_steady,
+                                pz_inf,
+                            });
+                        }
+                        // else: pz converged but F_inf invalid — stay on non-converged path
                     }
                     pz_prev.copy_from(&pz);
                 }
@@ -606,6 +615,12 @@ fn kalman_core(
     if !sum_log_f.is_finite() || !sum_v2_f.is_finite() {
         return Err(SarimaxError::DataError(
             "non-finite Kalman statistics encountered (possible NaN/Inf in inputs)".into(),
+        ));
+    }
+
+    if n_eff == 0 {
+        return Err(SarimaxError::DataError(
+            "no effective observations after burn-in exclusion (n_eff=0)".into(),
         ));
     }
 

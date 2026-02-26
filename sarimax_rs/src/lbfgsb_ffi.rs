@@ -56,20 +56,20 @@ pub const ERROR_END: i64 = 240;
 
 #[inline]
 pub fn is_fg(task: i64) -> bool {
-    task >= FG && task <= FG_END
+    (FG..=FG_END).contains(&task)
 }
 
 #[inline]
 pub fn is_converged(task: i64) -> bool {
-    task >= CONVERGENCE && task <= CONVERGENCE_END
+    (CONVERGENCE..=CONVERGENCE_END).contains(&task)
 }
 
 #[inline]
 pub fn is_warning(task: i64) -> bool {
-    task >= WARNING && task <= WARNING_END
+    (WARNING..=WARNING_END).contains(&task)
 }
 
 #[inline]
 pub fn is_error(task: i64) -> bool {
-    task >= ERROR && task <= ERROR_END
+    (ERROR..=ERROR_END).contains(&task)
 }

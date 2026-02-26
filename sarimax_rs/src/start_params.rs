@@ -379,13 +379,13 @@ fn hannan_rissanen(
     }
 
     // X'y
-    for i in 0..nc {
+    for (i, xty_i) in xty.iter_mut().enumerate() {
         let mut s_val = 0.0;
         let xi_base = i * n_obs;
         for k in 0..n_obs {
             s_val += x[xi_base + k] * y_vec[k];
         }
-        xty[i] = s_val;
+        *xty_i = s_val;
     }
 
     // Ridge regularization: X'X + λI

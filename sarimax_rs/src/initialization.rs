@@ -144,58 +144,63 @@ impl KalmanInit {
         let r_arma = ss.selection.view((sd, 0), (ko, ss.k_posdef)).into_owned();
         let rqr_arma = &r_arma * &ss.state_cov * r_arma.transpose();
 
-        // Try DARE first
-        match solve_dare_iterative(&t_arma, &z_arma, &rqr_arma, 100, 1e-12) {
-            Some(p_inf) => {
-                let mut p0 = DMatrix::<f64>::zeros(k_states, k_states);
+        // Try DARE first (200 iters for high-dimensional k>=50; tol 1e-11 for faster convergence)
+        let dare_result = solve_dare_iterative(&t_arma, &z_arma, &rqr_arma, 200, 1e-11);
 
-                // Diffuse part: kappa * I for diff states
-                for i in 0..sd {
-                    p0[(i, i)] = kappa;
+        // Quality gate: validate DARE solution before adopting
+        let dare_ok = dare_result
+            .as_ref()
+            .map(dare_quality_gate)
+            .unwrap_or(false);
+
+        if let (Some(p_inf), true) = (dare_result, dare_ok) {
+            let mut p0 = DMatrix::<f64>::zeros(k_states, k_states);
+
+            // Diffuse part: kappa * I for diff states
+            for i in 0..sd {
+                p0[(i, i)] = kappa;
+            }
+
+            // Stationary part: P_inf for ARMA states
+            for i in 0..ko {
+                for j in 0..ko {
+                    p0[(sd + i, sd + j)] = p_inf[(i, j)];
                 }
+            }
 
-                // Stationary part: P_inf for ARMA states
-                for i in 0..ko {
-                    for j in 0..ko {
-                        p0[(sd + i, sd + j)] = p_inf[(i, j)];
-                    }
-                }
-
-                // P1 effective: when sd=0, P_0 = P_∞ for the full state.
-                // Pre-compute steady-state quantities so kalman_core can skip
-                // the transient convergence phase entirely.
-                let steady_state = if sd == 0 {
-                    let z = &ss.design;
-                    let t = &ss.transition;
-                    let pz_inf = &p_inf * z;
-                    let f_steady = z.dot(&pz_inf);
-                    if f_steady > 0.0 {
-                        let mut k_gain = DVector::zeros(k_states);
-                        k_gain.gemv(1.0, t, &pz_inf, 0.0);
-                        Some(KalmanSteadyState {
-                            k_gain,
-                            f_steady,
-                            log_f_steady: f_steady.ln(),
-                            pz_inf,
-                        })
-                    } else {
-                        None
-                    }
+            // P1 effective: when sd=0, P_0 = P_∞ for the full state.
+            // Pre-compute steady-state quantities so kalman_core can skip
+            // the transient convergence phase entirely.
+            let steady_state = if sd == 0 {
+                let z = &ss.design;
+                let t = &ss.transition;
+                let pz_inf = &p_inf * z;
+                let f_steady = z.dot(&pz_inf);
+                if f_steady > 0.0 && f_steady.is_finite() {
+                    let mut k_gain = DVector::zeros(k_states);
+                    k_gain.gemv(1.0, t, &pz_inf, 0.0);
+                    Some(KalmanSteadyState {
+                        k_gain,
+                        f_steady,
+                        log_f_steady: f_steady.ln(),
+                        pz_inf,
+                    })
                 } else {
                     None
-                };
-
-                Self {
-                    initial_state: DVector::zeros(k_states),
-                    initial_state_cov: p0,
-                    loglikelihood_burn: sd,
-                    steady_state,
                 }
+            } else {
+                None
+            };
+
+            Self {
+                initial_state: DVector::zeros(k_states),
+                initial_state_cov: p0,
+                loglikelihood_burn: sd,
+                steady_state,
             }
-            None => {
-                // DARE failed, fall back to mixed (Lyapunov)
-                Self::mixed(ss, config, kappa)
-            }
+        } else {
+            // DARE failed or quality gate rejected — fall back to mixed (Lyapunov)
+            Self::mixed(ss, config, kappa)
         }
     }
 
@@ -307,6 +312,39 @@ fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix
 
 /// Solve the Discrete Algebraic Riccati Equation (DARE) iteratively:
 ///
+/// Validate DARE solution quality: symmetry and approximate PSD.
+///
+/// Returns `true` if the solution passes both checks, `false` otherwise.
+/// - Symmetry: max |P - P'| < sym_tol * max(||P||_F, 1)
+/// - PSD: min diagonal >= -psd_tol (lightweight proxy for eigenvalue check)
+fn dare_quality_gate(p: &DMatrix<f64>) -> bool {
+    let k = p.nrows();
+    if k == 0 {
+        return true;
+    }
+
+    // 1) Symmetry check
+    let p_norm = p.iter().map(|v| v * v).sum::<f64>().sqrt().max(1.0);
+    let sym_tol = 1e-8 * p_norm;
+    for i in 0..k {
+        for j in (i + 1)..k {
+            if (p[(i, j)] - p[(j, i)]).abs() > sym_tol {
+                return false;
+            }
+        }
+    }
+
+    // 2) PSD proxy: all diagonal elements must be non-negative (within tolerance)
+    let psd_tol = 1e-8 * p_norm;
+    for i in 0..k {
+        if p[(i, i)] < -psd_tol {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// P = T * P * T' + RQR' - (T * P * Z) * (Z' * P * Z)^{-1} * (Z' * P * T')
 ///
 /// Uses fixed-point iteration starting from P_0 = RQR'.

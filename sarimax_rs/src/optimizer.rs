@@ -406,26 +406,26 @@ impl Gradient for SarimaxObjective {
         // Fallback: numerical forward-diff (n+1 KF evaluations)
         let n = param.len();
         let mut grad = vec![0.0; n];
-        let eps = f64::EPSILON.sqrt();
 
         let f0 = self.cost(param)?;
         let mut p_work = param.clone();
 
         for i in 0..n {
+            let eps_i = (1.0 + p_work[i].abs()) * 1e-7;
             let orig = p_work[i];
-            p_work[i] = orig + eps;
+            p_work[i] = orig + eps_i;
             let f_plus = self.cost(&p_work)?;
             p_work[i] = orig;
 
-            grad[i] = (f_plus - f0) / eps;
+            grad[i] = (f_plus - f0) / eps_i;
 
             if !grad[i].is_finite() {
-                p_work[i] = orig + eps;
+                p_work[i] = orig + eps_i;
                 let fp = self.cost(&p_work)?;
-                p_work[i] = orig - eps;
+                p_work[i] = orig - eps_i;
                 let fm = self.cost(&p_work)?;
                 p_work[i] = orig;
-                grad[i] = (fp - fm) / (2.0 * eps);
+                grad[i] = (fp - fm) / (2.0 * eps_i);
                 if !grad[i].is_finite() {
                     grad[i] = 0.0;
                 }
@@ -677,17 +677,17 @@ fn run_lbfgsb(
             }
         };
 
-        let eps = f64::EPSILON.sqrt();
         let mut x_work = x.to_vec();
         for i in 0..n {
+            let eps_i = (1.0 + x_work[i].abs()) * 1e-7;
             let orig = x_work[i];
-            x_work[i] = orig + eps;
+            x_work[i] = orig + eps_i;
             let f_plus = match obj.eval_negloglike(&x_work) {
                 Ok(c) if c.is_finite() => c,
                 _ => cost,
             };
             x_work[i] = orig;
-            g[i] = (f_plus - cost) / eps;
+            g[i] = (f_plus - cost) / eps_i;
             if !g[i].is_finite() {
                 g[i] = 0.0;
             }
@@ -967,7 +967,7 @@ where
             // All optimizer attempts failed, fallback to Nelder-Mead
             let (p, c, n, conv) =
                 run_nelder_mead(objective.clone(), unconstrained_start.to_vec(), remaining)
-                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    .map_err(SarimaxError::OptimizationFailed)?;
             consume_budget(&mut remaining, &mut total_work, n);
             Ok((p, c, total_work, conv, "nelder-mead (fallback)".to_string()))
         }
@@ -1087,7 +1087,7 @@ fn fit_lbfgsb_multi(
         None => {
             let (p, c, n, conv) =
                 run_nelder_mead(objective.clone(), unconstrained_start.to_vec(), remaining)
-                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    .map_err(SarimaxError::OptimizationFailed)?;
             consume_budget(&mut remaining, &mut total_work, n);
             Ok((p, c, total_work, conv, "nelder-mead (fallback)".to_string()))
         }
@@ -1300,7 +1300,7 @@ fn fit_lbfgsb_single(
         Err(_) => {
             let (p, c, n, conv) =
                 run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                    .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                    .map_err(SarimaxError::OptimizationFailed)?;
             Ok((p, c, n, conv, "nelder-mead (fallback)".to_string()))
         }
     }
@@ -1321,6 +1321,51 @@ fn eval_kf_loglike_constrained(
         Ok(out) if out.loglike.is_finite() => out.loglike,
         _ => f64::NEG_INFINITY,
     }
+}
+
+/// For high-dimensional state-space models (k_states >= 40), the standard
+/// optimization landscape is treacherous — many local minima.  Pre-fitting
+/// with `simple_differencing=true` reduces the state dimension (removes
+/// diff states), giving a smoother landscape and better convergence.
+/// The resulting params are then used as warm-start for the full model.
+fn run_sd_warm_start(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    exog: Option<&[Vec<f64>]>,
+) -> Option<Vec<f64>> {
+    let mut sd_config = config.clone();
+    sd_config.simple_differencing = true;
+
+    let (sd_endog, sd_exog_owned) = pipeline::prepare_endog(endog, &sd_config, exog).ok()?;
+    let sd_exog: Option<&[Vec<f64>]> = sd_exog_owned.as_deref();
+
+    // Get CSS-based start params for SD model
+    let mut sd_start = validate_and_get_start_params(endog, &sd_config, None, exog).ok()?;
+
+    // CSS pre-optimization on SD path
+    let n_arma = sd_config.order.p + sd_config.order.q + sd_config.order.pp + sd_config.order.qq;
+    if n_arma >= 1 {
+        if let Some(css_p) = run_css_optimization(endog, &sd_config, &sd_start, 200, exog) {
+            let css_ll = eval_kf_loglike_constrained(&sd_endog, &sd_config, &css_p, sd_exog);
+            let orig_ll = eval_kf_loglike_constrained(&sd_endog, &sd_config, &sd_start, sd_exog);
+            if css_ll > orig_ll {
+                sd_start = css_p;
+            }
+        }
+    }
+
+    // Quick L-BFGS-B on SD model (200 iterations — enough for warm-start)
+    let sd_unc = untransform_params(&sd_start, &sd_config).ok()?;
+    let sd_obj = SarimaxObjective {
+        endog: sd_endog.to_vec(),
+        config: sd_config.clone(),
+        exog: sd_exog.map(|e| e.to_vec()),
+        cache: RefCell::new(None),
+        ss_cache: RefCell::new(None),
+    };
+
+    let (best_unc, _, _, _, _) = fit_lbfgsb_single(&sd_obj, sd_unc, &sd_config, 200).ok()?;
+    transform_params(&best_unc, &sd_config).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,7 +1532,7 @@ fn run_lbfgsb_css(
     let hit_limit_inner = hit_limit.clone();
 
     let css_eval = |unconstrained: &[f64]| -> f64 {
-        match transform_params(&unconstrained.to_vec(), &config_owned) {
+        match transform_params(unconstrained, &config_owned) {
             Ok(constrained) => match SarimaxParams::from_flat(&constrained, &config_owned) {
                 Ok(sparams) => {
                     let ll = css::css_loglike_with_exog(
@@ -1719,6 +1764,25 @@ pub fn fit(
         }
     }
 
+    // 2.7. High-dimensional warm-start via simple_differencing.
+    // For k_states >= 40 (high-order seasonal models), the full state-space
+    // optimization landscape has many local minima.  Pre-fitting with
+    // simple_differencing=true gives a much smoother landscape, yielding
+    // params close to the global optimum that then serve as warm-start.
+    if start_params.is_none() && !config.simple_differencing {
+        let k_states = config.order.k_states();
+        if k_states >= 40 {
+            if let Some(sd_params) = run_sd_warm_start(endog, config, exog) {
+                let sd_ll = eval_kf_loglike_constrained(eff_endog, config, &sd_params, eff_exog);
+                let orig_ll =
+                    eval_kf_loglike_constrained(eff_endog, config, &constrained_start, eff_exog);
+                if sd_ll > orig_ll + 1.0 {
+                    constrained_start = sd_params;
+                }
+            }
+        }
+    }
+
     // 3. Transform to unconstrained space + build objective (with eff_endog)
     let unconstrained_start = untransform_params(&constrained_start, config)?;
     let objective = SarimaxObjective {
@@ -1734,13 +1798,13 @@ pub fn fit(
     let (best_unconstrained, _best_cost, n_iter, converged, used_method) = match method {
         "nelder-mead" | "nm" => {
             let (p, c, n, conv) = run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                .map_err(SarimaxError::OptimizationFailed)?;
             (p, c, n, conv, "nelder-mead".to_string())
         }
         "lbfgsb-strict" | "lbfgsb_single" => {
             let bounds = compute_bounds(config);
             let (p, c, n, conv) = run_lbfgsb(&objective, unconstrained_start, bounds, maxiter)
-                .map_err(|e| SarimaxError::OptimizationFailed(e))?;
+                .map_err(SarimaxError::OptimizationFailed)?;
             (p, c, n, conv, "lbfgsb-strict".to_string())
         }
         "lbfgsb" => fit_lbfgsb_single(&objective, unconstrained_start, config, maxiter)?,
@@ -1869,45 +1933,6 @@ mod tests {
         assert!(r2.converged, "AR(1) lbfgsb enforce=true should converge");
     }
 
-    fn test_fit_ar1() {
-        let fixtures = load_fixtures();
-        let case = &fixtures["ar1"];
-        let data: Vec<f64> = case["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_f64().unwrap())
-            .collect();
-        let expected_params: Vec<f64> = case["params"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_f64().unwrap())
-            .collect();
-        let expected_loglike = case["loglike"].as_f64().unwrap();
-
-        // Fixture was generated with approximate_diffuse init, so use enforce=false
-        let config = make_config_with_enforcement(1, 0, 0, false, false);
-        let result = fit(&data, &config, None, Some("lbfgs"), Some(500), None).unwrap();
-
-        assert!(result.converged, "AR(1) fit should converge");
-        let param_err = (result.params[0] - expected_params[0]).abs();
-        assert!(
-            param_err < 1e-4,
-            "AR(1) param error too large: {} (got {}, expected {})",
-            param_err,
-            result.params[0],
-            expected_params[0]
-        );
-        let ll_err = (result.loglike - expected_loglike).abs();
-        assert!(
-            ll_err < 1e-2,
-            "AR(1) loglike error: {} (got {}, expected {})",
-            ll_err,
-            result.loglike,
-            expected_loglike
-        );
-    }
 
     #[test]
     fn test_fit_arma11() {

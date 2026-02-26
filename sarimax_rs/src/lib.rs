@@ -364,7 +364,7 @@ fn build_config(
 /// Parse optional trend string from Python into Trend enum.
 fn parse_trend(trend: Option<&str>) -> PyResult<Trend> {
     Trend::from_str(trend.unwrap_or("n"))
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// Common validation and config-building for single-series PyO3 functions.

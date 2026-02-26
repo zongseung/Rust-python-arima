@@ -202,6 +202,13 @@ def _validate_inference_mode(mode):
         raise ValueError(
             f"inference must be one of {_VALID_INFERENCE_MODES}, got {mode!r}"
         )
+    if mode == "rust_hessian":
+        import warnings
+        warnings.warn(
+            "'rust_hessian' is deprecated; use inference='hessian' instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
     return mode
 
 
@@ -322,8 +329,12 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
             inference_status_sm=status,
             inference_message_sm=message,
         )
-    except Exception as e:
+    except (ValueError, RuntimeError, ArithmeticError, OverflowError,
+            np.linalg.LinAlgError) as e:
         return _inference_nan_dict(n_params_rs or 0, "failed", str(e), prefix="sm")
+    except Exception as e:
+        # Unexpected errors (FFI panic, OOM, etc.) propagate for debugging
+        raise
 
 
 def _compute_inference(loglike_fn, params, alpha=0.05):
@@ -448,7 +459,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
             inference_status=result["status"],
             inference_message=result["message"],
         )
-    except Exception as e:
+    except (ValueError, RuntimeError, ArithmeticError, OverflowError) as e:
         return dict(
             std_err=nan_arr.copy(),
             z=nan_arr.copy(),
@@ -459,6 +470,9 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
             inference_status="failed",
             inference_message=str(e),
         )
+    except Exception as e:
+        # Unexpected errors (FFI panic, OOM, etc.) propagate for debugging
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -503,17 +517,68 @@ class SARIMAXModel:
         enforce_invertibility=True,
         simple_differencing=False,
     ):
+        # --- endog validation ---
         self.endog = np.asarray(endog, dtype=np.float64)
         if self.endog.ndim != 1:
             raise ValueError(f"endog must be 1-dimensional, got ndim={self.endog.ndim}")
+        if len(self.endog) < 10:
+            raise ValueError(f"endog too short: {len(self.endog)} < 10")
+        if not np.isfinite(self.endog).all():
+            raise ValueError("endog contains NaN or Inf values")
+
+        # --- order validation ---
+        if len(order) != 3:
+            raise ValueError(f"order must have 3 elements (p,d,q), got {len(order)}")
+        p, d, q = order
+        if not all(isinstance(v, (int, np.integer)) and v >= 0 for v in (p, d, q)):
+            raise ValueError(f"order (p,d,q) must be non-negative integers, got {order}")
+        if d > 2:
+            raise ValueError(f"Non-seasonal differencing d must be <= 2, got d={d}")
+
+        # --- seasonal_order validation ---
+        if len(seasonal_order) != 4:
+            raise ValueError(
+                f"seasonal_order must have 4 elements (P,D,Q,s), got {len(seasonal_order)}"
+            )
+        P, D, Q, s = seasonal_order
+        if not all(isinstance(v, (int, np.integer)) and v >= 0 for v in (P, D, Q, s)):
+            raise ValueError(
+                f"seasonal_order (P,D,Q,s) must be non-negative integers, got {seasonal_order}"
+            )
+        if D > 1:
+            raise ValueError(f"Seasonal differencing D must be 0 or 1, got D={D}")
+        if s < 0:
+            raise ValueError(f"Seasonal period s must be non-negative, got s={s}")
+        if s == 1:
+            raise ValueError("Seasonal period s=1 is equivalent to s=0 (non-seasonal)")
+
+        # --- trend validation ---
+        if trend not in ("n", "c", "t", "ct"):
+            raise ValueError(f"trend must be one of 'n','c','t','ct', got {trend!r}")
+
+        # --- simple_differencing validation ---
+        if not isinstance(simple_differencing, (bool, np.bool_)):
+            raise TypeError(
+                f"simple_differencing must be bool, got {type(simple_differencing).__name__}"
+            )
+
         self.order = order
         self.seasonal_order = seasonal_order
+
+        # --- exog validation ---
         if exog is not None:
             self.exog = np.asarray(exog, dtype=np.float64)
             if self.exog.ndim == 1:
                 self.exog = self.exog.reshape(-1, 1)
+            if self.exog.shape[0] != len(self.endog):
+                raise ValueError(
+                    f"exog row count {self.exog.shape[0]} != endog length {len(self.endog)}"
+                )
+            if not np.isfinite(self.exog).all():
+                raise ValueError("exog contains NaN or Inf values")
         else:
             self.exog = None
+
         self.trend = trend
         self.enforce_stationarity = enforce_stationarity
         self.enforce_invertibility = enforce_invertibility
@@ -640,7 +705,7 @@ class SARIMAXResult:
                 np.array(params, dtype=np.float64),
                 **kwargs,
             )
-        except Exception:
+        except (ValueError, RuntimeError, ArithmeticError, OverflowError, TypeError):
             return np.nan
 
     def _rs_kwargs(self, **extra):
@@ -867,6 +932,8 @@ class SARIMAXResult:
         -------
         ForecastResult
         """
+        if not (0 < alpha < 1):
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         kwargs = self._rs_kwargs(steps=steps, alpha=alpha)
         if exog is not None:
             exog = np.asarray(exog, dtype=np.float64)
@@ -948,6 +1015,19 @@ class SARIMAXResult:
         PredictionResult
         """
         n_endog = len(self.model.endog)
+
+        # --- start/end validation ---
+        if start is not None and not isinstance(start, (int, np.integer)):
+            raise TypeError(f"start must be int or None, got {type(start).__name__}")
+        if end is not None and not isinstance(end, (int, np.integer)):
+            raise TypeError(f"end must be int or None, got {type(end).__name__}")
+        if start is not None and start < 0:
+            raise ValueError(f"start must be >= 0, got {start}")
+        if end is not None and end < 0:
+            raise ValueError(f"end must be >= 0, got {end}")
+        if start is not None and end is not None and start > end:
+            raise ValueError(f"start ({start}) must be <= end ({end})")
+
         if start is None:
             start = 0
         if end is None:

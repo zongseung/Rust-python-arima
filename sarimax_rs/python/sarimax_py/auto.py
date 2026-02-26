@@ -86,14 +86,19 @@ def _safe_ic(value):
     return value if math.isfinite(value) else None
 
 
-def _make_history_entry(order, seasonal, criterion, ic_val, converged):
+def _make_history_entry(order, seasonal, criterion, ic_val, converged,
+                        error_type=None, error_message=None):
     """Build a history dict entry for auto_arima search tracking."""
-    return {
+    entry = {
         "order": order,
         "seasonal_order": seasonal,
         criterion: _safe_ic(ic_val),
         "converged": converged,
     }
+    if error_type is not None:
+        entry["error_type"] = error_type
+        entry["error_message"] = error_message
+    return entry
 
 
 def _trace_print(p, d, q, P, D, Q, s, criterion, ic_val):
@@ -106,7 +111,15 @@ def _try_fit(endog, order, seasonal_order, trend="n",
              enforce_stationarity=True, enforce_invertibility=True,
              method=None, maxiter=None,
              exog=None, simple_differencing=False, trace=False):
-    """Attempt to fit a model, returning result or None."""
+    """Attempt to fit a model, returning (result, error_info) tuple.
+
+    Returns
+    -------
+    tuple : (SARIMAXResult or None, dict or None)
+        On success: (result, None).
+        On expected failure: (None, {"error_type": ..., "error_message": ...}).
+        On unexpected failure: raises the exception.
+    """
     try:
         model = SARIMAXModel(
             endog, order=order, seasonal_order=seasonal_order,
@@ -117,11 +130,17 @@ def _try_fit(endog, order, seasonal_order, trend="n",
             simple_differencing=simple_differencing,
         )
         result = model.fit(method=method, maxiter=maxiter)
-        return result
-    except Exception as exc:
+        return result, None
+    except (ValueError, RuntimeError, ArithmeticError,
+            OverflowError, ZeroDivisionError) as exc:
         if trace:
             print(f"    [FAILED] ARIMA{order}{seasonal_order}: {type(exc).__name__}: {exc}")
-        return None
+        return None, {"error_type": type(exc).__name__, "error_message": str(exc)}
+    except Exception as exc:
+        # Unexpected errors (FFI panic, OOM, etc.) propagate for debugging
+        if trace:
+            print(f"    [UNEXPECTED] ARIMA{order}{seasonal_order}: {type(exc).__name__}: {exc}")
+        raise
 
 
 def auto_arima(
@@ -247,7 +266,7 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
 
         order = (p, d, q)
         seasonal = (P, D, Q, s)
-        result = _try_fit(
+        result, err_info = _try_fit(
             endog, order, seasonal,
             trend=trend,
             enforce_stationarity=enforce_stationarity,
@@ -263,9 +282,15 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
             if not math.isfinite(ic_val):
                 ic_val = math.inf
 
+        err_kw = {}
+        if err_info is not None:
+            err_kw["error_type"] = err_info["error_type"]
+            err_kw["error_message"] = err_info["error_message"]
+
         history.append(_make_history_entry(
             order, seasonal, criterion, ic_val,
             result.converged if result else False,
+            **err_kw,
         ))
         if trace:
             _trace_print(p, d, q, P, D, Q, s, criterion, ic_val)
@@ -404,8 +429,13 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         else:
             ic_val = math.inf
 
+        err_kw = {}
+        if has_error:
+            err_kw["error_type"] = raw.get("error_type", "RuntimeError")
+            err_kw["error_message"] = raw.get("error", "unknown error")
+
         history.append(_make_history_entry(
-            order, seasonal, criterion, ic_val, converged,
+            order, seasonal, criterion, ic_val, converged, **err_kw,
         ))
         if trace:
             _trace_print(p, _d, q, P, _D, Q, _s, criterion, ic_val)

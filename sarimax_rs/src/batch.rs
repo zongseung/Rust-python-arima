@@ -228,7 +228,7 @@ mod tests {
         let config = make_config_with_enforcement(1, 0, 0, true, true);
 
         // Single series via batch
-        let batch_results = batch_fit(&[data.clone()], &config, Some("lbfgs"), Some(500), None);
+        let batch_results = batch_fit(std::slice::from_ref(&data), &config, Some("lbfgs"), Some(500), None);
         assert_eq!(batch_results.len(), 1);
         let batch_result = batch_results[0].as_ref().unwrap();
 

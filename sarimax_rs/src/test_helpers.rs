@@ -3,10 +3,8 @@
 //! Centralises `make_config`, `make_params`, `load_fixtures` helpers that were
 //! previously duplicated across 10+ test modules.
 
-#![cfg(test)]
-
 use crate::params::SarimaxParams;
-use crate::types::{SarimaxConfig, SarimaxOrder, Trend};
+use crate::types::{SarimaxConfig, SarimaxOrder};
 
 // ---------------------------------------------------------------------------
 // Config helpers

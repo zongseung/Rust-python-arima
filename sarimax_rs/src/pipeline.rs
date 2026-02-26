@@ -17,10 +17,10 @@ use crate::types::SarimaxConfig;
 /// - `eff_exog`: exog columns trimmed to the same length (drop first `n_drop` rows)
 ///
 /// Returns `Err` if any exog column is shorter than `n_drop`.
-pub(crate) fn prepare_endog<'a>(
+pub(crate) fn prepare_endog(
     endog: &[f64],
     config: &SarimaxConfig,
-    exog: Option<&'a [Vec<f64>]>,
+    exog: Option<&[Vec<f64>]>,
 ) -> Result<(Vec<f64>, Option<Vec<Vec<f64>>>)> {
     if !config.simple_differencing {
         return Ok((endog.to_vec(), None));
@@ -113,14 +113,3 @@ pub(crate) fn kalman_filter_full(
     }
 }
 
-/// Run full Kalman filter (returning state history) from constrained (flat) parameters.
-#[inline]
-pub(crate) fn kalman_filter_constrained(
-    endog: &[f64],
-    constrained: &[f64],
-    config: &SarimaxConfig,
-    exog: Option<&[Vec<f64>]>,
-) -> Result<kalman::KalmanFilterOutput> {
-    let sparams = SarimaxParams::from_flat(constrained, config)?;
-    kalman_filter_full(endog, &sparams, config, exog)
-}

@@ -191,10 +191,6 @@ where
         self.problem.f
     }
 
-    pub fn gx(&self) -> &[f64] {
-        &self.problem.g
-    }
-
     pub fn x(&self) -> &[f64] {
         &self.problem.x
     }

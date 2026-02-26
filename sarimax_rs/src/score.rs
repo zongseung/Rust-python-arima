@@ -1391,7 +1391,7 @@ mod tests {
         let n = data.len();
 
         let exog_col: Vec<f64> = (0..n).map(|t| (t as f64) * 0.01).collect();
-        let exog = vec![exog_col];
+        let exog = [exog_col];
 
         let config = SarimaxConfig {
             order: SarimaxOrder::new(1, 0, 0, 0, 0, 0, 0),

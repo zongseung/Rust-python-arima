@@ -64,7 +64,7 @@ impl StateSpace {
         let n = endog.len();
 
         // V-3: Validate exog column lengths match number of observations
-        if let Some(ref x) = exog {
+        if let Some(x) = exog {
             for (j, col) in x.iter().enumerate() {
                 if col.len() != n {
                     return Err(SarimaxError::DataError(format!(
@@ -136,7 +136,7 @@ impl StateSpace {
 
         // Defensive: exog columns must match endog length (callers should pre-validate).
         debug_assert!(
-            exog.map_or(true, |cols| cols.iter().all(|c| c.len() == n)),
+            exog.is_none_or(|cols| cols.iter().all(|c| c.len() == n)),
             "update_params: exog column length != endog length ({})",
             n
         );
