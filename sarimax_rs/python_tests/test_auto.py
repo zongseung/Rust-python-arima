@@ -155,6 +155,69 @@ class TestGridSearchParallel:
             pass
 
 
+class TestNsdiffs:
+    """Regression tests for _nsdiffs variance-ratio test (fix: ACF threshold was
+    too liberal, misclassifying stationary SARMA as D=1)."""
+
+    def test_stationary_sarma_gives_d0(self):
+        """Stationary SARMA process must NOT be seasonally differenced (D=0).
+
+        Strong seasonal autocorrelation (ACF_s ≈ 0.5) is NOT the same as a
+        seasonal unit root.  The variance-ratio fix requires the seasonal
+        difference to reduce variance by >36 % before suggesting D=1.
+        """
+        from sarimax_py.auto import _nsdiffs
+
+        # Generate stationary SARMA(1,0)(1,1,24): y[t] = 0.5*y[t-1] +
+        # 0.4*y[t-24] - 0.2*y[t-25] + eps[t] + 0.3*eps[t-24]
+        rng = np.random.default_rng(54)
+        n, s = 480, 24
+        eps = rng.normal(size=n + s * 2)
+        y = np.zeros(n + s * 2)
+        for t in range(s, n + s * 2):
+            y[t] = (0.5 * y[t - 1] + 0.4 * y[t - s] - 0.2 * y[t - s - 1]
+                    + eps[t] + 0.3 * eps[t - s])
+        y = y[-n:]
+        assert _nsdiffs(y, s) == 0, (
+            "_nsdiffs incorrectly returned D=1 for stationary SARMA(1,0)(1,1,24); "
+            "variance-ratio fix may have been reverted"
+        )
+
+    def test_seasonal_unit_root_gives_d1(self):
+        """True seasonal random walk must trigger D=1."""
+        from sarimax_py.auto import _nsdiffs
+
+        rng = np.random.default_rng(99)
+        s = 12
+        n = 240
+        y = np.zeros(n + s)
+        for t in range(s, n + s):
+            y[t] = y[t - s] + rng.normal()
+        y = y[s:]
+        assert _nsdiffs(y, s) == 1, (
+            "_nsdiffs failed to detect seasonal unit root"
+        )
+
+    def test_auto_arima_s24_selects_sarma_not_sdiff(self):
+        """auto_arima with s=24 on stationary SARMA data must select D=0."""
+        rng = np.random.default_rng(54)
+        n, s = 480, 24
+        eps = rng.normal(size=n + s * 2)
+        y = np.zeros(n + s * 2)
+        for t in range(s, n + s * 2):
+            y[t] = (0.5 * y[t - 1] + 0.4 * y[t - s] - 0.2 * y[t - s - 1]
+                    + eps[t] + 0.3 * eps[t - s])
+        y = y[-n:]
+        res = auto_arima(y, s=s, max_p=3, max_q=3, max_P=2, max_Q=2,
+                         max_D=1, stepwise=True)
+        assert res.result is not None
+        P_sel, D_sel, Q_sel, _ = res.seasonal_order
+        assert D_sel == 0, (
+            f"auto_arima chose D={D_sel} for stationary SARMA data (s=24); "
+            "should be D=0 after _nsdiffs fix"
+        )
+
+
 class TestTrend:
     def test_auto_arima_with_trend(self, trend_data):
         res = auto_arima(trend_data, max_p=2, max_q=2, d=0, s=0, trend="c")

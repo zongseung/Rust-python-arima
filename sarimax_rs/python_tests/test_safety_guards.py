@@ -622,3 +622,22 @@ def test_get_prediction_oos_simple_differencing():
     assert len(pred.predicted_mean) == 125
     # OOS part (last 5) should be finite
     assert np.all(np.isfinite(pred.predicted_mean[-5:]))
+
+
+# ---------------------------------------------------------------------------
+# 11-11. V8.8 regression tests
+# ---------------------------------------------------------------------------
+
+def test_forecast_short_series_seasonal_simple_diff_no_panic():
+    """n < s with seasonal simple_differencing should not panic."""
+    y = np.arange(5.0)  # n=5 < s=12
+    out = sarimax_rs.sarimax_forecast(
+        y,
+        (0, 0, 0),
+        (0, 1, 0, 12),
+        np.array([], dtype=np.float64),
+        steps=10,
+        simple_differencing=True,
+    )
+    assert len(out["mean"]) == 10
+    assert len(out["variance"]) == 10

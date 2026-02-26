@@ -43,20 +43,31 @@ def _ndiffs(y, max_d=2, test="adf"):
 
 
 def _nsdiffs(y, s, max_D=1):
-    """Estimate seasonal differences (0 or 1)."""
+    """Estimate seasonal differences (0 or 1).
+
+    Uses a variance-ratio test: seasonal differencing should substantially
+    reduce variance for a seasonally integrated series (ratio << 1), but
+    leaves stationary series roughly unchanged (ratio ≈ 1) or increases
+    variance (ratio > 1).
+
+    Threshold 0.64 ≈ 2*(1 − 0.68): requires at least a 36 % variance
+    reduction before suggesting D=1.  Strong seasonal ARMA processes
+    produce ratios 0.8–1.0 and are correctly classified as D=0.
+    """
     if s <= 1 or max_D == 0:
         return 0
     n = len(y)
     if n < 2 * s:
         return 0
-    # Simple seasonal strength test (STL-like)
-    # If seasonal autocorrelation at lag s is > 0.5, suggest D=1
     yd = y - np.mean(y)
-    if len(yd) > s:
-        acf_s = np.correlate(yd[s:], yd[:-s])[0] / (np.var(yd) * len(yd[s:]))
-        if acf_s > 0.5:
-            return 1
-    return 0
+    var_orig = np.var(yd)
+    if var_orig == 0:
+        return 0
+    # Seasonal difference: y[t] − y[t−s]
+    y_sdiff = yd[s:] - yd[:-s]
+    ratio = np.var(y_sdiff) / var_orig
+    # For a seasonal unit root ratio ≪ 1; for stationary SARMA ratio ≈ 1
+    return 1 if ratio < 0.64 else 0
 
 
 def _ic(result, criterion="aic"):

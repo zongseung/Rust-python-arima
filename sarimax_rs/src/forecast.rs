@@ -296,7 +296,9 @@ fn undifference_forecast(
     let mut y_mean = x_mean;
     let mut y_var = x_var;
 
-    if dd > 0 && s >= 1 {
+    // Seasonal undifferencing is only valid when seasonal differencing was
+    // actually applied in `apply_differencing` (requires n > s).
+    if dd > 0 && s >= 1 && n > s {
         // Last s values of original y (used for h < s reconstruction)
         let y_last_s: &[f64] = &endog[n.saturating_sub(s)..n];
         let buf_len = y_last_s.len();
@@ -456,7 +458,9 @@ fn z_score(p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{load_fixtures, make_config, make_params};
+    use crate::test_helpers::{
+        load_fixtures, make_config, make_params, make_seasonal_config, make_seasonal_params,
+    };
 
     #[test]
     fn test_z_score_standard() {
@@ -606,5 +610,19 @@ mod tests {
             "Standardized residual variance should be ~1, got {}",
             var
         );
+    }
+
+    #[test]
+    fn test_forecast_simple_diff_short_series_no_panic() {
+        // Regression: n < s with simple_differencing + seasonal differencing
+        // previously panicked due to h-s underflow in undifference_forecast.
+        let data = vec![0.0, 1.0, 2.0, 3.0, 4.0]; // n=5
+        let mut config = make_seasonal_config(0, 0, 0, 0, 1, 0, 12); // D=1, s=12
+        config.simple_differencing = true;
+        let params = make_seasonal_params(&[], &[], &[], &[]);
+
+        let result = forecast_pipeline(&data, &config, &params, 10, 0.05, None, None).unwrap();
+        assert_eq!(result.mean.len(), 10);
+        assert_eq!(result.variance.len(), 10);
     }
 }
