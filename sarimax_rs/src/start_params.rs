@@ -577,9 +577,13 @@ pub fn compute_start_params(
         return Ok(vec![0.0; n_params]);
     }
 
-    // Trend coefficients (zeros)
+    // Trend coefficients: use sample mean of differenced series as intercept
     let kt = config.trend.k_trend();
     let mut params = vec![0.0; kt];
+    if kt > 0 && !diffed.is_empty() {
+        let mean = diffed.iter().sum::<f64>() / diffed.len() as f64;
+        params[0] = mean;
+    }
 
     // Exog coefficients: OLS estimates or zeros
     if config.n_exog > 0 {
