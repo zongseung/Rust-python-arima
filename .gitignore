@@ -24,3 +24,7 @@ target_wheel/
 .idea/
 .vscode/
 *.swp
+
+# 
+planner/
+CLAUDE.md
