@@ -2,7 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.83%2B-orange)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 **[Korean / 한국어](README_ko.md)**
 
@@ -1054,4 +1054,4 @@ uv run python python_tests/generate_fixtures.py
 
 ## License
 
-MIT
+GPL-3.0-or-later. See [LICENSE](LICENSE) for details.
