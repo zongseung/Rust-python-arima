@@ -497,8 +497,32 @@ class AutoARIMAResult:
         """Best information criterion value."""
         return _ic(self.result, self.criterion) if self.result else math.inf
 
-    def summary(self):
-        """Short summary of the search."""
+    def summary(self, alpha=0.05, inference=None):
+        """Return statsmodels-style summary of the best model.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance level for confidence intervals.
+        inference : str, optional
+            ``"none"`` | ``"hessian"`` | ``"opg"`` | ``"both"``.
+            Default ``"hessian"``.
+        """
+        if self.result is None:
+            return "auto_arima: no valid model found."
+        if inference is None:
+            inference = "hessian"
+        n_models = len(self.history)
+        n_converged = sum(1 for h in self.history if h["converged"])
+        body = self.result.summary(alpha=alpha, inference=inference)
+        footer = (
+            f"Search: {n_models} models evaluated "
+            f"({n_converged} converged), criterion={self.criterion}"
+        )
+        return body + "\n" + footer
+
+    def search_summary(self):
+        """Short summary of the search (order, IC, model count)."""
         if self.result is None:
             return "auto_arima: no valid model found."
         p, d, q = self.order

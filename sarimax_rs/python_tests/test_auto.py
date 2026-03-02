@@ -31,9 +31,13 @@ class TestStepwise:
     def test_stepwise_summary(self, ar1_data):
         res = auto_arima(ar1_data, max_p=2, max_q=2, s=0)
         s = res.summary()
-        assert "auto_arima" in s
-        assert "ARIMA" in s
-        assert "aic=" in s
+        assert "SARIMAX Results" in s
+        assert "Search:" in s
+        assert "criterion=aic" in s
+        # search_summary keeps short format
+        ss = res.search_summary()
+        assert "auto_arima" in ss
+        assert "aic=" in ss
 
     def test_stepwise_best_ic(self, ar1_data):
         res = auto_arima(ar1_data, max_p=2, max_q=2, s=0)
