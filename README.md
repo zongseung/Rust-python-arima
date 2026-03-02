@@ -777,7 +777,7 @@ loglike = -n_eff/2 * ln(2π) - n_eff/2 * ln(σ²_hat) - n_eff/2 - 0.5 * Σ ln(F_
 
 ### 3. Analytical Score Vector (`score.rs`)
 
-Computes ∂loglike/∂θ via tangent-linear Kalman filter (Kitagawa, 2020) in a single forward pass, avoiding the O(n_params + 1) cost of numerical differentiation.
+Computes ∂loglike/∂θ via tangent-linear Kalman filter (Koopman & Shephard, 1992; Harvey, 1989) in a single forward pass, avoiding the O(n_params + 1) cost of numerical differentiation. To our knowledge, this is the first Rust implementation of the analytical exact score for state-space models.
 
 **Performance optimizations:**
 - **Sparse T**: Exploits companion matrix T sparsity to reduce O(k³) → O(nnz×k) (~23x speedup at k=27)

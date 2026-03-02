@@ -698,7 +698,7 @@ loglike = -n_eff/2 * ln(2π) - n_eff/2 * ln(σ²_hat) - n_eff/2 - 0.5 * Σ ln(F_
 
 ### 3. 해석적 Score 벡터 (`score.rs`)
 
-탄젠트-선형 칼만 필터(Kitagawa, 2020)를 통해 ∂loglike/∂θ를 한 번의 전방 패스로 계산하여 수치 미분의 O(n_params + 1) 비용을 피합니다.
+탄젠트-선형 칼만 필터(Koopman & Shephard, 1992; Harvey, 1989)를 통해 ∂loglike/∂θ를 한 번의 전방 패스로 계산하여 수치 미분의 O(n_params + 1) 비용을 피합니다. 현재까지 확인된 바로는, 상태공간 모형의 해석적 정확 스코어를 Rust로 구현한 최초의 사례입니다.
 
 **성능 최적화:**
 - **Sparse T**: `dP_{t+1|t} = T·dP·T'` 연산에서 companion matrix T의 sparsity를 활용해 O(k³) → O(nnz×k)로 감소 (k=27에서 ~23x 가속)
