@@ -25,7 +25,11 @@ target_wheel/
 .vscode/
 *.swp
 
-# 
+# Data files
+*.csv
+
+# Local docs
 /CLAUDE.md
 /planner/
 /sarimax_rs/docs/
+/ver5/
