@@ -26,5 +26,6 @@ target_wheel/
 *.swp
 
 # 
-/planner
 /CLAUDE.md
+/planner/
+/sarimax_rs/docs/
