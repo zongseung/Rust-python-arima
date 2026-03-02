@@ -26,5 +26,5 @@ target_wheel/
 *.swp
 
 # 
-planner/
+/planner
 /CLAUDE.md
