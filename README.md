@@ -6,7 +6,7 @@
 
 **[Korean / 한국어](README_ko.md)**
 
-A high-performance SARIMAX (Seasonal ARIMA with eXogenous regressors) engine written in Rust with Python bindings via PyO3. Drop-in replacement for `statsmodels.tsa.SARIMAX` with native-compiled speed, numerical accuracy on par with statsmodels, and Rayon-based parallel batch processing for large-scale time series workloads.
+A high-performance SARIMAX (Seasonal ARIMA with eXogenous regressors) engine written in Rust with Python bindings via PyO3. It provides a statsmodels-compatible high-level API, native-compiled speed, numerical accuracy on par with statsmodels, and Rayon-based job-level parallel batch processing for large-scale time series workloads.
 
 ## Motivation
 
@@ -23,8 +23,8 @@ Python's `statsmodels.tsa.SARIMAX` is the de facto standard for SARIMA modeling,
 
 - **Kalman filter**: Rust `for` + nalgebra dense matrix ops (zero interpreter overhead)
 - **Optimization**: L-BFGS-B (default), L-BFGS, Nelder-Mead run entirely in Rust with analytical score vector (sparse tangent-linear Kalman + steady-state optimization)
-- **Batch parallelism**: Rayon work-stealing thread pool for simultaneous N-series fitting/forecasting
-- **Grid search parallelization**: `sarimax_grid_search` fits multiple ARIMA order combinations in parallel via Rayon
+- **Batch parallelism**: Rayon work-stealing thread pool that assigns one full fit/forecast job per series
+- **Grid search parallelization**: `sarimax_grid_search` assigns one ARIMA order combination per worker via Rayon
 - **auto_arima**: Hyndman-Khandakar stepwise + Rayon parallel grid search for automatic order selection
 - **Memory**: Stack allocation + contiguous column-major layout for cache-friendliness
 - **Python interop**: PyO3 + numpy bindings — `import rustima`
@@ -143,7 +143,7 @@ print(res.summary())           # Full statsmodels-style summary with inference
 print(res.search_summary())    # Short 3-line summary (order, IC, model count)
 print(res.result.forecast(steps=12).to_dataframe())
 
-# Grid Search (Rayon parallel — all combinations simultaneously)
+# Grid Search (Rayon parallel — one fit job per order combination)
 res = auto_arima(y, max_p=3, max_q=3, s=7, stepwise=False, criterion="bic")
 print(res.summary())
 
@@ -194,7 +194,7 @@ fcast = result.forecast(steps=10, exog=X_future)
 ### Batch Parallel Processing
 
 ```python
-# Fit 100 series simultaneously (Rayon multi-threaded)
+# Fit 100 series with job-level Rayon parallelism
 series_list = [np.random.randn(200) for _ in range(100)]
 
 results = rustima.sarimax_batch_fit(
@@ -531,7 +531,7 @@ print(res["standardized_residuals"])   # v_t / sqrt(F_t * sigma2)
 
 #### `rustima.sarimax_batch_fit`
 
-Fits N series in parallel using Rayon thread pool.
+Fits N series in parallel using a Rayon thread pool, with one complete fit job per series.
 
 ```python
 results = rustima.sarimax_batch_fit(
@@ -549,7 +549,7 @@ results = rustima.sarimax_batch_fit(
 
 #### `rustima.sarimax_batch_forecast`
 
-Forecasts N series (each with different params) in parallel.
+Forecasts N series (each with different params) in parallel, with one complete forecast job per series.
 
 ```python
 params_list = [np.array(r["params"]) for r in results]
@@ -567,7 +567,7 @@ forecasts = rustima.sarimax_batch_forecast(
 
 #### `rustima.sarimax_grid_search`
 
-Fits a single series with multiple ARIMA order combinations in parallel via Rayon.
+Fits a single series with multiple ARIMA order combinations in parallel via Rayon, with one complete fit job per configuration.
 
 ```python
 results = rustima.sarimax_grid_search(
@@ -820,15 +820,15 @@ For each forecast step h = 1, ..., steps:
 
 ### 7. Batch & Grid Search Parallelism (`batch.rs`)
 
-Uses Rayon `par_iter()` for work-stealing parallelism.
+Uses Rayon `par_iter()` for work-stealing parallelism at the independent-job level.
 
 **Batch processing** (same order + different series):
 - All series share the same `SarimaxConfig` (Clone, Send + Sync)
-- Each series independently runs `StateSpace::new()` → `fit()` / `forecast_pipeline()`
+- Each worker independently runs one full `StateSpace::new()` → `fit()` / `forecast_pipeline()` pipeline for one series
 - Failed series do not affect others (`Vec<Result<T>>`)
 
 **Grid search** (same series + different orders):
-- `grid_search_fit(endog, configs)` — parallel over order combinations via `configs.par_iter()`
+- `grid_search_fit(endog, configs)` — parallel over order combinations via `configs.par_iter()`, one full fit per config
 
 ---
 
@@ -1049,7 +1049,7 @@ uv run python python_tests/generate_fixtures.py
 
 - Seasonal differencing `D > 1` not supported (only `D = 0` or `1`)
 - Maximum forecast steps: 10,000; `alpha` must be in (0, 1)
-- State dimension capped at 1,024 (prevents OOM on extreme orders)
+- State dimension capped at 1,024 (bounds memory and compute blow-up on extreme orders, but does not eliminate OOM risk in the absolute sense)
 - `auto_arima` automatic differencing detection uses ADF test (scipy) or variance-reduction heuristic
 
 ## License

@@ -6,7 +6,7 @@
 
 **[English / 영어](README.md)**
 
-PyO3를 통해 Python에서 호출할 수 있도록 Rust로 작성한 고성능 SARIMAX(외생 회귀변수를 포함한 계절 ARIMA) 엔진입니다. statsmodels와 동등한 수치 정확도를 유지하면서 네이티브 컴파일 속도를 제공하며, 대규모 시계열 워크로드를 위해 Rayon 기반 병렬 배치 처리를 지원합니다.
+PyO3를 통해 Python에서 호출할 수 있도록 Rust로 작성한 고성능 SARIMAX(외생 회귀변수를 포함한 계절 ARIMA) 엔진입니다. statsmodels 호환 고수준 API를 제공하면서 네이티브 컴파일 속도와 statsmodels 수준의 수치 정확도를 유지하고, 대규모 시계열 워크로드를 위해 Rayon 기반 job 단위 병렬 배치 처리를 지원합니다.
 
 ## 개발 동기
 
@@ -23,8 +23,8 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 
 - **칼만 필터**: Rust `for` + nalgebra 밀집 행렬 연산(인터프리터 오버헤드 없음)
 - **최적화**: L-BFGS-B(기본), L-BFGS, Nelder-Mead를 Rust 내부에서 수행하며 analytical score vector(sparse 탄젠트-선형 칼만 필터 + steady-state 최적화) 지원
-- **배치 병렬성**: Rayon work-stealing 스레드 풀로 N개 시계열 동시 적합/예측
-- **Grid Search 병렬화**: `sarimax_grid_search`로 여러 ARIMA 차수 조합을 Rayon 병렬 적합
+- **배치 병렬성**: Rayon work-stealing 스레드 풀이 시계열별로 하나의 전체 적합/예측 작업을 분배
+- **Grid Search 병렬화**: `sarimax_grid_search`가 차수 조합별로 하나의 전체 적합 작업을 Rayon 워커에 분배
 - **auto_arima**: Hyndman-Khandakar stepwise + Rayon 병렬 grid search 기반 자동 차수 선택
 - **메모리**: 스택 할당 + 연속적인 column-major 레이아웃으로 캐시 친화적
 - **Python 연동**: PyO3 + numpy 바인딩으로 `import rustima`
@@ -143,7 +143,7 @@ print(res.summary())           # statsmodels 스타일 전체 요약 + 추론 �
 print(res.search_summary())    # 짧은 3줄 요약 (차수, IC, 모델 수)
 print(res.result.forecast(steps=12).to_dataframe())
 
-# Grid Search (Rayon 병렬 — 모든 조합 동시 적합)
+# Grid Search (Rayon 병렬 — 차수 조합별 fit job 분산)
 res = auto_arima(y, max_p=3, max_q=3, s=7, stepwise=False, criterion="bic")
 print(res.summary())
 
@@ -194,7 +194,7 @@ fcast = result.forecast(steps=10, exog=X_future)
 ### 배치 병렬 처리
 
 ```python
-# 100개 시계열을 동시에 적합 (Rayon 멀티스레드)
+# 100개 시계열을 job 단위로 병렬 적합 (Rayon 멀티스레드)
 series_list = [np.random.randn(200) for _ in range(100)]
 
 results = rustima.sarimax_batch_fit(
@@ -455,7 +455,7 @@ print(res["standardized_residuals"])   # v_t / sqrt(F_t * sigma2)
 
 #### `rustima.sarimax_batch_fit`
 
-Rayon 스레드 풀을 이용해 N개 시계열을 병렬 적합합니다.
+Rayon 스레드 풀을 이용해 N개 시계열을 병렬 적합합니다. 각 워커는 시계열 하나에 대한 전체 적합 작업을 수행합니다.
 
 ```python
 results = rustima.sarimax_batch_fit(
@@ -473,7 +473,7 @@ results = rustima.sarimax_batch_fit(
 
 #### `rustima.sarimax_batch_forecast`
 
-N개 시계열(각기 다른 파라미터)을 병렬 예측합니다.
+N개 시계열(각기 다른 파라미터)을 병렬 예측합니다. 각 워커는 시계열 하나에 대한 전체 예측 작업을 수행합니다.
 
 ```python
 params_list = [np.array(r["params"]) for r in results]
@@ -491,7 +491,7 @@ forecasts = rustima.sarimax_batch_forecast(
 
 #### `rustima.sarimax_grid_search`
 
-단일 시계열에 여러 ARIMA 차수 조합을 Rayon 병렬로 적합합니다.
+단일 시계열에 여러 ARIMA 차수 조합을 Rayon 병렬로 적합합니다. 각 워커는 차수 조합 하나에 대한 전체 적합 작업을 수행합니다.
 
 ```python
 results = rustima.sarimax_grid_search(
@@ -741,15 +741,15 @@ For each forecast step h = 1, ..., steps:
 
 ### 7. 배치 & Grid Search 병렬 처리 (`batch.rs`)
 
-Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니다.
+Rayon `par_iter()`를 사용해 독립 job 단위의 work-stealing 병렬 처리를 수행합니다.
 
 **배치 처리** (같은 order + 다른 시계열):
 - 모든 시계열은 동일한 `SarimaxConfig`를 공유(Clone, Send + Sync)
-- 각 시계열은 `StateSpace::new()` → `fit()` / `forecast_pipeline()`를 독립 수행
+- 각 워커는 시계열 하나에 대해 `StateSpace::new()` → `fit()` / `forecast_pipeline()` 전체 파이프라인을 독립 수행
 - 실패한 시계열이 다른 시계열에 영향 주지 않음(`Vec<Result<T>>`)
 
 **Grid Search** (같은 시계열 + 다른 order):
-- `grid_search_fit(endog, configs)` — `configs.par_iter()`로 order 조합 병렬 처리
+- `grid_search_fit(endog, configs)` — `configs.par_iter()`로 order 조합 병렬 처리, config 하나당 전체 fit 1회 수행
 
 ---
 
@@ -972,7 +972,7 @@ uv run python python_tests/generate_fixtures.py
 
 - 계절 차분 `D > 1` 미지원(`D = 0` 또는 `1`만 지원)
 - 예측 스텝은 최대 10,000, `alpha`는 (0, 1) 범위여야 함
-- 상태 차원은 1,024로 제한(극단 차수에서 OOM 방지)
+- 상태 차원은 1,024로 제한(극단 차수에서 메모리·계산 폭주를 억제하지만, 절대적인 의미의 OOM 제거를 보장하지는 않음)
 - `auto_arima`의 자동 차분 탐지는 ADF test(scipy) 또는 분산 감소 휴리스틱 기반
 
 ## 라이선스
