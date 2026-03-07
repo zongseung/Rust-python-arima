@@ -1,4 +1,4 @@
-# sarimax-rs
+# rustima
 
 [![Rust](https://img.shields.io/badge/Rust-1.83%2B-orange)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
@@ -19,7 +19,7 @@ Python's `statsmodels.tsa.SARIMAX` is the de facto standard for SARIMA modeling,
 | No real parallelism | GIL prevents multi-threaded batch fitting | Cannot simultaneously fit thousands of series |
 | Memory fragmentation | Python object overhead per allocation | Unnecessary heap pressure on large state spaces |
 
-**sarimax-rs** replaces these bottlenecks with native Rust:
+**rustima** replaces these bottlenecks with native Rust:
 
 - **Kalman filter**: Rust `for` + nalgebra dense matrix ops (zero interpreter overhead)
 - **Optimization**: L-BFGS-B (default), L-BFGS, Nelder-Mead run entirely in Rust with analytical score vector (sparse tangent-linear Kalman + steady-state optimization)
@@ -27,7 +27,7 @@ Python's `statsmodels.tsa.SARIMAX` is the de facto standard for SARIMA modeling,
 - **Grid search parallelization**: `sarimax_grid_search` fits multiple ARIMA order combinations in parallel via Rayon
 - **auto_arima**: Hyndman-Khandakar stepwise + Rayon parallel grid search for automatic order selection
 - **Memory**: Stack allocation + contiguous column-major layout for cache-friendliness
-- **Python interop**: PyO3 + numpy bindings — `import sarimax_rs`
+- **Python interop**: PyO3 + numpy bindings — `import rustima`
 
 ## Supported Models
 
@@ -51,12 +51,12 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + exogenous regressors
 
 ```bash
 # Requirements: Rust 1.83+, Python 3.10+, uv, maturin 1.7+
-cd sarimax_rs
+cd rustima
 
 # Build + install
 uv sync --extra dev
 CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
 # Development mode (in-place, fast iteration)
 uv pip install maturin
@@ -65,27 +65,27 @@ uv run maturin develop --release
 
 ## Quick Start
 
-### Low-Level API (`sarimax_rs`)
+### Low-Level API (`rustima`)
 
 ```python
 import numpy as np
-import sarimax_rs
+import rustima
 
 y = np.random.randn(200).cumsum()
 
 # 1. Fit model
-result = sarimax_rs.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
+result = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
 print(f"Converged: {result['converged']}, AIC: {result['aic']:.2f}")
 
 # 2. 10-step ahead forecast
-fc = sarimax_rs.sarimax_forecast(
+fc = rustima.sarimax_forecast(
     y, order=(1, 1, 1), seasonal=(0, 0, 0, 0),
     params=np.array(result["params"]), steps=10
 )
 print(f"Forecast: {fc['mean'][:5]}")
 
 # 3. Residual diagnostics
-res = sarimax_rs.sarimax_residuals(
+res = rustima.sarimax_residuals(
     y, order=(1, 1, 1), seasonal=(0, 0, 0, 0),
     params=np.array(result["params"])
 )
@@ -197,7 +197,7 @@ fcast = result.forecast(steps=10, exog=X_future)
 # Fit 100 series simultaneously (Rayon multi-threaded)
 series_list = [np.random.randn(200) for _ in range(100)]
 
-results = sarimax_rs.sarimax_batch_fit(
+results = rustima.sarimax_batch_fit(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0)
 )
 
@@ -206,7 +206,7 @@ for i, r in enumerate(results):
 
 # Batch forecast with per-series parameters
 params_list = [np.array(r["params"]) for r in results]
-forecasts = sarimax_rs.sarimax_batch_forecast(
+forecasts = rustima.sarimax_batch_forecast(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
     params_list=params_list, steps=10, alpha=0.05,
 )
@@ -216,7 +216,7 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 
 ```python
 # Fit multiple ARIMA orders via Rayon in one call
-results = sarimax_rs.sarimax_grid_search(
+results = rustima.sarimax_grid_search(
     y,
     order_list=[(0,1,0), (1,1,0), (1,1,1), (2,1,1)],
     seasonal_list=[(0,0,0,0)] * 4,
@@ -440,14 +440,14 @@ sequenceDiagram
 
 ## Python API Reference
 
-### Low-Level Functions (`sarimax_rs`)
+### Low-Level Functions (`rustima`)
 
-#### `sarimax_rs.sarimax_loglike`
+#### `rustima.sarimax_loglike`
 
 Computes log-likelihood at given parameters.
 
 ```python
-ll = sarimax_rs.sarimax_loglike(
+ll = rustima.sarimax_loglike(
     y,
     order=(1, 1, 1),           # (p, d, q)
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
@@ -457,12 +457,12 @@ ll = sarimax_rs.sarimax_loglike(
 )
 ```
 
-#### `sarimax_rs.sarimax_fit`
+#### `rustima.sarimax_fit`
 
 Fits model via MLE.
 
 ```python
-result = sarimax_rs.sarimax_fit(
+result = rustima.sarimax_fit(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
@@ -489,12 +489,12 @@ result = sarimax_rs.sarimax_fit(
 | `converged` | `bool` | True convergence, not just maxiter reached |
 | `method` | `str` | Optimization method used |
 
-#### `sarimax_rs.sarimax_forecast`
+#### `rustima.sarimax_forecast`
 
 Performs h-step ahead forecast with confidence intervals.
 
 ```python
-fc = sarimax_rs.sarimax_forecast(
+fc = rustima.sarimax_forecast(
     y,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -512,12 +512,12 @@ print(fc["ci_upper"])   # upper bound
 print(fc["variance"])   # forecast variance
 ```
 
-#### `sarimax_rs.sarimax_residuals`
+#### `rustima.sarimax_residuals`
 
 Computes residuals and standardized residuals.
 
 ```python
-res = sarimax_rs.sarimax_residuals(
+res = rustima.sarimax_residuals(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
@@ -529,12 +529,12 @@ print(res["residuals"])                # innovations v_t
 print(res["standardized_residuals"])   # v_t / sqrt(F_t * sigma2)
 ```
 
-#### `sarimax_rs.sarimax_batch_fit`
+#### `rustima.sarimax_batch_fit`
 
 Fits N series in parallel using Rayon thread pool.
 
 ```python
-results = sarimax_rs.sarimax_batch_fit(
+results = rustima.sarimax_batch_fit(
     series_list,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -547,14 +547,14 @@ results = sarimax_rs.sarimax_batch_fit(
 # Failed series: {"error": "...", "converged": false}
 ```
 
-#### `sarimax_rs.sarimax_batch_forecast`
+#### `rustima.sarimax_batch_forecast`
 
 Forecasts N series (each with different params) in parallel.
 
 ```python
 params_list = [np.array(r["params"]) for r in results]
 
-forecasts = sarimax_rs.sarimax_batch_forecast(
+forecasts = rustima.sarimax_batch_forecast(
     series_list,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -565,12 +565,12 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 # Returns: list[dict] with mean, variance, ci_lower, ci_upper
 ```
 
-#### `sarimax_rs.sarimax_grid_search`
+#### `rustima.sarimax_grid_search`
 
 Fits a single series with multiple ARIMA order combinations in parallel via Rayon.
 
 ```python
-results = sarimax_rs.sarimax_grid_search(
+results = rustima.sarimax_grid_search(
     y,
     order_list=[(1,0,0), (1,0,1), (2,0,0)],
     seasonal_list=[(0,0,0,0)] * 3,
@@ -583,12 +583,12 @@ results = sarimax_rs.sarimax_grid_search(
 # Returns: list[dict] — same keys as sarimax_fit + "order", "seasonal_order"
 ```
 
-#### `sarimax_rs.sarimax_inference`
+#### `rustima.sarimax_inference`
 
 Computes Hessian or OPG-based inference statistics on fitted parameters.
 
 ```python
-inf = sarimax_rs.sarimax_inference(
+inf = rustima.sarimax_inference(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.5, 0.3]),
     method="hessian",   # "hessian" | "opg"
@@ -602,12 +602,12 @@ print(inf["ci_lower"])  # CI lower bound
 print(inf["ci_upper"])  # CI upper bound
 ```
 
-#### `sarimax_rs.sarimax_diagnostics`
+#### `rustima.sarimax_diagnostics`
 
 Performs residual diagnostic tests.
 
 ```python
-diag = sarimax_rs.sarimax_diagnostics(
+diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.5, 0.3]),
     trend="c",
@@ -834,7 +834,7 @@ Uses Rayon `par_iter()` for work-stealing parallelism.
 
 ## Benchmarks
 
-All benchmarks run on macOS 15.1 (Apple Silicon arm64), Python 3.14, sarimax_rs 0.1.0 vs statsmodels 0.14.6.
+All benchmarks run on macOS 15.1 (Apple Silicon arm64), Python 3.14, rustima 0.1.0 vs statsmodels 0.14.6.
 
 ### Accuracy vs statsmodels
 
@@ -856,7 +856,7 @@ Parameter accuracy within 0.006 and log-likelihood difference within 0.005 for m
 
 ### High-Order Models — Accuracy vs statsmodels
 
-16 models from non-seasonal ARIMA(4–5) to hourly (s=24) high-order SARIMA. `rs_worse_by` shows how much lower the sarimax_rs log-likelihood is versus statsmodels; negative (★) means sarimax_rs found a better optimum.
+16 models from non-seasonal ARIMA(4–5) to hourly (s=24) high-order SARIMA. `rs_worse_by` shows how much lower the rustima log-likelihood is versus statsmodels; negative (★) means rustima found a better optimum.
 
 | Model | k_states | rs_worse_by | Result |
 |------|:--------:|:-----------:|:------:|
@@ -877,7 +877,7 @@ Parameter accuracy within 0.006 and log-likelihood difference within 0.005 for m
 | SARIMA(2,1,2)(1,1,1,24) | 52 | +1.01 | Pass |
 | SARIMA(1,1,1)(2,1,1,24) | 74 | +0.32 | Pass |
 
-**16/16 pass.** ★ models: statsmodels issued ConvergenceWarning and failed to converge, while sarimax_rs found a better solution.
+**16/16 pass.** ★ models: statsmodels issued ConvergenceWarning and failed to converge, while rustima found a better solution.
 
 ---
 
@@ -885,7 +885,7 @@ Parameter accuracy within 0.006 and log-likelihood difference within 0.005 for m
 
 Best-of-5 wall clock time (lower is better):
 
-| Model | sarimax_rs | statsmodels | Speedup |
+| Model | rustima | statsmodels | Speedup |
 |-------|:----------:|:-----------:|:-------:|
 | AR(1) n=200 | 0.0 ms | 2.9 ms | **66.8x** |
 | ARMA(1,1) n=300 | 0.1 ms | 6.1 ms | **41.6x** |
@@ -901,7 +901,7 @@ Best-of-5 wall clock time (lower is better):
 
 AR(1) n=200/series:
 
-| Batch Size | sarimax_rs | statsmodels | Speedup |
+| Batch Size | rustima | statsmodels | Speedup |
 |:----------:|:----------:|:-----------:|:-------:|
 | 10 series | 0.2 ms | 32.2 ms | **165.7x** |
 | 50 series | 0.7 ms | 157.3 ms | **232.4x** |
@@ -934,7 +934,7 @@ Grid search with Rayon parallelization is **up to 12x faster** than stepwise on 
 ## Project Structure
 
 ```
-sarimax_rs/
+rustima/
 ├── Cargo.toml                      # Rust dependencies and build config
 ├── pyproject.toml                   # Python package config (maturin)
 │

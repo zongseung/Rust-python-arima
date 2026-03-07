@@ -1,4 +1,4 @@
-# sarimax-rs
+# rustima
 
 [![Rust](https://img.shields.io/badge/Rust-1.83%2B-orange)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
@@ -19,7 +19,7 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 | 실질적 병렬성 부재 | GIL로 인해 배치 적합 멀티스레딩 제한 | 수천 개 시계열 동시 적합 불가 |
 | 메모리 단편화 | 할당마다 Python 객체 오버헤드 | 큰 상태공간에서 불필요한 힙 압박 |
 
-**sarimax-rs**는 이 병목을 네이티브 Rust로 대체합니다.
+**rustima**는 이 병목을 네이티브 Rust로 대체합니다.
 
 - **칼만 필터**: Rust `for` + nalgebra 밀집 행렬 연산(인터프리터 오버헤드 없음)
 - **최적화**: L-BFGS-B(기본), L-BFGS, Nelder-Mead를 Rust 내부에서 수행하며 analytical score vector(sparse 탄젠트-선형 칼만 필터 + steady-state 최적화) 지원
@@ -27,7 +27,7 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 - **Grid Search 병렬화**: `sarimax_grid_search`로 여러 ARIMA 차수 조합을 Rayon 병렬 적합
 - **auto_arima**: Hyndman-Khandakar stepwise + Rayon 병렬 grid search 기반 자동 차수 선택
 - **메모리**: 스택 할당 + 연속적인 column-major 레이아웃으로 캐시 친화적
-- **Python 연동**: PyO3 + numpy 바인딩으로 `import sarimax_rs`
+- **Python 연동**: PyO3 + numpy 바인딩으로 `import rustima`
 
 ## 지원 모델
 
@@ -51,12 +51,12 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + 외생 회귀변수
 
 ```bash
 # 요구사항: Rust 1.83+, Python 3.10+, uv, maturin 1.7+
-cd sarimax_rs
+cd rustima
 
 # 빌드 + 설치
 uv sync --extra dev
 CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
 # 개발 모드 (in-place, 빠른 반복)
 uv pip install maturin
@@ -65,27 +65,27 @@ uv run maturin develop --release
 
 ## 빠른 시작
 
-### 저수준 API (`sarimax_rs`)
+### 저수준 API (`rustima`)
 
 ```python
 import numpy as np
-import sarimax_rs
+import rustima
 
 y = np.random.randn(200).cumsum()
 
 # 1. 모델 적합
-result = sarimax_rs.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
+result = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
 print(f"Converged: {result['converged']}, AIC: {result['aic']:.2f}")
 
 # 2. 10스텝 앞 예측
-fc = sarimax_rs.sarimax_forecast(
+fc = rustima.sarimax_forecast(
     y, order=(1, 1, 1), seasonal=(0, 0, 0, 0),
     params=np.array(result["params"]), steps=10
 )
 print(f"Forecast: {fc['mean'][:5]}")
 
 # 3. 잔차 진단
-res = sarimax_rs.sarimax_residuals(
+res = rustima.sarimax_residuals(
     y, order=(1, 1, 1), seasonal=(0, 0, 0, 0),
     params=np.array(result["params"])
 )
@@ -197,7 +197,7 @@ fcast = result.forecast(steps=10, exog=X_future)
 # 100개 시계열을 동시에 적합 (Rayon 멀티스레드)
 series_list = [np.random.randn(200) for _ in range(100)]
 
-results = sarimax_rs.sarimax_batch_fit(
+results = rustima.sarimax_batch_fit(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0)
 )
 
@@ -206,7 +206,7 @@ for i, r in enumerate(results):
 
 # 시계열별 파라미터로 배치 예측
 params_list = [np.array(r["params"]) for r in results]
-forecasts = sarimax_rs.sarimax_batch_forecast(
+forecasts = rustima.sarimax_batch_forecast(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
     params_list=params_list, steps=10, alpha=0.05,
 )
@@ -216,7 +216,7 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 
 ```python
 # 여러 ARIMA 차수를 Rayon으로 한꺼번에 적합
-results = sarimax_rs.sarimax_grid_search(
+results = rustima.sarimax_grid_search(
     y,
     order_list=[(0,1,0), (1,1,0), (1,1,1), (2,1,1)],
     seasonal_list=[(0,0,0,0)] * 4,
@@ -364,14 +364,14 @@ sequenceDiagram
 
 ## Python API 레퍼런스
 
-### 저수준 함수 (`sarimax_rs`)
+### 저수준 함수 (`rustima`)
 
-#### `sarimax_rs.sarimax_loglike`
+#### `rustima.sarimax_loglike`
 
 주어진 파라미터에서 로그우도를 계산합니다.
 
 ```python
-ll = sarimax_rs.sarimax_loglike(
+ll = rustima.sarimax_loglike(
     y,
     order=(1, 1, 1),           # (p, d, q)
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
@@ -381,12 +381,12 @@ ll = sarimax_rs.sarimax_loglike(
 )
 ```
 
-#### `sarimax_rs.sarimax_fit`
+#### `rustima.sarimax_fit`
 
 MLE로 모델을 적합합니다.
 
 ```python
-result = sarimax_rs.sarimax_fit(
+result = rustima.sarimax_fit(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
@@ -413,12 +413,12 @@ result = sarimax_rs.sarimax_fit(
 | `converged` | `bool` | maxiter 도달이 아니라 실제 수렴 여부 |
 | `method` | `str` | 사용된 최적화 방법 |
 
-#### `sarimax_rs.sarimax_forecast`
+#### `rustima.sarimax_forecast`
 
 신뢰구간과 함께 h-step 앞 예측을 수행합니다.
 
 ```python
-fc = sarimax_rs.sarimax_forecast(
+fc = rustima.sarimax_forecast(
     y,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -436,12 +436,12 @@ print(fc["ci_upper"])   # 상한
 print(fc["variance"])   # 예측 분산
 ```
 
-#### `sarimax_rs.sarimax_residuals`
+#### `rustima.sarimax_residuals`
 
 잔차와 표준화 잔차를 계산합니다.
 
 ```python
-res = sarimax_rs.sarimax_residuals(
+res = rustima.sarimax_residuals(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
@@ -453,12 +453,12 @@ print(res["residuals"])                # 혁신항 v_t
 print(res["standardized_residuals"])   # v_t / sqrt(F_t * sigma2)
 ```
 
-#### `sarimax_rs.sarimax_batch_fit`
+#### `rustima.sarimax_batch_fit`
 
 Rayon 스레드 풀을 이용해 N개 시계열을 병렬 적합합니다.
 
 ```python
-results = sarimax_rs.sarimax_batch_fit(
+results = rustima.sarimax_batch_fit(
     series_list,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -471,14 +471,14 @@ results = sarimax_rs.sarimax_batch_fit(
 # 실패한 시계열: {"error": "...", "converged": false}
 ```
 
-#### `sarimax_rs.sarimax_batch_forecast`
+#### `rustima.sarimax_batch_forecast`
 
 N개 시계열(각기 다른 파라미터)을 병렬 예측합니다.
 
 ```python
 params_list = [np.array(r["params"]) for r in results]
 
-forecasts = sarimax_rs.sarimax_batch_forecast(
+forecasts = rustima.sarimax_batch_forecast(
     series_list,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
@@ -489,12 +489,12 @@ forecasts = sarimax_rs.sarimax_batch_forecast(
 # 반환: mean, variance, ci_lower, ci_upper를 포함한 list[dict]
 ```
 
-#### `sarimax_rs.sarimax_grid_search`
+#### `rustima.sarimax_grid_search`
 
 단일 시계열에 여러 ARIMA 차수 조합을 Rayon 병렬로 적합합니다.
 
 ```python
-results = sarimax_rs.sarimax_grid_search(
+results = rustima.sarimax_grid_search(
     y,
     order_list=[(1,0,0), (1,0,1), (2,0,0)],
     seasonal_list=[(0,0,0,0)] * 3,
@@ -507,12 +507,12 @@ results = sarimax_rs.sarimax_grid_search(
 # 반환: list[dict] — sarimax_fit과 동일 키 + "order", "seasonal_order"
 ```
 
-#### `sarimax_rs.sarimax_inference`
+#### `rustima.sarimax_inference`
 
 적합된 파라미터에서 Hessian 또는 OPG 기반 추론 통계를 계산합니다.
 
 ```python
-inf = sarimax_rs.sarimax_inference(
+inf = rustima.sarimax_inference(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.5, 0.3]),
     method="hessian",   # "hessian" | "opg"
@@ -526,12 +526,12 @@ print(inf["ci_lower"])  # 신뢰구간 하한
 print(inf["ci_upper"])  # 신뢰구간 상한
 ```
 
-#### `sarimax_rs.sarimax_diagnostics`
+#### `rustima.sarimax_diagnostics`
 
 잔차 진단 검정을 수행합니다.
 
 ```python
-diag = sarimax_rs.sarimax_diagnostics(
+diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.5, 0.3]),
     trend="c",
@@ -755,7 +755,7 @@ Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니�
 
 ## 벤치마크
 
-모든 벤치마크는 macOS 15.1 (Apple Silicon arm64), Python 3.14, sarimax_rs 0.1.0 vs statsmodels 0.14.6 기준입니다.
+모든 벤치마크는 macOS 15.1 (Apple Silicon arm64), Python 3.14, rustima 0.1.0 vs statsmodels 0.14.6 기준입니다.
 
 ### statsmodels 대비 정확도
 
@@ -777,7 +777,7 @@ Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니�
 
 ### 실무 고차 모델 — statsmodels 대비 정확도
 
-비계절 ARIMA(4~5차)부터 시간별(s=24) 고차 SARIMA까지 16개 모델을 검증했습니다. `rs_worse_by`는 sarimax_rs 로그우도가 statsmodels보다 얼마나 낮은지를 나타내며, 음수(★)는 sarimax_rs가 더 좋은 최적점을 찾았음을 의미합니다.
+비계절 ARIMA(4~5차)부터 시간별(s=24) 고차 SARIMA까지 16개 모델을 검증했습니다. `rs_worse_by`는 rustima 로그우도가 statsmodels보다 얼마나 낮은지를 나타내며, 음수(★)는 rustima가 더 좋은 최적점을 찾았음을 의미합니다.
 
 | 모델 | k_states | rs_worse_by | 결과 |
 |------|:--------:|:-----------:|:----:|
@@ -798,7 +798,7 @@ Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니�
 | SARIMA(2,1,2)(1,1,1,24) | 52 | +1.01 | Pass |
 | SARIMA(1,1,1)(2,1,1,24) | 74 | +0.32 | Pass |
 
-**16/16 통과.** ★ 표시 모델에서는 statsmodels가 ConvergenceWarning을 내고 수렴 실패한 반면 sarimax_rs는 더 좋은 해를 찾았습니다.
+**16/16 통과.** ★ 표시 모델에서는 statsmodels가 ConvergenceWarning을 내고 수렴 실패한 반면 rustima는 더 좋은 해를 찾았습니다.
 
 ---
 
@@ -806,7 +806,7 @@ Rayon `par_iter()`를 사용해 work-stealing 방식으로 병렬 처리합니�
 
 best-of-5 wall clock 시간(작을수록 좋음):
 
-| Model | sarimax_rs | statsmodels | Speedup |
+| Model | rustima | statsmodels | Speedup |
 |-------|:----------:|:-----------:|:-------:|
 | AR(1) n=200 | 0.0 ms | 2.9 ms | **66.8x** |
 | ARMA(1,1) n=300 | 0.1 ms | 6.1 ms | **41.6x** |
@@ -822,7 +822,7 @@ best-of-5 wall clock 시간(작을수록 좋음):
 
 AR(1) n=200/series:
 
-| Batch Size | sarimax_rs | statsmodels | Speedup |
+| Batch Size | rustima | statsmodels | Speedup |
 |:----------:|:----------:|:-----------:|:-------:|
 | 10 series | 0.2 ms | 32.2 ms | **165.7x** |
 | 50 series | 0.7 ms | 157.3 ms | **232.4x** |
@@ -857,7 +857,7 @@ Grid search의 Rayon 병렬화로 시간단위(s=24) 데이터에서 stepwise �
 ## 프로젝트 구조
 
 ```
-sarimax_rs/
+rustima/
 ├── Cargo.toml                      # Rust 의존성 및 빌드 설정
 ├── pyproject.toml                   # Python 패키지 설정(maturin)
 │
