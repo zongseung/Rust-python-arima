@@ -14,7 +14,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-import sarimax_rs
+import rustima
 
 
 # ─────────────────────────────────────────
@@ -104,12 +104,12 @@ def rolling_backtest(y, order, seasonal, origins, horizon, alpha=0.05):
         if len(actual) < horizon:
             continue
 
-        result = sarimax_rs.sarimax_fit(train, order, seasonal)
+        result = rustima.sarimax_fit(train, order, seasonal)
         if not result["converged"]:
             continue
 
         params = np.array(result["params"])
-        fc = sarimax_rs.sarimax_forecast(
+        fc = rustima.sarimax_forecast(
             train, order, seasonal, params, steps=horizon, alpha=alpha,
         )
 
@@ -249,7 +249,7 @@ class TestPredictionQualityReport:
         lines = []
         lines.append("# 예측 품질 리포트\n")
         lines.append(f"> 생성: {datetime.now():%Y-%m-%d %H:%M}  ")
-        lines.append(f"> sarimax_rs v{sarimax_rs.version()}\n")
+        lines.append(f"> rustima v{rustima.version()}\n")
 
         lines.append("## Rolling-origin 백테스트 결과\n")
         lines.append("| Model | Horizon | MAE | RMSE | MAPE (%) | CI Coverage | Avg CI Width | #Forecasts |")

@@ -13,7 +13,7 @@ import pathlib
 import numpy as np
 import pytest
 
-import sarimax_rs
+import rustima
 from conftest import converged_models, expected_k_params
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class TestLoglikeComputation:
             exog = np.array(m["exog"]) if "exog" in m else None
             oracle_params = np.array(m["params"])
 
-            rust_ll = sarimax_rs.sarimax_loglike(
+            rust_ll = rustima.sarimax_loglike(
                 y, order, seasonal, oracle_params, exog=exog,
                 enforce_stationarity=False, enforce_invertibility=False,
             )
@@ -88,7 +88,7 @@ class TestFitConvergence:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             if not result["converged"]:
@@ -126,7 +126,7 @@ class TestFitLoglikeQuality:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             if not result["converged"]:
@@ -162,7 +162,7 @@ class TestParamLength:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             actual = len(result["params"])
@@ -191,14 +191,14 @@ class TestForecast:
             exog = np.array(m["exog"]) if "exog" in m else None
             future_exog = np.array(m["future_exog"]) if "future_exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             if not result["converged"]:
                 continue
 
             params = np.array(result["params"])
-            fc = sarimax_rs.sarimax_forecast(
+            fc = rustima.sarimax_forecast(
                 y, order, seasonal, params, steps=10,
                 exog=exog, future_exog=future_exog,
             )
@@ -243,14 +243,14 @@ class TestResiduals:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             if not result["converged"]:
                 continue
 
             params = np.array(result["params"])
-            resid_result = sarimax_rs.sarimax_residuals(
+            resid_result = rustima.sarimax_residuals(
                 y, order, seasonal, params, exog=exog,
             )
 
@@ -286,7 +286,7 @@ class TestAicBicFinite:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
 
-            result = sarimax_rs.sarimax_fit(
+            result = rustima.sarimax_fit(
                 y, order, seasonal, exog=exog,
             )
             if not result["converged"]:
@@ -336,7 +336,7 @@ class TestTierBLoglikeComputation:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
             try:
-                rust_ll = sarimax_rs.sarimax_loglike(
+                rust_ll = rustima.sarimax_loglike(
                     y, order, seasonal, np.array(m["params"]), exog=exog,
                     enforce_stationarity=False, enforce_invertibility=False,
                 )
@@ -359,7 +359,7 @@ class TestTierBFitConvergence:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
             try:
-                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                result = rustima.sarimax_fit(y, order, seasonal, exog=exog)
                 if result["converged"]:
                     n_conv += 1
                 else:
@@ -380,7 +380,7 @@ class TestTierBParamLength:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
             try:
-                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                result = rustima.sarimax_fit(y, order, seasonal, exog=exog)
                 actual = len(result["params"])
                 if actual != expected:
                     failures.append(f"{m['model_id']}: expected {expected}, got {actual}")
@@ -399,10 +399,10 @@ class TestTierBForecastSanity:
             exog = np.array(m["exog"]) if "exog" in m else None
             future_exog = np.array(m["future_exog"]) if "future_exog" in m else None
             try:
-                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                result = rustima.sarimax_fit(y, order, seasonal, exog=exog)
                 if not result["converged"]:
                     continue
-                fc = sarimax_rs.sarimax_forecast(
+                fc = rustima.sarimax_forecast(
                     y, order, seasonal, np.array(result["params"]),
                     steps=10, exog=exog, future_exog=future_exog,
                 )
@@ -425,10 +425,10 @@ class TestTierBResiduals:
             y = np.array(m["data"])
             exog = np.array(m["exog"]) if "exog" in m else None
             try:
-                result = sarimax_rs.sarimax_fit(y, order, seasonal, exog=exog)
+                result = rustima.sarimax_fit(y, order, seasonal, exog=exog)
                 if not result["converged"]:
                     continue
-                resid = sarimax_rs.sarimax_residuals(
+                resid = rustima.sarimax_residuals(
                     y, order, seasonal, np.array(result["params"]), exog=exog,
                 )
                 std_resid = np.array(resid["standardized_residuals"])

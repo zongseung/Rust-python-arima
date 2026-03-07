@@ -35,7 +35,7 @@ jobs:
         run: |
           uv pip install maturin
           CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-          uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+          uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
       - name: Run Tier B nightly tests
         run: .venv/bin/python -m pytest python_tests/test_matrix_tier_b.py -v --tb=short
@@ -66,7 +66,7 @@ jobs:
         run: |
           uv pip install maturin
           CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
-          uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+          uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
       - name: Run Rust benchmarks
         run: cargo bench --bench bench_fit -- --output-format bencher | tee bench_results.txt

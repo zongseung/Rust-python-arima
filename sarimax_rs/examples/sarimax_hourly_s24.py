@@ -1,5 +1,5 @@
 """
-SARIMAX 시간단위 예제 (s=24): Rust sarimax_rs vs statsmodels
+SARIMAX 시간단위 예제 (s=24): Rust rustima vs statsmodels
 
 시나리오: 시간별 전력 수요 데이터 (n=2160, 90일)
   - 계절성 s=24 (일별 패턴)
@@ -11,7 +11,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sarimax_rs import sarimax_fit, sarimax_forecast
+from rustima import sarimax_fit, sarimax_forecast
 
 np.random.seed(42)
 

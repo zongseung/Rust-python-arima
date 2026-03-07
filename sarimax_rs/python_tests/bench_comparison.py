@@ -1,4 +1,4 @@
-"""Benchmark comparison: sarimax_rs vs statsmodels.
+"""Benchmark comparison: rustima vs statsmodels.
 
 Usage:
     uv run python python_tests/bench_comparison.py
@@ -11,7 +11,7 @@ import time
 import numpy as np
 import statsmodels.api as sm
 
-import sarimax_rs
+import rustima
 
 COMPARE_MAXITER = 200
 RUST_METHOD = "lbfgsb-strict"
@@ -50,12 +50,12 @@ def time_fn(fn, n_repeat=3):
 
 
 def bench_single_fit(name, data, order, seasonal_order, n_repeat=3):
-    """Compare single fit: sarimax_rs vs statsmodels."""
-    # sarimax_rs — also capture iteration count
+    """Compare single fit: rustima vs statsmodels."""
+    # rustima — also capture iteration count
     rs_result = None
     def rs_fit():
         nonlocal rs_result
-        rs_result = sarimax_rs.sarimax_fit(
+        rs_result = rustima.sarimax_fit(
             data,
             order,
             seasonal_order,
@@ -101,10 +101,10 @@ def bench_single_fit(name, data, order, seasonal_order, n_repeat=3):
 
 
 def bench_batch_fit(name, series_list, order, seasonal_order, n_repeat=3):
-    """Compare batch fit: sarimax_rs (parallel) vs statsmodels (sequential)."""
-    # sarimax_rs batch
+    """Compare batch fit: rustima (parallel) vs statsmodels (sequential)."""
+    # rustima batch
     rs_time = time_fn(
-        lambda: sarimax_rs.sarimax_batch_fit(
+        lambda: rustima.sarimax_batch_fit(
             series_list,
             order,
             seasonal_order,
@@ -143,12 +143,12 @@ def bench_batch_fit(name, series_list, order, seasonal_order, n_repeat=3):
 
 def main():
     print("=" * 70)
-    print("sarimax_rs vs statsmodels — Performance Comparison")
+    print("rustima vs statsmodels — Performance Comparison")
     print("=" * 70)
     print(f"Platform: {platform.platform()}")
     print(f"CPU: {platform.processor()}")
     print(f"Python: {sys.version.split()[0]}")
-    print(f"sarimax_rs: {sarimax_rs.version()}")
+    print(f"rustima: {rustima.version()}")
     print(f"Compare mode: rust_method={RUST_METHOD}, maxiter={COMPARE_MAXITER}, enforce=True")
     print()
 

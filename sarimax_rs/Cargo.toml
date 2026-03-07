@@ -1,5 +1,5 @@
 [package]
-name = "sarimax-rs"
+name = "rustima"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.83"
@@ -7,7 +7,7 @@ description = "High-performance SARIMAX engine with PyO3 bindings"
 license = "GPL-3.0-or-later"
 
 [lib]
-name = "sarimax_rs"
+name = "rustima"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

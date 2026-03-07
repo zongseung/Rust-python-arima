@@ -13,7 +13,7 @@ Covers:
 import numpy as np
 import pytest
 import warnings
-import sarimax_rs
+import rustima
 from conftest import generate_ar1, generate_random_walk
 from sarimax_py.model import (
     SARIMAXModel,
@@ -60,10 +60,10 @@ def arima111_fit(arima111_data):
 # ---------------------------------------------------------------------------
 
 class TestSarimaxInference:
-    """Direct tests of sarimax_rs.sarimax_inference()."""
+    """Direct tests of rustima.sarimax_inference()."""
 
     def test_hessian_basic(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -77,7 +77,7 @@ class TestSarimaxInference:
             assert np.isfinite(se) and se > 0
 
     def test_opg_basic(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -89,7 +89,7 @@ class TestSarimaxInference:
         assert len(result["std_err"]) == len(ar1_fit.params)
 
     def test_pvalue_range(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -100,7 +100,7 @@ class TestSarimaxInference:
             assert 0.0 <= p <= 1.0, f"p-value {p} out of [0, 1]"
 
     def test_ci_contains_estimate(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -112,7 +112,7 @@ class TestSarimaxInference:
             assert result["ci_lower"][i] <= param <= result["ci_upper"][i]
 
     def test_cov_params_shape(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -124,7 +124,7 @@ class TestSarimaxInference:
 
     def test_invalid_method_raises(self, ar1_data, ar1_fit):
         with pytest.raises(Exception):
-            sarimax_rs.sarimax_inference(
+            rustima.sarimax_inference(
                 ar1_data,
                 (1, 0, 0),
                 (0, 0, 0, 0),
@@ -133,7 +133,7 @@ class TestSarimaxInference:
             )
 
     def test_arima111_hessian(self, arima111_data, arima111_fit):
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             arima111_data,
             (1, 1, 1),
             (0, 0, 0, 0),
@@ -150,10 +150,10 @@ class TestSarimaxInference:
 # ---------------------------------------------------------------------------
 
 class TestSarimaxDiagnostics:
-    """Direct tests of sarimax_rs.sarimax_diagnostics()."""
+    """Direct tests of rustima.sarimax_diagnostics()."""
 
     def test_basic(self, ar1_data, ar1_fit):
-        result = sarimax_rs.sarimax_diagnostics(
+        result = rustima.sarimax_diagnostics(
             ar1_data,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -174,7 +174,7 @@ class TestSarimaxDiagnostics:
         # AR(0) ≈ white noise; fit AR(1) and check residuals
         model = SARIMAXModel(y, order=(1, 0, 0))
         res = model.fit()
-        diag = sarimax_rs.sarimax_diagnostics(
+        diag = rustima.sarimax_diagnostics(
             y, (1, 0, 0), (0, 0, 0, 0), res.params,
         )
         # Should not reject at 1% level
@@ -260,11 +260,11 @@ class TestHessianVsOpg:
 
     def test_both_produce_finite_se(self, ar1_data, ar1_fit):
         """Both methods should produce finite standard errors."""
-        hess = sarimax_rs.sarimax_inference(
+        hess = rustima.sarimax_inference(
             ar1_data, (1, 0, 0), (0, 0, 0, 0),
             ar1_fit.params, method="hessian",
         )
-        opg = sarimax_rs.sarimax_inference(
+        opg = rustima.sarimax_inference(
             ar1_data, (1, 0, 0), (0, 0, 0, 0),
             ar1_fit.params, method="opg",
         )

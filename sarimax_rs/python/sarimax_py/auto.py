@@ -370,7 +370,7 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
                  method, maxiter, trace,
                  exog=None, simple_differencing=False):
     """Exhaustive grid search using Rust Rayon-parallel grid_search."""
-    import sarimax_rs
+    import rustima
 
     p_range = range(0, max_p + 1)
     q_range = range(0, max_q + 1)
@@ -398,7 +398,7 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         kwargs["maxiter"] = maxiter
 
     # Single Rust call — all combos fitted in parallel via Rayon
-    raw_results = sarimax_rs.sarimax_grid_search(
+    raw_results = rustima.sarimax_grid_search(
         endog, order_list, seasonal_list, **kwargs,
     )
 

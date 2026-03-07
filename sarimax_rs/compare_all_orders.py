@@ -11,7 +11,7 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 import statsmodels.api as sm
-import sarimax_rs
+import rustima
 
 # -- Data generation -----------------------------------------------------------
 np.random.seed(42)
@@ -131,7 +131,7 @@ for order, seasonal_order in all_models:
     # -- sarimax_rs fit --------------------------------------------------------
     try:
         t0 = time.perf_counter()
-        rs_result = sarimax_rs.sarimax_fit(
+        rs_result = rustima.sarimax_fit(
             data,
             order=(p, d, q),
             seasonal=(P, D, Q, s),

@@ -1,5 +1,5 @@
 """
-다양한 ARIMA/SARIMA 모델 차수에서 sarimax_rs vs statsmodels 정확도 비교.
+다양한 ARIMA/SARIMA 모델 차수에서 rustima vs statsmodels 정확도 비교.
 
 테스트 범위:
 - AR(p): p=1,2,3
@@ -11,7 +11,7 @@
 
 import numpy as np
 import pytest
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 from conftest import generate_ar1, generate_stationary_data, generate_random_walk
 
@@ -35,7 +35,7 @@ def generate_seasonal_data(n=300, s=12, seed=42):
 
 
 def compare_fit(y, order, seasonal_order=(0, 0, 0, 0), label=""):
-    """sarimax_rs와 statsmodels 결과를 비교하고 오차를 반환."""
+    """rustima와 statsmodels 결과를 비교하고 오차를 반환."""
     # statsmodels
     sm_model = sm.tsa.SARIMAX(
         y, order=order, seasonal_order=seasonal_order,
@@ -44,8 +44,8 @@ def compare_fit(y, order, seasonal_order=(0, 0, 0, 0), label=""):
     )
     sm_res = sm_model.fit(disp=False)
 
-    # sarimax_rs
-    rs_res = sarimax_rs.sarimax_fit(
+    # rustima
+    rs_res = rustima.sarimax_fit(
         y, order=order, seasonal=tuple(seasonal_order),
         concentrate_scale=True,
         enforce_stationarity=True, enforce_invertibility=True,
@@ -295,7 +295,7 @@ class TestAccuracyRegression:
 
     def test_ar1_param_near_true_value(self):
         y = _ar1_data()
-        result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
         assert result["converged"]
         assert abs(result["params"][0] - 0.7) < 0.1, (
             f"AR(1) param far from true value: {result['params'][0]}"
@@ -303,14 +303,14 @@ class TestAccuracyRegression:
 
     def test_arima111_converges(self):
         y = _arima111_data()
-        result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
         assert result["converged"]
         assert len(result["params"]) == 2
 
     def test_fit_forecast_roundtrip(self):
         y = _ar1_data(200)
-        result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
-        fc = sarimax_rs.sarimax_forecast(
+        result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        fc = rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), np.array(result["params"]), steps=10
         )
         assert len(fc["mean"]) == 10 and all(np.isfinite(fc["mean"]))
@@ -320,12 +320,12 @@ class TestIterationCount:
     """Optimizer converges in a reasonable number of iterations."""
 
     def test_ar1_iterations(self):
-        result = sarimax_rs.sarimax_fit(_ar1_data(), (1, 0, 0), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(_ar1_data(), (1, 0, 0), (0, 0, 0, 0))
         assert result["converged"]
         assert result["n_iter"] < 30, f"AR(1) too many iters: {result['n_iter']}"
 
     def test_arima111_iterations(self):
-        result = sarimax_rs.sarimax_fit(_arima111_data(), (1, 1, 1), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(_arima111_data(), (1, 1, 1), (0, 0, 0, 0))
         assert result["n_iter"] < 60, f"ARIMA(1,1,1) too many iters: {result['n_iter']}"
 
 
@@ -334,13 +334,13 @@ class TestBatchRegression:
 
     def test_batch_matches_single(self):
         y = _ar1_data(200)
-        single = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
-        batch  = sarimax_rs.sarimax_batch_fit([y], (1, 0, 0), (0, 0, 0, 0))
+        single = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+        batch  = rustima.sarimax_batch_fit([y], (1, 0, 0), (0, 0, 0, 0))
         assert abs(batch[0]["loglike"] - single["loglike"]) < 1e-8
 
     def test_batch_100_all_converge(self):
         series  = [_ar1_data(200) for _ in range(100)]
-        results = sarimax_rs.sarimax_batch_fit(series, (1, 0, 0), (0, 0, 0, 0))
+        results = rustima.sarimax_batch_fit(series, (1, 0, 0), (0, 0, 0, 0))
         assert len(results) == 100
         conv = sum(1 for r in results if r.get("converged", False))
         assert conv == 100, f"Only {conv}/100 converged"

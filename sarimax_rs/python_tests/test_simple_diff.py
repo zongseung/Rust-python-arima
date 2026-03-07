@@ -12,7 +12,7 @@ Validates:
 
 import numpy as np
 import pytest
-import sarimax_rs
+import rustima
 
 
 @pytest.fixture
@@ -33,37 +33,37 @@ def seasonal_data():
 # ---------------------------------------------------------------------------
 
 def test_sd_arima111_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
 
 def test_sd_arima210_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (2, 1, 0), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (2, 1, 0), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
 
 def test_sd_arima012_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (0, 1, 2), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (0, 1, 2), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
 
 def test_sd_arima121_d2_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 2, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 2, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
 
 def test_sd_arima100_d1_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 0), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 0), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
 
 def test_sd_arima001_d1_no_panic(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (0, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (0, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r is not None
 
@@ -74,14 +74,14 @@ def test_sd_arima001_d1_no_panic(simple_data):
 
 def test_sd_nobs_d1(simple_data):
     n = len(simple_data)
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r["n_obs"] == n - 1
 
 
 def test_sd_nobs_d2(simple_data):
     n = len(simple_data)
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 2, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 2, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert r["n_obs"] == n - 2
 
@@ -89,7 +89,7 @@ def test_sd_nobs_d2(simple_data):
 def test_sd_nobs_seasonal_D1(seasonal_data):
     n = len(seasonal_data)
     s = 12
-    r = sarimax_rs.sarimax_fit(seasonal_data, (1, 0, 1), (1, 1, 1, s),
+    r = rustima.sarimax_fit(seasonal_data, (1, 0, 1), (1, 1, 1, s),
                                 simple_differencing=True)
     assert r["n_obs"] == n - s
 
@@ -97,7 +97,7 @@ def test_sd_nobs_seasonal_D1(seasonal_data):
 def test_sd_nobs_d1_D1(seasonal_data):
     n = len(seasonal_data)
     s = 12
-    r = sarimax_rs.sarimax_fit(seasonal_data, (1, 1, 1), (1, 1, 1, s),
+    r = rustima.sarimax_fit(seasonal_data, (1, 1, 1), (1, 1, 1, s),
                                 simple_differencing=True)
     assert r["n_obs"] == n - 1 - s
 
@@ -105,7 +105,7 @@ def test_sd_nobs_d1_D1(seasonal_data):
 def test_ss_nobs_unchanged_d1(simple_data):
     """Without simple_differencing, n_obs = n (full series)."""
     n = len(simple_data)
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=False)
     assert r["n_obs"] == n
 
@@ -115,7 +115,7 @@ def test_ss_nobs_unchanged_d1(simple_data):
 # ---------------------------------------------------------------------------
 
 def test_sd_aic_bic_finite(simple_data):
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     assert np.isfinite(r["aic"])
     assert np.isfinite(r["bic"])
@@ -124,7 +124,7 @@ def test_sd_aic_bic_finite(simple_data):
 
 def test_sd_aic_formula(simple_data):
     """AIC = -2*loglike + 2*k where k = n_params."""
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     expected_aic = -2 * r["loglike"] + 2 * r["n_params"]
     assert abs(r["aic"] - expected_aic) < 1e-6
@@ -132,7 +132,7 @@ def test_sd_aic_formula(simple_data):
 
 def test_sd_bic_formula(simple_data):
     """BIC = -2*loglike + k*log(n_obs) where n_obs is the effective obs count."""
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     expected_bic = -2 * r["loglike"] + r["n_params"] * np.log(r["n_obs"])
     assert abs(r["bic"] - expected_bic) < 1e-6
@@ -144,10 +144,10 @@ def test_sd_bic_formula(simple_data):
 
 def test_sd_loglike_consistent_fit_vs_eval(simple_data):
     """sarimax_loglike at fitted params should match r['loglike'] from fit."""
-    r = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                 simple_differencing=True)
     params_flat = np.array(r["params"])
-    ll_eval = sarimax_rs.sarimax_loglike(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    ll_eval = rustima.sarimax_loglike(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                           params_flat, simple_differencing=True)
     assert abs(ll_eval - r["loglike"]) < 1e-4, (
         f"loglike mismatch: fit={r['loglike']:.6f}  eval={ll_eval:.6f}"
@@ -160,11 +160,11 @@ def test_sd_loglike_path_same_as_arma_on_diff(simple_data):
     sarimax_loglike with simple_differencing=False on diff(y) (d=1 case).
     """
     params = np.array([0.3, -0.4])
-    ll_sd = sarimax_rs.sarimax_loglike(
+    ll_sd = rustima.sarimax_loglike(
         simple_data, (1, 1, 1), (0, 0, 0, 0), params, simple_differencing=True
     )
     dy = np.diff(simple_data)
-    ll_arma = sarimax_rs.sarimax_loglike(
+    ll_arma = rustima.sarimax_loglike(
         dy, (1, 0, 1), (0, 0, 0, 0), params, simple_differencing=False
     )
     assert abs(ll_sd - ll_arma) < 1e-9, (
@@ -181,9 +181,9 @@ def test_sd_ss_loglike_close_d1(simple_data):
     With d=1, SD and SS loglikes should be within ~3 log-units
     (different init, same effective obs count).
     """
-    r_sd = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_sd = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                    simple_differencing=True)
-    r_ss = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_ss = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                    simple_differencing=False)
     diff = abs(r_sd["loglike"] - r_ss["loglike"])
     assert diff < 5.0, f"SD/SS loglike diff={diff:.3f} seems too large"
@@ -194,20 +194,20 @@ def test_sd_ss_loglike_close_d1(simple_data):
 # ---------------------------------------------------------------------------
 
 def test_sd_forecast_no_panic(simple_data):
-    r_fit = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_fit = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                     simple_differencing=True)
     params_flat = np.array(r_fit["params"])
-    fc = sarimax_rs.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    fc = rustima.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                       params_flat, 5, simple_differencing=True)
     assert fc is not None
 
 
 def test_sd_forecast_length(simple_data):
-    r_fit = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_fit = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                     simple_differencing=True)
     params_flat = np.array(r_fit["params"])
     steps = 10
-    fc = sarimax_rs.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    fc = rustima.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                       params_flat, steps, simple_differencing=True)
     assert len(fc["mean"]) == steps
     assert len(fc["ci_lower"]) == steps
@@ -215,10 +215,10 @@ def test_sd_forecast_length(simple_data):
 
 
 def test_sd_forecast_finite(simple_data):
-    r_fit = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_fit = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                     simple_differencing=True)
     params_flat = np.array(r_fit["params"])
-    fc = sarimax_rs.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    fc = rustima.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                       params_flat, 5, simple_differencing=True)
     assert all(np.isfinite(fc["mean"])), "Forecast mean contains non-finite"
     assert all(np.isfinite(fc["ci_lower"])), "Forecast ci_lower contains non-finite"
@@ -227,10 +227,10 @@ def test_sd_forecast_finite(simple_data):
 
 def test_sd_forecast_ci_ordering(simple_data):
     """ci_lower <= mean <= ci_upper for all forecast steps."""
-    r_fit = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_fit = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                     simple_differencing=True)
     params_flat = np.array(r_fit["params"])
-    fc = sarimax_rs.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    fc = rustima.sarimax_forecast(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                       params_flat, 10, simple_differencing=True)
     for i in range(10):
         assert fc["ci_lower"][i] <= fc["mean"][i] <= fc["ci_upper"][i], (
@@ -245,7 +245,7 @@ def test_sd_forecast_ci_ordering(simple_data):
 
 def test_sd_default_is_false(simple_data):
     """Omitting simple_differencing gives same result as False."""
-    r_explicit = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
+    r_explicit = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0),
                                          simple_differencing=False)
-    r_default = sarimax_rs.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0))
+    r_default = rustima.sarimax_fit(simple_data, (1, 1, 1), (0, 0, 0, 0))
     assert abs(r_explicit["loglike"] - r_default["loglike"]) < 1e-10

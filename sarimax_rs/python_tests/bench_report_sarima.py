@@ -5,7 +5,7 @@ bench_report_sarima.py — SARIMA vs statsmodels 종합 비교 리포트
   - 수렴률, 우도(loglike), AIC, BIC
   - 파라미터 유사도 (MAE vs statsmodels) [subset only]
   - 우도 유사도 (Δloglike)               [subset only]
-  - 속도 비교 (sarimax_rs vs statsmodels)
+  - 속도 비교 (rustima vs statsmodels)
   - h=6 예측 RMSE 비교
 
 범위:
@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 
 try:
     from statsmodels.tsa.statespace.sarimax import SARIMAX as SM_SARIMAX
@@ -67,7 +67,7 @@ def gen_seasonal(n, s, seed=SEED):
 def run_rs(y, order, seasonal):
     t0 = time.perf_counter()
     try:
-        r = sarimax_rs.sarimax_fit(y, order, seasonal)
+        r = rustima.sarimax_fit(y, order, seasonal)
     except Exception:
         r = {"converged": False, "loglike": float("nan"), "aic": float("nan"),
              "bic": float("nan"), "params": []}
@@ -94,10 +94,10 @@ def forecast_rmse(y, order, seasonal, h=STEPS):
         train, actual = y[:orig], y[orig:orig+h]
         if len(actual) < h:
             continue
-        r2 = sarimax_rs.sarimax_fit(train, order, seasonal)
+        r2 = rustima.sarimax_fit(train, order, seasonal)
         if not r2["converged"]:
             continue
-        fc = sarimax_rs.sarimax_forecast(
+        fc = rustima.sarimax_forecast(
             train, order, seasonal, np.array(r2["params"]), steps=h
         )
         errs.extend((np.array(fc["mean"]) - actual)**2)
@@ -212,12 +212,12 @@ def section_for_season(s, rows):
         "|--------|----:|----:|----:|",
     ]
     if rs_times:
-        lines.append(f"| sarimax_rs  | {np.median(rs_times):.2f} | {np.percentile(rs_times,95):.2f} | {max(rs_times):.2f} |")
+        lines.append(f"| rustima  | {np.median(rs_times):.2f} | {np.percentile(rs_times,95):.2f} | {max(rs_times):.2f} |")
     if sm_times:
         lines.append(f"| statsmodels | {np.median(sm_times):.2f} | {np.percentile(sm_times,95):.2f} | {max(sm_times):.2f} |")
     if rs_times and sm_times:
         spd = np.median(sm_times) / np.median(rs_times)
-        lines.append(f"\nsarimax_rs는 statsmodels 대비 **{spd:.1f}x** 빠름 (p50 기준, subset only)\n")
+        lines.append(f"\nrustima는 statsmodels 대비 **{spd:.1f}x** 빠름 (p50 기준, subset only)\n")
     lines.append("")
 
     lines += [
@@ -281,7 +281,7 @@ def main():
     all_lines = [
         "# SARIMA 종합 비교 리포트\n",
         f"> 생성: {datetime.now():%Y-%m-%d %H:%M}  ",
-        f"> sarimax_rs v{sarimax_rs.version()}  ",
+        f"> rustima v{rustima.version()}  ",
         f"> statsmodels: {'설치됨' if HAS_SM else '미설치'}  ",
         f"> 전체 매트릭스: p,q ∈ [0..{MAX_P}], P,Q ∈ [0..{MAX_PP}], d=1, D=1  ",
         f"> statsmodels 서브셋: p,q,P,Q ∈ [0..{SM_SUBSET_MAX}]  ",

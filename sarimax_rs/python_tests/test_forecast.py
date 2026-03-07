@@ -1,4 +1,4 @@
-"""Phase 3 integration tests: compare sarimax_rs forecast/residuals vs statsmodels.
+"""Phase 3 integration tests: compare rustima forecast/residuals vs statsmodels.
 
 Validates:
 1. Forecast mean matches statsmodels get_forecast()
@@ -7,7 +7,7 @@ Validates:
 """
 
 import numpy as np
-import sarimax_rs
+import rustima
 
 
 # Cross-implementation tolerances
@@ -23,7 +23,7 @@ def test_forecast_ar1_vs_statsmodels(statsmodels_fixtures, forecast_fixtures):
     y = np.array(case["data"])
     params = np.array(ref["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), params, steps=10, alpha=0.05
     )
 
@@ -41,7 +41,7 @@ def test_forecast_arma11_vs_statsmodels(statsmodels_fixtures, forecast_fixtures)
     y = np.array(case["data"])
     params = np.array(ref["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 1), (0, 0, 0, 0), params, steps=10, alpha=0.05
     )
 
@@ -59,7 +59,7 @@ def test_forecast_arima111_vs_statsmodels(statsmodels_fixtures, forecast_fixture
     y = np.array(case["data"])
     params = np.array(ref["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 1, 1), (0, 0, 0, 0), params, steps=10, alpha=0.05
     )
 
@@ -78,7 +78,7 @@ def test_forecast_ci_vs_statsmodels(statsmodels_fixtures, forecast_fixtures):
     y = np.array(case["data"])
     params = np.array(ref["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), params, steps=10, alpha=0.05
     )
 
@@ -100,7 +100,7 @@ def test_residuals_vs_statsmodels(statsmodels_fixtures, forecast_fixtures):
     y = np.array(case["data"])
     params = np.array(ref["params"])
 
-    result = sarimax_rs.sarimax_residuals(
+    result = rustima.sarimax_residuals(
         y, (1, 0, 0), (0, 0, 0, 0), params
     )
 
@@ -122,7 +122,7 @@ def test_forecast_returns_dict(statsmodels_fixtures):
     y = np.array(case["data"])
     params = np.array(case["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), params, steps=5
     )
 
@@ -140,7 +140,7 @@ def test_residuals_returns_dict(statsmodels_fixtures):
     y = np.array(case["data"])
     params = np.array(case["params"])
 
-    result = sarimax_rs.sarimax_residuals(
+    result = rustima.sarimax_residuals(
         y, (1, 0, 0), (0, 0, 0, 0), params
     )
 
@@ -156,7 +156,7 @@ def test_forecast_variance_increasing(statsmodels_fixtures):
     y = np.array(case["data"])
     params = np.array(case["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), params, steps=20
     )
 
@@ -172,7 +172,7 @@ def test_forecast_ci_symmetric(statsmodels_fixtures):
     y = np.array(case["data"])
     params = np.array(case["params"])
 
-    result = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), params, steps=10
     )
 

@@ -19,7 +19,7 @@ Data lengths:
 import time
 import numpy as np
 
-import sarimax_rs
+import rustima
 try:
     from statsmodels.tsa.statespace.sarimax import SARIMAX as SM_SARIMAX
     HAS_SM = True
@@ -55,7 +55,7 @@ def bench_model(label, y, order, seasonal, n_reps=3, compare_sm=True):
     result = None
     for _ in range(n_reps):
         t0 = time.perf_counter()
-        r = sarimax_rs.sarimax_fit(y, order, seasonal)
+        r = rustima.sarimax_fit(y, order, seasonal)
         elapsed = time.perf_counter() - t0
         if elapsed < best_time:
             best_time = elapsed
@@ -107,12 +107,12 @@ def bench_model(label, y, order, seasonal, n_reps=3, compare_sm=True):
 def bench_forecast(label, y, order, seasonal, steps=48):
     """Fit + forecast, return timings."""
     t0 = time.perf_counter()
-    fit = sarimax_rs.sarimax_fit(y, order, seasonal)
+    fit = rustima.sarimax_fit(y, order, seasonal)
     fit_time = time.perf_counter() - t0
 
     params = np.array(fit["params"])
     t0 = time.perf_counter()
-    fc = sarimax_rs.sarimax_forecast(y, order, seasonal, params, steps=steps)
+    fc = rustima.sarimax_forecast(y, order, seasonal, params, steps=steps)
     fc_time = time.perf_counter() - t0
 
     return dict(
@@ -186,9 +186,9 @@ def main():
             ))
 
     # ------------------------------------------------------------------
-    # Section 2: 6-month data (4320 obs) — only sarimax_rs
+    # Section 2: 6-month data (4320 obs) — only rustima
     # ------------------------------------------------------------------
-    print("\n\n[2/3] 6개월 (4320시간) — sarimax_rs 단독 (statsmodels 제외: 너무 느림)")
+    print("\n\n[2/3] 6개월 (4320시간) — rustima 단독 (statsmodels 제외: 너무 느림)")
     print("-" * 70)
     y_long = make_hourly(180)
     n = len(y_long)
@@ -198,7 +198,7 @@ def main():
 
     for label, order, seasonal in models:
         t0 = time.perf_counter()
-        r = sarimax_rs.sarimax_fit(y_long, order, seasonal)
+        r = rustima.sarimax_fit(y_long, order, seasonal)
         elapsed = (time.perf_counter() - t0) * 1000
         conv = "✓" if r["converged"] else "✗"
         print(f"  {label:<36} {elapsed:8.1f}  {r['aic']:10.3f}  {r['bic']:10.3f}  {conv:>5}  {r['n_iter']:>6}")

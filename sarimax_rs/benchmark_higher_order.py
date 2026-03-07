@@ -4,7 +4,7 @@ Cross-loglike validation + speed comparison vs statsmodels.
 """
 import time
 import numpy as np
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 
 np.random.seed(42)
@@ -92,7 +92,7 @@ for label, order, seasonal, exog_arg in MODELS:
 
         # sarimax_rs fit
         t0 = time.perf_counter()
-        rs_result = sarimax_rs.sarimax_fit(
+        rs_result = rustima.sarimax_fit(
             y, order=order, seasonal=seasonal,
             exog=exog_arg,
             enforce_stationarity=False,
@@ -147,7 +147,7 @@ for label, order, seasonal, exog_arg in MODELS:
             continue
 
         sm_ll = sm_model.loglike(sm_params)
-        rs_ll = sarimax_rs.sarimax_loglike(
+        rs_ll = rustima.sarimax_loglike(
             y, order=order, seasonal=seasonal,
             params=sm_params, exog=exog_arg,
             enforce_stationarity=False,

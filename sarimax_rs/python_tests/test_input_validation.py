@@ -9,7 +9,7 @@ Verifies:
 import numpy as np
 import pytest
 
-import sarimax_rs
+import rustima
 from conftest import generate_ar1
 
 
@@ -20,7 +20,7 @@ def _sample_series(n: int = 30) -> np.ndarray:
 def test_loglike_rejects_wrong_param_length():
     y = _sample_series()
     with pytest.raises(ValueError, match="length mismatch"):
-        sarimax_rs.sarimax_loglike(
+        rustima.sarimax_loglike(
             y,
             (1, 0, 1),
             (0, 0, 0, 0),
@@ -31,7 +31,7 @@ def test_loglike_rejects_wrong_param_length():
 def test_fit_rejects_wrong_start_params_length():
     y = _sample_series()
     with pytest.raises(ValueError, match="length mismatch"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             (1, 0, 1),
             (0, 0, 0, 0),
@@ -42,7 +42,7 @@ def test_fit_rejects_wrong_start_params_length():
 def test_rejects_invalid_seasonal_d_s_combination():
     y = _sample_series()
     with pytest.raises(ValueError, match="requires seasonal period s >= 2"):
-        sarimax_rs.sarimax_loglike(
+        rustima.sarimax_loglike(
             y,
             (0, 0, 0),
             (0, 1, 0, 0),  # D>0 with s=0
@@ -58,7 +58,7 @@ def test_exog_basic_acceptance():
     exog = np.ones((n, 1), dtype=np.float64)
 
     # loglike with exog: params = [exog_coeff(1), ar(1)] = 2 params
-    ll = sarimax_rs.sarimax_loglike(
+    ll = rustima.sarimax_loglike(
         y,
         (1, 0, 0),
         (0, 0, 0, 0),
@@ -68,7 +68,7 @@ def test_exog_basic_acceptance():
     assert np.isfinite(ll), f"loglike with exog should be finite, got {ll}"
 
     # fit with exog
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y,
         (1, 0, 0),
         (0, 0, 0, 0),
@@ -82,13 +82,13 @@ def test_forecast_rejects_missing_future_exog():
     """Bug #1: exog model forecast must require future_exog."""
     y = _sample_series(n=100)
     exog = np.ones((len(y), 1), dtype=np.float64)
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
         enforce_stationarity=False, enforce_invertibility=False,
     )
     params = np.array(result["params"], dtype=np.float64)
     with pytest.raises(ValueError, match="future_exog is required"):
-        sarimax_rs.sarimax_forecast(
+        rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
             steps=5, exog=exog,
             # future_exog intentionally omitted
@@ -98,7 +98,7 @@ def test_forecast_rejects_missing_future_exog():
 def test_fit_rejects_non_positive_sigma2_when_not_concentrated():
     y = _sample_series()
     with pytest.raises(ValueError, match="variance sigma2 must be positive"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             (1, 0, 0),
             (0, 0, 0, 0),
@@ -121,7 +121,7 @@ class TestNanInfRejection:
         y = _sample_series()
         y[5] = np.nan
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (1, 0, 0), (0, 0, 0, 0),
                 np.array([0.5], dtype=np.float64),
             )
@@ -130,7 +130,7 @@ class TestNanInfRejection:
         y = _sample_series()
         y[3] = np.inf
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (1, 0, 0), (0, 0, 0, 0),
                 np.array([0.5], dtype=np.float64),
             )
@@ -139,14 +139,14 @@ class TestNanInfRejection:
         y = _sample_series()
         y[0] = np.nan
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+            rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
 
     def test_loglike_rejects_nan_in_exog(self):
         y = _sample_series()
         exog = np.ones((len(y), 1), dtype=np.float64)
         exog[3, 0] = np.nan
         with pytest.raises(ValueError, match="exog contains NaN or Inf"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (1, 0, 0), (0, 0, 0, 0),
                 np.array([0.0, 0.5], dtype=np.float64),
                 exog=exog,
@@ -157,7 +157,7 @@ class TestNanInfRejection:
         exog = np.ones((len(y), 1), dtype=np.float64)
         exog[4, 0] = np.inf
         with pytest.raises(ValueError, match="exog contains NaN or Inf"):
-            sarimax_rs.sarimax_fit(
+            rustima.sarimax_fit(
                 y, (1, 0, 0), (0, 0, 0, 0),
                 exog=exog,
             )
@@ -167,7 +167,7 @@ class TestNanInfRejection:
         y[10] = np.nan
         params = np.array([0.5], dtype=np.float64)
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_forecast(
+            rustima.sarimax_forecast(
                 y, (1, 0, 0), (0, 0, 0, 0), params, steps=5,
             )
 
@@ -176,7 +176,7 @@ class TestNanInfRejection:
         y[2] = -np.inf
         params = np.array([0.5], dtype=np.float64)
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_residuals(
+            rustima.sarimax_residuals(
                 y, (1, 0, 0), (0, 0, 0, 0), params,
             )
 
@@ -185,7 +185,7 @@ class TestNanInfRejection:
         y_bad = _sample_series()
         y_bad[4] = np.nan
         with pytest.raises(ValueError, match="index 1.*NaN or Inf"):
-            sarimax_rs.sarimax_batch_fit(
+            rustima.sarimax_batch_fit(
                 [y_good, y_bad], (1, 0, 0), (0, 0, 0, 0),
             )
 
@@ -195,7 +195,7 @@ class TestNanInfRejection:
         y_bad[0] = np.inf
         params = np.array([0.5], dtype=np.float64)
         with pytest.raises(ValueError, match="index 1.*NaN or Inf"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y_good, y_bad], (1, 0, 0), (0, 0, 0, 0),
                 [params, params], steps=3,
             )
@@ -211,7 +211,7 @@ class TestBatchLengthMismatch:
         y2 = _sample_series()
         exog1 = np.ones((len(y1), 1), dtype=np.float64)
         with pytest.raises(ValueError, match="exog_list length"):
-            sarimax_rs.sarimax_batch_fit(
+            rustima.sarimax_batch_fit(
                 [y1, y2], (1, 0, 0), (0, 0, 0, 0),
                 exog_list=[exog1],  # only 1 exog for 2 series
             )
@@ -220,7 +220,7 @@ class TestBatchLengthMismatch:
         y = _sample_series()
         params = np.array([0.5], dtype=np.float64)
         with pytest.raises(ValueError, match="same length"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y, y], (1, 0, 0), (0, 0, 0, 0),
                 [params],  # only 1 params for 2 series
                 steps=3,
@@ -232,7 +232,7 @@ class TestBatchLengthMismatch:
         exog = np.ones((len(y), 1), dtype=np.float64)
         future_exog = np.ones((3, 1), dtype=np.float64)
         with pytest.raises(ValueError, match="exog_list length"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y, y], (1, 0, 0), (0, 0, 0, 0),
                 [params, params], steps=3,
                 exog_list=[exog],  # only 1 exog for 2 series
@@ -242,7 +242,7 @@ class TestBatchLengthMismatch:
     def test_batch_forecast_rejects_short_future_exog_rows(self):
         y = _sample_series()
         exog = np.ones((len(y), 1), dtype=np.float64)
-        fit = sarimax_rs.sarimax_fit(
+        fit = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0),
             exog=exog,
             enforce_stationarity=False,
@@ -252,7 +252,7 @@ class TestBatchLengthMismatch:
         short_future_exog = np.ones((2, 1), dtype=np.float64)  # steps=5보다 짧음
 
         with pytest.raises(ValueError, match="forecast steps requested"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y], (1, 0, 0), (0, 0, 0, 0), [params],
                 steps=5,
                 exog_list=[exog],
@@ -263,17 +263,17 @@ class TestBatchLengthMismatch:
         y = _sample_series()
         params = np.array([0.5], dtype=np.float64)
         with pytest.raises(ValueError, match="alpha"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y], (1, 0, 0), (0, 0, 0, 0), [params],
                 steps=3, alpha=0.0,
             )
         with pytest.raises(ValueError, match="alpha"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y], (1, 0, 0), (0, 0, 0, 0), [params],
                 steps=3, alpha=1.0,
             )
         with pytest.raises(ValueError, match="alpha"):
-            sarimax_rs.sarimax_batch_forecast(
+            rustima.sarimax_batch_forecast(
                 [y], (1, 0, 0), (0, 0, 0, 0), [params],
                 steps=3, alpha=-0.5,
             )
@@ -288,19 +288,19 @@ class TestMinSeriesLength:
         """AR(3) on a 3-observation series should fail gracefully."""
         y = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         with pytest.raises((ValueError, RuntimeError)):
-            sarimax_rs.sarimax_fit(y, (3, 0, 0), (0, 0, 0, 0))
+            rustima.sarimax_fit(y, (3, 0, 0), (0, 0, 0, 0))
 
     def test_differenced_series_too_short(self):
         """ARIMA(1,2,0) on 4 observations → differenced series has 2 obs, barely usable."""
         y = np.array([1.0, 2.0, 4.0, 7.0], dtype=np.float64)
         with pytest.raises((ValueError, RuntimeError)):
-            sarimax_rs.sarimax_fit(y, (1, 2, 0), (0, 0, 0, 0))
+            rustima.sarimax_fit(y, (1, 2, 0), (0, 0, 0, 0))
 
     def test_seasonal_too_short(self):
         """SARIMA with s=12 on 10 observations should fail."""
         y = np.arange(10, dtype=np.float64)
         with pytest.raises((ValueError, RuntimeError)):
-            sarimax_rs.sarimax_fit(y, (1, 0, 0), (1, 0, 0, 12))
+            rustima.sarimax_fit(y, (1, 0, 0), (1, 0, 0, 12))
 
 
 # --- 5-1: concentrate_scale=False full likelihood ---
@@ -316,7 +316,7 @@ class TestConcentrateScaleFalse:
         for t in range(1, n):
             y[t] = 0.7 * y[t - 1] + np.random.randn()
 
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0),
             concentrate_scale=False,
             enforce_stationarity=False,
@@ -336,7 +336,7 @@ class TestConcentrateScaleFalse:
         for t in range(1, n):
             y[t] = 0.7 * y[t - 1] + np.random.randn()
 
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0),
             concentrate_scale=False,
             enforce_stationarity=False,
@@ -346,7 +346,7 @@ class TestConcentrateScaleFalse:
 
         # Evaluate concentrated loglike at same AR param
         ar_param = np.array([result["params"][0]], dtype=np.float64)
-        ll_conc = sarimax_rs.sarimax_loglike(
+        ll_conc = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), ar_param,
             concentrate_scale=True,
             enforce_stationarity=False, enforce_invertibility=False,
@@ -372,7 +372,7 @@ class TestBatchForecastExog:
             y[t] = 0.5 * y[t - 1] + 0.3 * exog_col[t] + np.random.randn() * 0.5
 
         exog = exog_col.reshape(-1, 1).astype(np.float64)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -381,7 +381,7 @@ class TestBatchForecastExog:
         params = np.array(result["params"], dtype=np.float64)
         future_exog = np.ones((5, 1), dtype=np.float64)
 
-        forecasts = sarimax_rs.sarimax_batch_forecast(
+        forecasts = rustima.sarimax_batch_forecast(
             [y, y], (1, 0, 0), (0, 0, 0, 0),
             [params, params], steps=5,
             exog_list=[exog, exog],
@@ -404,7 +404,7 @@ class TestErrorTypes:
         # A tiny series with complex model should trigger optimization failure
         y = np.array([1.0, 2.0], dtype=np.float64)
         with pytest.raises((RuntimeError, ValueError)):
-            sarimax_rs.sarimax_fit(
+            rustima.sarimax_fit(
                 y, (3, 0, 3), (0, 0, 0, 0),
                 enforce_stationarity=False,
                 enforce_invertibility=False,
@@ -419,7 +419,7 @@ class TestOrderUpperBounds:
     def test_rejects_p_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="AR order p=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (21, 0, 0), (0, 0, 0, 0),
                 np.zeros(21, dtype=np.float64),
             )
@@ -427,7 +427,7 @@ class TestOrderUpperBounds:
     def test_rejects_q_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="MA order q=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 21), (0, 0, 0, 0),
                 np.zeros(21, dtype=np.float64),
             )
@@ -435,7 +435,7 @@ class TestOrderUpperBounds:
     def test_rejects_d_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="differencing order d=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 4, 0), (0, 0, 0, 0),
                 np.array([], dtype=np.float64),
             )
@@ -443,7 +443,7 @@ class TestOrderUpperBounds:
     def test_rejects_seasonal_P_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="seasonal AR order P=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 0), (5, 0, 0, 4),
                 np.zeros(5, dtype=np.float64),
             )
@@ -451,7 +451,7 @@ class TestOrderUpperBounds:
     def test_rejects_seasonal_D_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="seasonal differencing D=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 0), (0, 3, 0, 4),
                 np.array([], dtype=np.float64),
             )
@@ -459,7 +459,7 @@ class TestOrderUpperBounds:
     def test_rejects_seasonal_Q_too_large(self):
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="seasonal MA order Q=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 0), (0, 0, 5, 4),
                 np.zeros(5, dtype=np.float64),
             )
@@ -467,7 +467,7 @@ class TestOrderUpperBounds:
     def test_rejects_s_too_large(self):
         y = _sample_series(n=1000)
         with pytest.raises(ValueError, match="seasonal period s=.*exceeds maximum"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 0), (1, 0, 0, 400),
                 np.zeros(1, dtype=np.float64),
             )
@@ -476,7 +476,7 @@ class TestOrderUpperBounds:
         """P>0 or D>0 or Q>0 with s<2 must be rejected."""
         y = _sample_series(n=100)
         with pytest.raises(ValueError, match="requires seasonal period s >= 2"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (0, 0, 0), (1, 0, 0, 0),
                 np.zeros(1, dtype=np.float64),
             )
@@ -485,7 +485,7 @@ class TestOrderUpperBounds:
         """Maximum valid individual orders should still be accepted."""
         y = _sample_series(n=100)
         # p=20 is the limit, should be accepted (though fit might fail for other reasons)
-        ll = sarimax_rs.sarimax_loglike(
+        ll = rustima.sarimax_loglike(
             y, (20, 0, 0), (0, 0, 0, 0),
             np.zeros(20, dtype=np.float64),
             enforce_stationarity=False,
@@ -503,7 +503,7 @@ class TestExogNanInfRejection:
         exog = np.ones((50, 1), dtype=np.float64)
         exog[5, 0] = np.nan
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 y, (1, 0, 0), (0, 0, 0, 0),
                 np.array([0.0, 0.1], dtype=np.float64),
                 exog=exog,
@@ -514,14 +514,14 @@ class TestExogNanInfRejection:
         exog = np.ones((50, 1), dtype=np.float64)
         exog[3, 0] = np.inf
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_fit(
+            rustima.sarimax_fit(
                 y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             )
 
     def test_forecast_rejects_nan_exog_forecast(self):
         y = _sample_series(n=100)
         exog = np.ones((100, 1), dtype=np.float64)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -529,7 +529,7 @@ class TestExogNanInfRejection:
         future_exog = np.ones((5, 1), dtype=np.float64)
         future_exog[2, 0] = np.nan
         with pytest.raises(ValueError, match="NaN or Inf"):
-            sarimax_rs.sarimax_forecast(
+            rustima.sarimax_forecast(
                 y, (1, 0, 0), (0, 0, 0, 0), params, steps=5,
                 exog=exog, future_exog=future_exog,
             )
@@ -546,7 +546,7 @@ def ar1_data():
 
 @pytest.fixture(scope="module")
 def ar1_fit_result(ar1_data):
-    return sarimax_rs.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
+    return rustima.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
 
 
 @pytest.fixture(scope="module")
@@ -556,29 +556,29 @@ def ar1_params(ar1_fit_result):
 
 class TestVersionContract:
     def test_returns_string(self):
-        assert isinstance(sarimax_rs.version(), str)
+        assert isinstance(rustima.version(), str)
 
     def test_version_format(self):
-        parts = sarimax_rs.version().split(".")
+        parts = rustima.version().split(".")
         assert len(parts) >= 2
 
 
 class TestLoglikeContract:
     def test_returns_finite_float(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_loglike(
+        result = rustima.sarimax_loglike(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
         )
         assert isinstance(result, float) and np.isfinite(result)
 
     def test_wrong_param_length_raises(self, ar1_data):
         with pytest.raises((ValueError, RuntimeError)):
-            sarimax_rs.sarimax_loglike(
+            rustima.sarimax_loglike(
                 ar1_data, (1, 0, 0), (0, 0, 0, 0),
                 np.array([0.5, 0.3]),
             )
 
     def test_accepts_exog_none(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_loglike(
+        result = rustima.sarimax_loglike(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, exog=None,
         )
         assert np.isfinite(result)
@@ -591,7 +591,7 @@ class TestFitContract:
     }
 
     def test_returns_dict(self, ar1_data):
-        result = sarimax_rs.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(ar1_data, (1, 0, 0), (0, 0, 0, 0))
         assert isinstance(result, dict)
 
     def test_required_keys_present(self, ar1_fit_result):
@@ -610,7 +610,7 @@ class TestFitContract:
         assert isinstance(ar1_fit_result["converged"], bool)
 
     def test_params_length_matches_order(self, ar1_data):
-        result = sarimax_rs.sarimax_fit(ar1_data, (2, 0, 0), (0, 0, 0, 0))
+        result = rustima.sarimax_fit(ar1_data, (2, 0, 0), (0, 0, 0, 0))
         assert len(result["params"]) == 2
 
     def test_n_obs_matches_data_length(self, ar1_data, ar1_fit_result):
@@ -621,7 +621,7 @@ class TestForecastContract:
     REQUIRED_KEYS = {"mean", "variance", "ci_lower", "ci_upper"}
 
     def test_returns_dict_with_keys(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_forecast(
+        result = rustima.sarimax_forecast(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=5,
         )
         assert isinstance(result, dict)
@@ -630,14 +630,14 @@ class TestForecastContract:
 
     def test_output_length_matches_steps(self, ar1_data, ar1_params):
         for steps in [1, 5, 10, 20]:
-            result = sarimax_rs.sarimax_forecast(
+            result = rustima.sarimax_forecast(
                 ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=steps,
             )
             for key in self.REQUIRED_KEYS:
                 assert len(result[key]) == steps
 
     def test_variance_non_negative(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_forecast(
+        result = rustima.sarimax_forecast(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params, steps=10,
         )
         assert all(v >= 0 for v in result["variance"])
@@ -647,7 +647,7 @@ class TestResidualsContract:
     REQUIRED_KEYS = {"residuals", "standardized_residuals"}
 
     def test_returns_dict_with_keys(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_residuals(
+        result = rustima.sarimax_residuals(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
         )
         assert isinstance(result, dict)
@@ -655,7 +655,7 @@ class TestResidualsContract:
         assert not missing
 
     def test_residuals_length_matches_data(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_residuals(
+        result = rustima.sarimax_residuals(
             ar1_data, (1, 0, 0), (0, 0, 0, 0), ar1_params,
         )
         assert len(result["residuals"]) == len(ar1_data)
@@ -663,13 +663,13 @@ class TestResidualsContract:
 
 class TestBatchLoglikeContract:
     def test_returns_list(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_batch_loglike(
+        result = rustima.sarimax_batch_loglike(
             [ar1_data, ar1_data], (1, 0, 0), (0, 0, 0, 0), ar1_params,
         )
         assert isinstance(result, list) and len(result) == 2
 
     def test_each_element_has_loglike(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_batch_loglike(
+        result = rustima.sarimax_batch_loglike(
             [ar1_data], (1, 0, 0), (0, 0, 0, 0), ar1_params,
         )
         assert isinstance(result[0], dict) and "loglike" in result[0]
@@ -677,25 +677,25 @@ class TestBatchLoglikeContract:
 
 class TestBatchFitContract:
     def test_returns_list_of_dicts(self, ar1_data):
-        result = sarimax_rs.sarimax_batch_fit(
+        result = rustima.sarimax_batch_fit(
             [ar1_data, ar1_data], (1, 0, 0), (0, 0, 0, 0),
         )
         assert isinstance(result, list) and len(result) == 2
         assert all(isinstance(r, dict) for r in result)
 
     def test_each_dict_has_fit_keys(self, ar1_data):
-        result = sarimax_rs.sarimax_batch_fit([ar1_data], (1, 0, 0), (0, 0, 0, 0))
+        result = rustima.sarimax_batch_fit([ar1_data], (1, 0, 0), (0, 0, 0, 0))
         required = {"params", "loglike", "converged"}
         for r in result:
             assert not (required - set(r.keys()))
 
     def test_empty_input_returns_empty(self):
-        assert sarimax_rs.sarimax_batch_fit([], (1, 0, 0), (0, 0, 0, 0)) == []
+        assert rustima.sarimax_batch_fit([], (1, 0, 0), (0, 0, 0, 0)) == []
 
 
 class TestBatchForecastContract:
     def test_returns_list_with_forecast_keys(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_batch_forecast(
+        result = rustima.sarimax_batch_forecast(
             [ar1_data], (1, 0, 0), (0, 0, 0, 0), [ar1_params], steps=5,
         )
         assert isinstance(result, list) and len(result) == 1
@@ -703,12 +703,12 @@ class TestBatchForecastContract:
         assert not (required - set(result[0].keys()))
 
     def test_output_length_matches_input(self, ar1_data, ar1_params):
-        result = sarimax_rs.sarimax_batch_forecast(
+        result = rustima.sarimax_batch_forecast(
             [ar1_data] * 3, (1, 0, 0), (0, 0, 0, 0), [ar1_params] * 3, steps=5,
         )
         assert len(result) == 3
 
     def test_empty_input_returns_empty(self):
-        assert sarimax_rs.sarimax_batch_forecast(
+        assert rustima.sarimax_batch_forecast(
             [], (1, 0, 0), (0, 0, 0, 0), [], steps=5,
         ) == []

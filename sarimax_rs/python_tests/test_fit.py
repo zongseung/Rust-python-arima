@@ -1,4 +1,4 @@
-"""Phase 2 integration tests: compare sarimax_rs.sarimax_fit() vs statsmodels.
+"""Phase 2 integration tests: compare rustima.sarimax_fit() vs statsmodels.
 
 Note on tolerances:
 Different optimizer implementations (Rust L-BFGS vs scipy L-BFGS-B) with different
@@ -12,7 +12,7 @@ We validate that:
 """
 
 import numpy as np
-import sarimax_rs
+import rustima
 
 
 # Cross-implementation tolerances (Rust vs statsmodels/scipy)
@@ -27,7 +27,7 @@ def test_fit_ar1(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["ar1"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
 
     assert result["converged"], "AR(1) fit should converge"
     assert abs(result["params"][0] - ref["params"][0]) < PARAM_TOL, (
@@ -44,7 +44,7 @@ def test_fit_arma11(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["arma11"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0))
 
     assert result["converged"], "ARMA(1,1) fit should converge"
     for i, (got, exp) in enumerate(zip(result["params"], ref["params"])):
@@ -60,7 +60,7 @@ def test_fit_arima111(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["arima111"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
 
     assert abs(result["loglike"] - ref["loglike"]) < LOGLIKE_TOL, (
         f"ARIMA(1,1,1) loglike error: {abs(result['loglike'] - ref['loglike']):.4f}"
@@ -73,7 +73,7 @@ def test_fit_sarima(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["sarima_100_100_4"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (1, 0, 0, 4))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (1, 0, 0, 4))
 
     assert result["converged"], "SARIMA fit should converge"
     for i, (got, exp) in enumerate(zip(result["params"], ref["params"])):
@@ -89,7 +89,7 @@ def test_fit_aic_bic(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["ar1"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
 
     assert abs(result["aic"] - ref["aic"]) < AIC_BIC_TOL, (
         f"AIC error: {abs(result['aic'] - ref['aic']):.4f}"
@@ -104,7 +104,7 @@ def test_fit_convergence(statsmodels_fixtures):
     case = statsmodels_fixtures["ar1"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
     assert result["converged"]
     assert result["n_iter"] > 0
     assert result["n_obs"] == len(y)
@@ -116,7 +116,7 @@ def test_fit_custom_start_params(statsmodels_fixtures):
     y = np.array(case["data"])
     start = np.array([0.5])
 
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y, (1, 0, 0), (0, 0, 0, 0), start_params=start
     )
     assert np.isfinite(result["loglike"])
@@ -129,7 +129,7 @@ def test_fit_nelder_mead_method(statsmodels_fixtures, fit_fixtures):
     ref = fit_fixtures["ar1"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y, (1, 0, 0), (0, 0, 0, 0), method="nelder-mead"
     )
     assert "nelder-mead" in result["method"]
@@ -142,7 +142,7 @@ def test_fit_returns_dict(statsmodels_fixtures):
     case = statsmodels_fixtures["ar1"]
     y = np.array(case["data"])
 
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
 
     expected_keys = {
         "params", "loglike", "scale", "aic", "bic",
@@ -160,7 +160,7 @@ def test_loglike_ar1_oracle(statsmodels_fixtures):
     """AR(1) concentrated loglike at oracle params matches statsmodels."""
     case = statsmodels_fixtures["ar1"]
     y, params = np.array(case["data"]), np.array(case["params"])
-    ll = sarimax_rs.sarimax_loglike(
+    ll = rustima.sarimax_loglike(
         y, (1, 0, 0), (0, 0, 0, 0), params,
         enforce_stationarity=False, enforce_invertibility=False,
     )
@@ -171,7 +171,7 @@ def test_loglike_arma11_oracle(statsmodels_fixtures):
     """ARMA(1,1) concentrated loglike at oracle params matches statsmodels."""
     case = statsmodels_fixtures["arma11"]
     y, params = np.array(case["data"]), np.array(case["params"])
-    ll = sarimax_rs.sarimax_loglike(
+    ll = rustima.sarimax_loglike(
         y, (1, 0, 1), (0, 0, 0, 0), params,
         enforce_stationarity=False, enforce_invertibility=False,
     )
@@ -182,7 +182,7 @@ def test_loglike_arima111_oracle(statsmodels_fixtures):
     """ARIMA(1,1,1) concentrated loglike at oracle params matches statsmodels."""
     case = statsmodels_fixtures["arima111"]
     y, params = np.array(case["data"]), np.array(case["params"])
-    ll = sarimax_rs.sarimax_loglike(
+    ll = rustima.sarimax_loglike(
         y, (1, 1, 1), (0, 0, 0, 0), params,
         enforce_stationarity=False, enforce_invertibility=False,
     )
@@ -193,11 +193,11 @@ def test_loglike_concentrate_scale_default(statsmodels_fixtures):
     """concentrate_scale=True is the default."""
     case = statsmodels_fixtures["ar1"]
     y, params = np.array(case["data"]), np.array(case["params"])
-    ll_default = sarimax_rs.sarimax_loglike(
+    ll_default = rustima.sarimax_loglike(
         y, (1, 0, 0), (0, 0, 0, 0), params,
         enforce_stationarity=False, enforce_invertibility=False,
     )
-    ll_explicit = sarimax_rs.sarimax_loglike(
+    ll_explicit = rustima.sarimax_loglike(
         y, (1, 0, 0), (0, 0, 0, 0), params,
         concentrate_scale=True,
         enforce_stationarity=False, enforce_invertibility=False,

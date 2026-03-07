@@ -10,47 +10,47 @@ import pytest
 
 
 def test_import():
-    """sarimax_rs module can be imported."""
-    import sarimax_rs
-    assert sarimax_rs is not None
+    """rustima module can be imported."""
+    import rustima
+    assert rustima is not None
 
 
 def test_version():
     """version() returns a non-empty string."""
-    import sarimax_rs
-    v = sarimax_rs.version()
+    import rustima
+    v = rustima.version()
     assert isinstance(v, str) and len(v) > 0
 
 
 def test_public_api_surface():
     """All expected public functions are present."""
-    import sarimax_rs
+    import rustima
     expected = [
         "sarimax_fit", "sarimax_forecast", "sarimax_loglike",
         "sarimax_residuals", "sarimax_batch_fit", "sarimax_batch_forecast",
         "sarimax_batch_loglike", "version",
     ]
     for name in expected:
-        assert hasattr(sarimax_rs, name), f"missing: {name}"
+        assert hasattr(rustima, name), f"missing: {name}"
 
 
 def test_basic_fit():
     """AR(1) fit completes and converges."""
-    import sarimax_rs
+    import rustima
     from conftest import generate_ar1_rng
     y = generate_ar1_rng(n=100, phi=0.5, seed=42)
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
     assert result["converged"]
     assert np.isfinite(result["loglike"])
 
 
 def test_basic_forecast():
     """Forecast produces finite values of correct length."""
-    import sarimax_rs
+    import rustima
     from conftest import generate_ar1_rng
     y = generate_ar1_rng(n=100, phi=0.5, seed=42)
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
-    fc = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    fc = rustima.sarimax_forecast(
         y, (1, 0, 0), (0, 0, 0, 0), np.array(result["params"]), steps=10,
     )
     assert len(fc["mean"]) == 10
@@ -59,9 +59,9 @@ def test_basic_forecast():
 
 def test_batch_fit_length():
     """Batch fit returns correct number of results."""
-    import sarimax_rs
+    import rustima
     y = np.random.default_rng(42).normal(size=100)
-    results = sarimax_rs.sarimax_batch_fit([y, y], (1, 0, 0), (0, 0, 0, 0))
+    results = rustima.sarimax_batch_fit([y, y], (1, 0, 0), (0, 0, 0, 0))
     assert len(results) == 2
 
 
@@ -139,12 +139,12 @@ def test_model_conf_int():
 
 
 def test_model_matches_raw_api():
-    """SARIMAXModel results should match sarimax_rs raw API."""
-    import sarimax_rs
+    """SARIMAXModel results should match rustima raw API."""
+    import rustima
     from sarimax_py.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
-    raw = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
+    raw = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
     assert abs(result.llf - raw["loglike"]) < 1e-10
     np.testing.assert_allclose(result.params, raw["params"], atol=1e-10)
 

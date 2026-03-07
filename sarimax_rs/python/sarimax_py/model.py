@@ -1,9 +1,9 @@
-"""statsmodels-compatible SARIMAX model backed by Rust engine (sarimax_rs)."""
+"""statsmodels-compatible SARIMAX model backed by Rust engine (rustima)."""
 
 import math
 
 import numpy as np
-import sarimax_rs
+import rustima
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
     alpha : float
     exog : np.ndarray or None
     n_params_rs : int or None
-        Number of non-sigma2 params in sarimax_rs (for alignment).
+        Number of non-sigma2 params in rustima (for alignment).
     enforce_stationarity : bool
         Pass through to statsmodels SARIMAX.
     enforce_invertibility : bool
@@ -299,7 +299,7 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
         )
         res_sm = model_sm.fit(disp=False)
 
-        # statsmodels includes sigma2 as last param; align to sarimax_rs count
+        # statsmodels includes sigma2 as last param; align to rustima count
         k = n_params_rs if n_params_rs is not None else len(res_sm.params) - 1
         ci = res_sm.conf_int(alpha=alpha)
 
@@ -443,7 +443,7 @@ def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=
         if exog is not None:
             kwargs["exog"] = exog
 
-        result = sarimax_rs.sarimax_inference(
+        result = rustima.sarimax_inference(
             endog, order, seasonal_order,
             np.array(params, dtype=np.float64),
             **kwargs,
@@ -627,7 +627,7 @@ class SARIMAXModel:
             maxiter=maxiter,
         )
 
-        result_dict = sarimax_rs.sarimax_fit(
+        result_dict = rustima.sarimax_fit(
             self.endog,
             self.order,
             self.seasonal_order,
@@ -698,7 +698,7 @@ class SARIMAXResult:
         """Evaluate log-likelihood at given params (for Hessian computation)."""
         try:
             kwargs = self.model._model_kwargs()
-            return sarimax_rs.sarimax_loglike(
+            return rustima.sarimax_loglike(
                 self.model.endog,
                 self.model.order,
                 self.model.seasonal_order,
@@ -709,7 +709,7 @@ class SARIMAXResult:
             return np.nan
 
     def _rs_kwargs(self, **extra):
-        """Build common kwargs dict for sarimax_rs function calls."""
+        """Build common kwargs dict for rustima function calls."""
         kw = dict(
             trend=self.model.trend,
             simple_differencing=self.model.simple_differencing,
@@ -941,7 +941,7 @@ class SARIMAXResult:
                 exog = exog.reshape(-1, 1)
             kwargs["future_exog"] = exog
 
-        result = sarimax_rs.sarimax_forecast(*self._rs_args, **kwargs)
+        result = rustima.sarimax_forecast(*self._rs_args, **kwargs)
         return ForecastResult(result, alpha=alpha)
 
     def get_forecast(self, steps=1, alpha=0.05, exog=None):
@@ -952,7 +952,7 @@ class SARIMAXResult:
     def resid(self):
         """Standardized residuals."""
         if self._resid is None:
-            result = sarimax_rs.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
+            result = rustima.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
             self._resid = np.array(result["standardized_residuals"])
         return self._resid
 
@@ -965,7 +965,7 @@ class SARIMAXResult:
             Keys: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
                   jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
         """
-        return sarimax_rs.sarimax_diagnostics(*self._rs_args, **self._rs_kwargs())
+        return rustima.sarimax_diagnostics(*self._rs_args, **self._rs_kwargs())
 
     def params_table(self, alpha=0.05, inference="none"):
         """Return parameter table as a Polars DataFrame.
@@ -1034,7 +1034,7 @@ class SARIMAXResult:
             end = n_endog
 
         # In-sample: one-step-ahead predictions = endog - residuals (innovations)
-        resid_out = sarimax_rs.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
+        resid_out = rustima.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
         residuals = np.array(resid_out["residuals"])
 
         # When simple_differencing=True, Rust returns residuals of length

@@ -1,4 +1,4 @@
-"""Full benchmark comparison: sarimax_rs vs statsmodels.
+"""Full benchmark comparison: rustima vs statsmodels.
 
 Validates speed, accuracy, and convergence across 10 model types
 per BENCHMARK_SPEC.md criteria.
@@ -14,7 +14,7 @@ import time
 import numpy as np
 import statsmodels.api as sm
 
-import sarimax_rs
+import rustima
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -103,7 +103,7 @@ def bench_speed(model, data):
 
     # Rust
     def rs_fit():
-        return sarimax_rs.sarimax_fit(
+        return rustima.sarimax_fit(
             data, order, seasonal,
             method=RUST_METHOD, maxiter=COMPARE_MAXITER,
             enforce_stationarity=True, enforce_invertibility=True,
@@ -158,7 +158,7 @@ def bench_accuracy(model, data, rs_result, sm_result):
     # --- Oracle loglike (evaluate at statsmodels params) ---
     # Use same enforce settings as fitting to ensure identical initialization
     try:
-        rs_ll_at_sm = sarimax_rs.sarimax_loglike(
+        rs_ll_at_sm = rustima.sarimax_loglike(
             data, order, seasonal, sm_params_trimmed,
             concentrate_scale=True,
             enforce_stationarity=True, enforce_invertibility=True,
@@ -172,7 +172,7 @@ def bench_accuracy(model, data, rs_result, sm_result):
 
     # --- Forecast comparison (use Rust fitted params) ---
     try:
-        rs_fc = sarimax_rs.sarimax_forecast(
+        rs_fc = rustima.sarimax_forecast(
             data, order, seasonal, np.array(rs_result["params"]),
             steps=10, alpha=0.05,
             concentrate_scale=True,
@@ -215,7 +215,7 @@ def bench_batch():
 
     # Rust batch
     def rs_batch():
-        return sarimax_rs.sarimax_batch_fit(
+        return rustima.sarimax_batch_fit(
             series, (1,0,0), (0,0,0,0),
             method=RUST_METHOD, maxiter=COMPARE_MAXITER,
             enforce_stationarity=True, enforce_invertibility=True,
@@ -254,7 +254,7 @@ def main():
     print(f"  Platform:    {platform.platform()}")
     print(f"  CPU:         {platform.processor()}")
     print(f"  Python:      {sys.version.split()[0]}")
-    print(f"  sarimax_rs:  {sarimax_rs.version()}")
+    print(f"  rustima:  {rustima.version()}")
     print(f"  Config:      method={RUST_METHOD}, maxiter={COMPARE_MAXITER}")
     print()
 

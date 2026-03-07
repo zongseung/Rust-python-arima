@@ -1,4 +1,4 @@
-# sarimax_py: Python orchestration layer for sarimax_rs
+# sarimax_py: Python orchestration layer for rustima
 from .model import SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
 from .auto import auto_arima, AutoARIMAResult
 

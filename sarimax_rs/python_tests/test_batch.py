@@ -10,7 +10,7 @@ Validates:
 import time
 
 import numpy as np
-import sarimax_rs
+import rustima
 
 from conftest import generate_ar1
 
@@ -22,11 +22,11 @@ def test_batch_fit_results_match_single():
     # Sequential
     seq_results = []
     for s in series:
-        r = sarimax_rs.sarimax_fit(s, (1, 0, 0), (0, 0, 0, 0))
+        r = rustima.sarimax_fit(s, (1, 0, 0), (0, 0, 0, 0))
         seq_results.append(r)
 
     # Batch
-    batch_results = sarimax_rs.sarimax_batch_fit(
+    batch_results = rustima.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
     )
 
@@ -45,7 +45,7 @@ def test_batch_fit_all_converge():
     """100 AR(1) series should all converge via batch_fit."""
     series = [generate_ar1(seed=i) for i in range(100)]
 
-    results = sarimax_rs.sarimax_batch_fit(
+    results = rustima.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
     )
 
@@ -61,7 +61,7 @@ def test_batch_forecast_matches_single():
     series = [generate_ar1(seed=i) for i in range(3)]
 
     # Fit each series first
-    fit_results = sarimax_rs.sarimax_batch_fit(
+    fit_results = rustima.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
     )
     params_list = [np.array(r["params"]) for r in fit_results]
@@ -69,11 +69,11 @@ def test_batch_forecast_matches_single():
     # Sequential forecast
     seq_forecasts = []
     for s, p in zip(series, params_list):
-        f = sarimax_rs.sarimax_forecast(s, (1, 0, 0), (0, 0, 0, 0), p, steps=5)
+        f = rustima.sarimax_forecast(s, (1, 0, 0), (0, 0, 0, 0), p, steps=5)
         seq_forecasts.append(f)
 
     # Batch forecast
-    batch_forecasts = sarimax_rs.sarimax_batch_forecast(
+    batch_forecasts = rustima.sarimax_batch_forecast(
         series, (1, 0, 0), (0, 0, 0, 0), params_list, steps=5
     )
 
@@ -88,7 +88,7 @@ def test_batch_forecast_matches_single():
 def test_batch_fit_returns_list_of_dicts():
     """Verify batch_fit returns list of dicts with expected keys."""
     series = [generate_ar1(seed=42)]
-    results = sarimax_rs.sarimax_batch_fit(
+    results = rustima.sarimax_batch_fit(
         series, (1, 0, 0), (0, 0, 0, 0)
     )
 
@@ -109,12 +109,12 @@ def test_batch_fit_speedup():
     # Sequential timing
     t0 = time.perf_counter()
     for s in series:
-        sarimax_rs.sarimax_fit(s, (1, 0, 0), (0, 0, 0, 0))
+        rustima.sarimax_fit(s, (1, 0, 0), (0, 0, 0, 0))
     seq_time = time.perf_counter() - t0
 
     # Batch timing
     t0 = time.perf_counter()
-    sarimax_rs.sarimax_batch_fit(series, (1, 0, 0), (0, 0, 0, 0))
+    rustima.sarimax_batch_fit(series, (1, 0, 0), (0, 0, 0, 0))
     batch_time = time.perf_counter() - t0
 
     # Batch should be at least somewhat faster (allow generous margin)
@@ -126,7 +126,7 @@ def test_batch_fit_speedup():
 
 def test_batch_empty_input():
     """Empty series list should return empty results."""
-    results = sarimax_rs.sarimax_batch_fit(
+    results = rustima.sarimax_batch_fit(
         [], (1, 0, 0), (0, 0, 0, 0)
     )
     assert results == [] or len(results) == 0

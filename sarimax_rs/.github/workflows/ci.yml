@@ -58,7 +58,7 @@ jobs:
         run: |
           uv pip install maturin
           CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-          uv pip install --force-reinstall /tmp/wheels/sarimax_rs-*.whl
+          uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
       - name: Run Python tests (excluding nightly)
         run: .venv/bin/python -m pytest python_tests/ -m "not nightly" -v --tb=short

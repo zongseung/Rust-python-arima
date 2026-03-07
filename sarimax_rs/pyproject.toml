@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "sarimax-rs"
+name = "rustima"
 version = "0.1.0"
 requires-python = ">=3.10"
 description = "High-performance SARIMAX via Rust + PyO3"
@@ -26,7 +26,7 @@ dev = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "sarimax_rs"
+module-name = "rustima"
 python-source = "python"
 
 [tool.pytest.ini_options]

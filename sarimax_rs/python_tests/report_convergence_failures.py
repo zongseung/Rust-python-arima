@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 
 TIMEOUT_SEC = 60  # 단일 모델 timeout 기준
 
@@ -67,7 +67,7 @@ def classify_result(y, order, seasonal):
     """모델 하나를 fit하고 결과를 분류한다."""
     try:
         t0 = time.perf_counter()
-        result = sarimax_rs.sarimax_fit(y, order, seasonal)
+        result = rustima.sarimax_fit(y, order, seasonal)
         elapsed = time.perf_counter() - t0
 
         if elapsed > TIMEOUT_SEC:
@@ -194,7 +194,7 @@ def main():
     lines = []
     lines.append("# 수렴 실패 자동 분류 리포트\n")
     lines.append(f"> 생성: {datetime.now():%Y-%m-%d %H:%M}  ")
-    lines.append(f"> sarimax_rs v{sarimax_rs.version()}\n")
+    lines.append(f"> rustima v{rustima.version()}\n")
 
     # 그룹별 요약
     lines.append("## 1. 그룹별 수렴률\n")

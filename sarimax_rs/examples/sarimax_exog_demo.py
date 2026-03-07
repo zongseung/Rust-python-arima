@@ -1,5 +1,5 @@
 """
-SARIMAX 외생변수 예제: Rust sarimax_rs vs statsmodels 직접 비교
+SARIMAX 외생변수 예제: Rust rustima vs statsmodels 직접 비교
 
 시나리오: 월별 매출 데이터 (n=240, 20년)
   - 계절성 s=12 (월별)
@@ -11,7 +11,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sarimax_rs import sarimax_fit, sarimax_forecast
+from rustima import sarimax_fit, sarimax_forecast
 
 np.random.seed(42)
 
@@ -84,10 +84,10 @@ for name, val in zip(sm_result.param_names, sm_result.params):
 sm_forecast = sm_result.forecast(steps=h, exog=exog_test)
 
 # ──────────────────────────────────────────────────────────────────
-# 3. Rust sarimax_rs Fit
+# 3. Rust rustima Fit
 # ──────────────────────────────────────────────────────────────────
 print("\n" + "-" * 80)
-print("[ sarimax_rs (Rust) ]")
+print("[ rustima (Rust) ]")
 
 t0 = time.perf_counter()
 rs_result = sarimax_fit(

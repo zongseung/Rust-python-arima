@@ -102,20 +102,20 @@ class TestGridSearchParallel:
 
     def test_grid_search_matches_sequential(self, ar1_data):
         """Parallel grid_search results match sequential sarimax_fit."""
-        import sarimax_rs
+        import rustima
 
         order_list = [(1, 0, 0), (1, 0, 1), (2, 0, 0)]
         seasonal_list = [(0, 0, 0, 0)] * 3
 
         # Parallel
-        grid_results = sarimax_rs.sarimax_grid_search(
+        grid_results = rustima.sarimax_grid_search(
             ar1_data, order_list, seasonal_list
         )
         assert len(grid_results) == 3
 
         # Sequential
         for i, (order, seasonal) in enumerate(zip(order_list, seasonal_list)):
-            seq = sarimax_rs.sarimax_fit(ar1_data, order, seasonal)
+            seq = rustima.sarimax_fit(ar1_data, order, seasonal)
             grid = grid_results[i]
             assert "error" not in grid
             # Loglike should match within optimizer tolerance
@@ -123,12 +123,12 @@ class TestGridSearchParallel:
 
     def test_grid_search_returns_order_keys(self, ar1_data):
         """Each result dict contains order and seasonal_order."""
-        import sarimax_rs
+        import rustima
 
         order_list = [(0, 0, 0), (1, 0, 0)]
         seasonal_list = [(0, 0, 0, 0)] * 2
 
-        results = sarimax_rs.sarimax_grid_search(
+        results = rustima.sarimax_grid_search(
             ar1_data, order_list, seasonal_list
         )
         for i, r in enumerate(results):
@@ -137,7 +137,7 @@ class TestGridSearchParallel:
 
     def test_grid_search_error_isolation(self):
         """Invalid combos return error without affecting valid ones."""
-        import sarimax_rs
+        import rustima
 
         rng = np.random.default_rng(42)
         y = rng.normal(size=50)
@@ -148,7 +148,7 @@ class TestGridSearchParallel:
         seasonal_list = [(0, 0, 0, 0)] * 2
 
         try:
-            results = sarimax_rs.sarimax_grid_search(
+            results = rustima.sarimax_grid_search(
                 y, order_list, seasonal_list
             )
             # First should succeed

@@ -1,5 +1,5 @@
 """
-Tests for exogenous variable (exog) support in sarimax_rs.
+Tests for exogenous variable (exog) support in rustima.
 
 Validates:
 1. loglike with exog returns finite values
@@ -12,7 +12,7 @@ Validates:
 import numpy as np
 import pytest
 
-import sarimax_rs
+import rustima
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class TestExogLoglike:
         y, exog = _generate_arx_data()
         # params: [exog_beta(1), ar(1)]
         params = np.array([2.0, 0.5], dtype=np.float64)
-        ll = sarimax_rs.sarimax_loglike(
+        ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params, exog=exog
         )
         assert np.isfinite(ll), f"loglike not finite: {ll}"
@@ -63,7 +63,7 @@ class TestExogLoglike:
         y, X, _ = _generate_multi_exog_data(n_exog=3)
         # params: [exog(3), ar(1)]
         params = np.array([1.5, -0.8, 0.3, 0.5], dtype=np.float64)
-        ll = sarimax_rs.sarimax_loglike(
+        ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params, exog=X
         )
         assert np.isfinite(ll), f"loglike not finite: {ll}"
@@ -72,7 +72,7 @@ class TestExogLoglike:
         """loglike without exog is unchanged (backward compatible)."""
         y, _ = _generate_arx_data()
         params = np.array([0.5], dtype=np.float64)
-        ll = sarimax_rs.sarimax_loglike(
+        ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params
         )
         assert np.isfinite(ll)
@@ -82,12 +82,12 @@ class TestExogLoglike:
         y, exog = _generate_arx_data(beta=2.0)
         # With exog (true model)
         params_with = np.array([2.0, 0.5], dtype=np.float64)
-        ll_with = sarimax_rs.sarimax_loglike(
+        ll_with = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params_with, exog=exog
         )
         # Without exog (misspecified)
         params_without = np.array([0.5], dtype=np.float64)
-        ll_without = sarimax_rs.sarimax_loglike(
+        ll_without = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params_without
         )
         assert ll_with > ll_without, (
@@ -103,7 +103,7 @@ class TestExogFit:
     def test_fit_with_single_exog(self):
         """fit with 1 exog converges and returns correct param count."""
         y, exog = _generate_arx_data()
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog
         )
         assert result["converged"], "fit with exog should converge"
@@ -114,7 +114,7 @@ class TestExogFit:
     def test_fit_recovers_exog_coeff(self):
         """fit recovers the true exog coefficient approximately."""
         y, exog = _generate_arx_data(n=500, phi=0.5, beta=2.0, seed=123)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -127,7 +127,7 @@ class TestExogFit:
     def test_fit_multi_exog(self):
         """fit with 3 exog variables converges."""
         y, X, betas = _generate_multi_exog_data(n=500, n_exog=3, seed=99)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=X,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -139,7 +139,7 @@ class TestExogFit:
     def test_fit_arma_with_exog(self):
         """fit ARMA(1,1) with exog converges."""
         y, exog = _generate_arx_data(n=300, seed=77)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 1), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -157,7 +157,7 @@ class TestExogForecast:
         """forecast with exog and future_exog returns correct shape."""
         y, exog = _generate_arx_data(n=200, seed=55)
         # Fit first
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -165,7 +165,7 @@ class TestExogForecast:
         steps = 10
         future_exog = np.ones((steps, 1), dtype=np.float64) * 0.5
 
-        fcast = sarimax_rs.sarimax_forecast(
+        fcast = rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
             steps=steps, exog=exog, future_exog=future_exog,
         )
@@ -177,7 +177,7 @@ class TestExogForecast:
     def test_forecast_exog_affects_mean(self):
         """Different future exog values produce different forecast means."""
         y, exog = _generate_arx_data(n=200, beta=2.0, seed=55)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
@@ -186,13 +186,13 @@ class TestExogForecast:
 
         # High exog values
         future_high = np.ones((steps, 1), dtype=np.float64) * 5.0
-        fcast_high = sarimax_rs.sarimax_forecast(
+        fcast_high = rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
             steps=steps, exog=exog, future_exog=future_high,
         )
         # Low exog values
         future_low = np.ones((steps, 1), dtype=np.float64) * (-5.0)
-        fcast_low = sarimax_rs.sarimax_forecast(
+        fcast_low = rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params,
             steps=steps, exog=exog, future_exog=future_low,
         )
@@ -211,13 +211,13 @@ class TestExogResiduals:
     def test_residuals_with_exog(self):
         """residuals with exog returns correct length."""
         y, exog = _generate_arx_data(n=200, seed=33)
-        result = sarimax_rs.sarimax_fit(
+        result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )
         params = np.array(result["params"], dtype=np.float64)
 
-        resid = sarimax_rs.sarimax_residuals(
+        resid = rustima.sarimax_residuals(
             y, (1, 0, 0), (0, 0, 0, 0), params, exog=exog
         )
         assert len(resid["residuals"]) == len(y)
@@ -235,7 +235,7 @@ class TestExogBatch:
         y1, exog1 = _generate_arx_data(n=200, seed=1)
         y2, exog2 = _generate_arx_data(n=200, seed=2)
 
-        results = sarimax_rs.sarimax_batch_fit(
+        results = rustima.sarimax_batch_fit(
             [y1, y2],
             (1, 0, 0), (0, 0, 0, 0),
             enforce_stationarity=False,
@@ -276,8 +276,8 @@ class TestExogStatsmodelsComparison:
         sm_params = sm_result.params  # [exog(1), ar(1)]
         sm_ll = sm_result.llf_obs.sum()
 
-        # Evaluate same params in sarimax_rs
-        rs_ll = sarimax_rs.sarimax_loglike(
+        # Evaluate same params in rustima
+        rs_ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0),
             np.array(sm_params, dtype=np.float64),
             exog=exog,
@@ -306,8 +306,8 @@ class TestExogStatsmodelsComparison:
         sm_result = sm_model.fit(disp=False)
         sm_params = sm_result.params
 
-        # sarimax_rs fit
-        rs_result = sarimax_rs.sarimax_fit(
+        # rustima fit
+        rs_result = rustima.sarimax_fit(
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog,
             enforce_stationarity=False, enforce_invertibility=False,
         )

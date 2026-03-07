@@ -1,5 +1,5 @@
-use sarimax_rs::optimizer;
-use sarimax_rs::types::{SarimaxConfig, SarimaxOrder, Trend};
+use rustima::optimizer;
+use rustima::types::{SarimaxConfig, SarimaxOrder, Trend};
 use std::time::Instant;
 
 fn generate_data(n: usize, phi: f64, seed: u64) -> Vec<f64> {

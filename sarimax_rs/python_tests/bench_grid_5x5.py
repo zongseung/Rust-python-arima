@@ -4,7 +4,7 @@ bench_grid_5x5.py — SARIMA 격자 탐색 벤치마크
   d=1, D=1, s=12  고정
 
 측정:
-  - sarimax_rs: 전체 625개 병렬 grid_search
+  - rustima: 전체 625개 병렬 grid_search
   - statsmodels: AIC 상위 10개 비교 (ΔLL, 속도비)
   - p×q AIC 격자 (P=Q=0)
   - P×Q AIC 격자 (best p,q)
@@ -21,7 +21,7 @@ from itertools import product
 import numpy as np
 
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 from sarimax_py import SARIMAXModel
 
 try:
@@ -67,11 +67,11 @@ print(f"총 {n_total}개 조합: SARIMA(p,{D_FIXED},q)(P,{D_SEA},Q,{S}), p/q/P/Q
 print(f"데이터: n={N_OBS}, 계절 주기 s={S}")
 
 # ─────────────────────────────────────────
-# [1] sarimax_rs 전체 grid_search (Rayon 병렬)
+# [1] rustima 전체 grid_search (Rayon 병렬)
 # ─────────────────────────────────────────
-print(f"\n[1/2] sarimax_rs grid_search ({n_total}개 병렬) ...")
+print(f"\n[1/2] rustima grid_search ({n_total}개 병렬) ...")
 t0 = time.perf_counter()
-rs_raw = sarimax_rs.sarimax_grid_search(y, orders, seasonals)
+rs_raw = rustima.sarimax_grid_search(y, orders, seasonals)
 rs_total_time = time.perf_counter() - t0
 print(f"  완료: {rs_total_time:.2f}s  (평균 {rs_total_time/n_total*1000:.1f}ms/모델)")
 
@@ -231,7 +231,7 @@ lines += [
     f"| 고정 차수 | d={D_FIXED}, D={D_SEA}, s={S} |",
     f"| 총 조합 수 | {n_total} |",
     f"| 데이터 | 계절성 시뮬레이션 (s={S}, n={N_OBS}) |",
-    f"| sarimax_rs 방법 | L-BFGS-B + Nelder-Mead fallback (Rayon 병렬) |",
+    f"| rustima 방법 | L-BFGS-B + Nelder-Mead fallback (Rayon 병렬) |",
     f"",
     "---",
     "",
@@ -246,8 +246,8 @@ lines += [
     f"| 총 조합 | {n_total} |",
     f"| 수렴 성공 | {n_conv} ({n_conv/n_total*100:.1f}%) |",
     f"| 수렴 실패 / 에러 | {n_fail} ({n_fail/n_total*100:.1f}%) |",
-    f"| sarimax_rs 총 시간 | {rs_total_time:.2f}s |",
-    f"| sarimax_rs 평균 시간/모델 | {rs_total_time/n_total*1000:.1f}ms |",
+    f"| rustima 총 시간 | {rs_total_time:.2f}s |",
+    f"| rustima 평균 시간/모델 | {rs_total_time/n_total*1000:.1f}ms |",
     f"| 최적 AIC | {fmt(best['rs_aic'],2)} — SARIMA{best['order']}×{best['seasonal']} |",
     f"| 최소 AIC | {fmt(converged_rows[-1]['rs_aic'],2)} |",
     f"| AIC 중앙값 | {fmt(sorted([r['rs_aic'] for r in converged_rows])[n_conv//2],2)} |",
@@ -259,7 +259,7 @@ lines += [
 # ── 2. 상위 30개 ──
 TOP_SHOW = 30
 lines += [
-    f"## 2. 상위 {TOP_SHOW}개 모델 (AIC 기준, sarimax_rs)",
+    f"## 2. 상위 {TOP_SHOW}개 모델 (AIC 기준, rustima)",
     "",
     "| 순위 | 모델 | n_params | LL | AIC | BIC | 수렴 |",
     "|:---:|------|:-------:|---:|----:|----:|:---:|",
@@ -397,7 +397,7 @@ lines += [
     "| 항목 | 결과 |",
     "|-----|------|",
     f"| 탐색 조합 수 | {n_total}개 |",
-    f"| sarimax_rs 총 시간 | {rs_total_time:.2f}s (Rayon 병렬) |",
+    f"| rustima 총 시간 | {rs_total_time:.2f}s (Rayon 병렬) |",
     f"| 수렴률 | {n_conv/n_total*100:.1f}% |",
     f"| 최적 모델 | SARIMA{best['order']}×{best['seasonal']} |",
     f"| 최적 AIC | {fmt(best['rs_aic'],2)} |",
@@ -410,7 +410,7 @@ if sm_compare and any(r["sm_ll"] is not None for r in sm_compare):
     lines.append(f"| statsmodels 대비 평균 ΔLL (상위 {len(valid_sm)}개) | {avg_dll:.4f} |")
     avg_sm_t = sum(r["sm_ms"] for r in valid_sm) / len(valid_sm)
     rs_avg_t = rs_total_time / n_total * 1000
-    lines.append(f"| sarimax_rs 평균 속도 (vs statsmodels 상위{len(valid_sm)}) | {avg_sm_t/rs_avg_t:.1f}x |")
+    lines.append(f"| rustima 평균 속도 (vs statsmodels 상위{len(valid_sm)}) | {avg_sm_t/rs_avg_t:.1f}x |")
 
 lines += [
     "",

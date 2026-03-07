@@ -9,7 +9,7 @@ Tests cover:
 import numpy as np
 import pytest
 
-import sarimax_rs
+import rustima
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ def white_noise_data():
 def test_white_noise_000_all_methods(white_noise_data, method):
     """ARIMA(0,0,0) — zero free params with concentrate_scale — should return
     a valid result without crashing for every optimizer method."""
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         white_noise_data,
         order=(0, 0, 0),
         seasonal=(0, 0, 0, 0),
@@ -39,7 +39,7 @@ def test_white_noise_000_all_methods(white_noise_data, method):
 @pytest.mark.parametrize("method", ["lbfgsb", "lbfgsb-multi", "nelder-mead"])
 def test_white_noise_000_with_trend_c(white_noise_data, method):
     """ARIMA(0,0,0) with constant trend — has 1 free param (intercept)."""
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         white_noise_data,
         order=(0, 0, 0),
         seasonal=(0, 0, 0, 0),
@@ -52,7 +52,7 @@ def test_white_noise_000_with_trend_c(white_noise_data, method):
 
 def test_white_noise_000_maxiter_0(white_noise_data):
     """maxiter=0 with zero-param model — should return immediately."""
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         white_noise_data,
         order=(0, 0, 0),
         seasonal=(0, 0, 0, 0),
@@ -71,7 +71,7 @@ def test_exog_row_mismatch_single_fit():
     exog_wrong = np.random.default_rng(43).normal(size=(80, 2))  # 80 != 100
 
     with pytest.raises(ValueError, match="exog has 80 rows but endog has 100"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -86,7 +86,7 @@ def test_exog_row_mismatch_single_loglike():
     params = np.array([0.1, 0.5])  # dummy params
 
     with pytest.raises(ValueError, match="exog has 50 rows but endog has 100"):
-        sarimax_rs.sarimax_loglike(
+        rustima.sarimax_loglike(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -102,7 +102,7 @@ def test_exog_row_mismatch_single_forecast():
     params = np.array([0.1, 0.5])
 
     with pytest.raises(ValueError, match="exog has 90 rows but endog has 100"):
-        sarimax_rs.sarimax_forecast(
+        rustima.sarimax_forecast(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -120,7 +120,7 @@ def test_unknown_trend_raises_valueerror():
     y = np.random.default_rng(42).normal(size=100)
 
     with pytest.raises(ValueError, match="unknown trend"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -134,7 +134,7 @@ def test_unknown_trend_raises_for_loglike():
     params = np.array([0.5])
 
     with pytest.raises(ValueError, match="unknown trend"):
-        sarimax_rs.sarimax_loglike(
+        rustima.sarimax_loglike(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -147,7 +147,7 @@ def test_unknown_trend_raises_for_loglike():
 def test_valid_trends_accepted(trend):
     """All valid trend strings should work without error."""
     y = np.random.default_rng(42).normal(size=100)
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y,
         order=(1, 0, 0),
         seasonal=(0, 0, 0, 0),
@@ -164,7 +164,7 @@ def test_zero_param_invalid_method_raises():
     """(0,0,0) with method='foo' should raise, not silently succeed."""
     y = np.random.default_rng(42).normal(size=100)
     with pytest.raises(RuntimeError, match="unknown method"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             order=(0, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -176,7 +176,7 @@ def test_zero_param_invalid_start_params_raises():
     """(0,0,0) with start_params=[1.0] should raise — expected 0 params."""
     y = np.random.default_rng(42).normal(size=100)
     with pytest.raises((ValueError, RuntimeError), match="(length|mismatch)"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             order=(0, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -187,7 +187,7 @@ def test_zero_param_invalid_start_params_raises():
 def test_zero_param_converged_true():
     """Zero-parameter model (0,0,0) should report converged=True."""
     y = np.random.default_rng(42).normal(size=100)
-    result = sarimax_rs.sarimax_fit(
+    result = rustima.sarimax_fit(
         y,
         order=(0, 0, 0),
         seasonal=(0, 0, 0, 0),
@@ -205,7 +205,7 @@ def test_zero_col_exog_row_mismatch_raises():
     exog_bad = np.empty((80, 0), dtype=np.float64)  # 80 != 100
 
     with pytest.raises(ValueError, match="exog has 80 rows but endog has 100"):
-        sarimax_rs.sarimax_fit(
+        rustima.sarimax_fit(
             y,
             order=(1, 0, 0),
             seasonal=(0, 0, 0, 0),
@@ -260,7 +260,7 @@ def test_batch_forecast_short_exog_no_panic():
     future_exog_list = [np.zeros((1, 1), dtype=np.float64)]
 
     with pytest.raises(ValueError, match="exog_list\\[0\\] has 0 rows"):
-        sarimax_rs.sarimax_batch_forecast(
+        rustima.sarimax_batch_forecast(
             series,
             (0, 1, 0),
             (0, 0, 0, 0),
@@ -347,7 +347,7 @@ def test_simple_differencing_resid_propagated():
 
     wrap_resid = np.array(r.resid)
     true_resid = np.array(
-        sarimax_rs.sarimax_residuals(
+        rustima.sarimax_residuals(
             y, (1, 1, 1), (0, 0, 0, 0), params, simple_differencing=True
         )["standardized_residuals"]
     )
@@ -369,7 +369,7 @@ def test_simple_differencing_rust_inference_propagated():
 
     se_wrapper = np.array(r.parameter_summary(inference="rust_hessian")["std_err"])
     se_true = np.array(
-        sarimax_rs.sarimax_inference(
+        rustima.sarimax_inference(
             y, (1, 1, 0), (0, 0, 0, 0), params,
             method="hessian", simple_differencing=True
         )["std_err"]
@@ -413,7 +413,7 @@ def test_near_cancellation_warning_via_python_warnings():
 
     with warn_mod.catch_warnings(record=True) as w:
         warn_mod.simplefilter("always")
-        result = sarimax_rs.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0), maxiter=1)
+        result = rustima.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0), maxiter=1)
 
     # Check warning was captured via Python warnings module
     near_cancel_warnings = [x for x in w if "near-cancellation" in str(x.message)]
@@ -428,7 +428,7 @@ def test_fit_result_warnings_empty_when_no_issue():
     """Normal fit should have empty warnings list."""
     np.random.seed(99)
     y = np.random.randn(100)
-    result = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), maxiter=50)
+    result = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), maxiter=50)
     assert "warnings" in result
     assert isinstance(result["warnings"], list)
 
@@ -438,17 +438,17 @@ def test_forecast_error_message_unified():
     np.random.seed(9)
     y = np.random.randn(40)
     ex = np.random.randn(40, 1)
-    fit = sarimax_rs.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), exog=ex, maxiter=20)
+    fit = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0), exog=ex, maxiter=20)
     params = np.array(fit["params"])
 
     # Single forecast
     with pytest.raises(ValueError, match="future_exog is required"):
-        sarimax_rs.sarimax_forecast(
+        rustima.sarimax_forecast(
             y, (1, 0, 0), (0, 0, 0, 0), params, steps=3, exog=ex
         )
 
     # Batch forecast — returns error dict, not exception
-    res = sarimax_rs.sarimax_batch_forecast(
+    res = rustima.sarimax_batch_forecast(
         [y], (1, 0, 0), (0, 0, 0, 0), [params], steps=3, exog_list=[ex]
     )
     assert "error" in res[0]
@@ -631,7 +631,7 @@ def test_get_prediction_oos_simple_differencing():
 def test_forecast_short_series_seasonal_simple_diff_no_panic():
     """n < s with seasonal simple_differencing should not panic."""
     y = np.arange(5.0)  # n=5 < s=12
-    out = sarimax_rs.sarimax_forecast(
+    out = rustima.sarimax_forecast(
         y,
         (0, 0, 0),
         (0, 1, 0, 12),

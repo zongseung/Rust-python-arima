@@ -1,7 +1,7 @@
 """
 실무 고차 ARIMA/SARIMA 모델 정확도 검증
 
-실무에서 자주 등장하는 고차 모델을 대상으로 sarimax_rs vs statsmodels 비교:
+실무에서 자주 등장하는 고차 모델을 대상으로 rustima vs statsmodels 비교:
 
 비계절:
   - ARIMA(4,1,1)   : 일별 에너지 수요 (주간 자기상관)
@@ -25,7 +25,7 @@
 
 import numpy as np
 import pytest
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 
 # 고차 모델 허용 오차: 파라미터 추정치가 여러 local optimum 근처에 분산될 수 있음
@@ -37,7 +37,7 @@ AIC_TOL = 20.0        # AIC 허용 오차 (파라미터 수 많아짐)
 LOGLIKE_ONLY_TOL = 15.0
 
 # 비교 방향: rs_loglike >= sm_loglike - TOL 이면 OK
-# (sarimax_rs가 statsmodels보다 같거나 더 좋은 해를 찾은 경우 항상 OK)
+# (rustima가 statsmodels보다 같거나 더 좋은 해를 찾은 경우 항상 OK)
 WORSE_THAN_SM_TOL = 15.0  # rs가 sm보다 이 값 이상 나쁠 때만 FAIL
 
 
@@ -172,7 +172,7 @@ def make_hourly_data_mid(n=600, s=24, seed=75):
 # ── 공통 비교 함수 ──────────────────────────────────────────────────────────
 
 def compare_fit(y, order, seasonal=(0, 0, 0, 0), label=""):
-    """sarimax_rs vs statsmodels 비교. 오차 dict 반환."""
+    """rustima vs statsmodels 비교. 오차 dict 반환."""
     sm_model = sm.tsa.SARIMAX(
         y,
         order=order,
@@ -184,7 +184,7 @@ def compare_fit(y, order, seasonal=(0, 0, 0, 0), label=""):
     )
     sm_res = sm_model.fit(disp=False)
 
-    rs_res = sarimax_rs.sarimax_fit(
+    rs_res = rustima.sarimax_fit(
         y,
         order=order,
         seasonal=tuple(seasonal),
@@ -228,7 +228,7 @@ class TestHighOrderNonSeasonal:
     def _assert_loglike(self, r, tol=LOGLIKE_TOL):
         """rs loglike가 sm보다 tol 이상 나쁘지 않으면 OK."""
         assert r["rs_worse_by"] < tol, (
-            f"{r['label']} sarimax_rs가 statsmodels보다 {r['rs_worse_by']:.2f} 더 나쁨 "
+            f"{r['label']} rustima가 statsmodels보다 {r['rs_worse_by']:.2f} 더 나쁨 "
             f"(sm={r['sm_loglike']:.2f}, rs={r['rs_loglike']:.2f})"
         )
 
@@ -438,7 +438,7 @@ def test_high_order_comprehensive_report():
         try:
             y = fn(**kwargs)
             r = compare_fit(y, order, seasonal, label=label)
-            # rs_worse_by < 0: sarimax_rs가 statsmodels보다 더 좋음 (항상 OK)
+            # rs_worse_by < 0: rustima가 statsmodels보다 더 좋음 (항상 OK)
             ok = r["rs_worse_by"] < LOGLIKE_ONLY_TOL
             status = "✓ OK" if ok else "✗ FAIL"
             better = " ★" if r["rs_worse_by"] < 0 else ""
@@ -455,7 +455,7 @@ def test_high_order_comprehensive_report():
 
     print("=" * 115)
     print(f"Total: {len(configs)} models tested, {len(failures)} failures")
-    print("(★ = sarimax_rs가 statsmodels보다 더 좋은 해 발견, WorsBy < 0)")
+    print("(★ = rustima가 statsmodels보다 더 좋은 해 발견, WorsBy < 0)")
     if failures:
         print("Failures:")
         for f in failures:
@@ -483,22 +483,22 @@ def _gen_hourly_s24(n_days=14):
 def test_sarima_s24_110_100_fit():
     """SARIMA(1,1,0)(1,0,0,24) — simplest s=24 seasonal AR fit."""
     y = _gen_hourly_s24(14)
-    result = sarimax_rs.sarimax_fit(y, (1, 1, 0), (1, 0, 0, 24))
+    result = rustima.sarimax_fit(y, (1, 1, 0), (1, 0, 0, 24))
     assert np.isfinite(result["loglike"])
 
 
 def test_sarima_s24_111_111_fit():
     """SARIMA(1,1,1)(1,1,1,24) — full seasonal model (k_states≈51)."""
     y = _gen_hourly_s24(14)
-    result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
+    result = rustima.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
     assert np.isfinite(result["loglike"])
 
 
 def test_sarima_s24_forecast_48h():
     """SARIMA(1,1,1)(1,1,1,24) fit + 48-step forecast — all values finite."""
     y = _gen_hourly_s24(14)
-    result = sarimax_rs.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
-    fc = sarimax_rs.sarimax_forecast(
+    result = rustima.sarimax_fit(y, (1, 1, 1), (1, 1, 1, 24))
+    fc = rustima.sarimax_forecast(
         y, (1, 1, 1), (1, 1, 1, 24), np.array(result["params"]), steps=48,
     )
     assert len(fc["mean"]) == 48

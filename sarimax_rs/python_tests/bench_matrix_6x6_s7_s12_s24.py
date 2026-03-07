@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 
 # ─────────────────────────────────────────
 # 설정
@@ -100,7 +100,7 @@ def run_period(y, s, label):
 
     print(f"\n[{label}] {len(orders)} 조합 실행 중...")
     t0 = time.perf_counter()
-    results = sarimax_rs.sarimax_grid_search(y, orders, seasonals)
+    results = rustima.sarimax_grid_search(y, orders, seasonals)
     elapsed = time.perf_counter() - t0
 
     # 수렴 통계
@@ -142,7 +142,7 @@ def main():
     lines = []
     lines.append("# 6×6 차수 매트릭스 벤치마크\n")
     lines.append(f"> 생성: {datetime.now():%Y-%m-%d %H:%M}  ")
-    lines.append(f"> sarimax_rs v{sarimax_rs.version()}  ")
+    lines.append(f"> rustima v{rustima.version()}  ")
     lines.append(f"> 범위: p,q,P,Q ∈ {{0..5}}, d=1, D=1\n")
 
     # ── 요약 ──

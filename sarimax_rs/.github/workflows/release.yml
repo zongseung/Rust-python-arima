@@ -45,7 +45,7 @@ jobs:
           CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out dist/
 
       - name: Install wheel
-        run: uv pip install --force-reinstall dist/sarimax_rs-*.whl
+        run: uv pip install --force-reinstall dist/rustima-*.whl
 
       - name: Run smoke tests
         run: .venv/bin/python -m pytest python_tests/test_wheel_smoke.py -v --tb=short

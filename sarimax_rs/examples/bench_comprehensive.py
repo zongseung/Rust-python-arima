@@ -1,5 +1,5 @@
 """
-종합 벤치마크: sarimax_rs (Rust+Rayon) vs statsmodels
+종합 벤치마크: rustima (Rust+Rayon) vs statsmodels
 
 1. 배치 적합 (N=100, 1000, 5000): Rust batch_fit vs statsmodels 순차
 2. 결과 검증: loglike/forecast 오차 < 1e-4
@@ -14,7 +14,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sarimax_rs import sarimax_fit, sarimax_forecast, sarimax_batch_fit
+from rustima import sarimax_fit, sarimax_forecast, sarimax_batch_fit
 
 # ══════════════════════════════════════════════════════════════════
 # Helpers
@@ -173,7 +173,7 @@ def test_parallel_scaling():
         code = f"""
 import os, time, json, numpy as np
 os.environ["RAYON_NUM_THREADS"] = "{nt}"
-from sarimax_rs import sarimax_batch_fit
+from rustima import sarimax_batch_fit
 
 series = []
 for i in range({N}):
@@ -263,7 +263,7 @@ print(json.dumps({{"rss_mb": rss}}))
         code_rs = f"""
 import os, resource, json, numpy as np
 os.environ["RAYON_NUM_THREADS"] = "4"
-from sarimax_rs import sarimax_batch_fit
+from rustima import sarimax_batch_fit
 
 series = []
 for i in range({N}):
@@ -315,7 +315,7 @@ print(json.dumps({{"rss_mb": rss}}))
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print("\n" + "█" * 85)
-    print("  종합 벤치마크: sarimax_rs (Rust+Rayon) vs statsmodels")
+    print("  종합 벤치마크: rustima (Rust+Rayon) vs statsmodels")
     print("█" * 85)
 
     test_accuracy()

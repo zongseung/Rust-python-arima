@@ -1,7 +1,7 @@
 """
 bench_v5_report.py — v5 종합 벤치마크
 측정 항목:
-  1. 단일 모델 속도 및 우도 비교 (sarimax_rs vs statsmodels)
+  1. 단일 모델 속도 및 우도 비교 (rustima vs statsmodels)
   2. 배치 처리 속도
   3. auto_arima 벤치마크 (일단위 s=7, 시간단위 s=24)
 결과는 Markdown 파일로 저장.
@@ -20,9 +20,9 @@ try:
 except ImportError:
     HAS_SM = False
 
-# sarimax_rs path
+# rustima path
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 from sarimax_py import SARIMAXModel, auto_arima
 
 # ─────────────────────────────────────────
@@ -122,7 +122,7 @@ def bench_single():
         sea_ = spec["seasonal"]
         exog = spec.get("exog", None)
 
-        # --- sarimax_rs ---
+        # --- rustima ---
         def fit_rs(y=y, ord_=ord_, sea_=sea_, exog=exog):
             model = SARIMAXModel(y, order=ord_, seasonal_order=sea_, exog=exog)
             return model.fit()
@@ -238,7 +238,7 @@ def bench_batch():
 
             # RS batch
             def fit_rs_batch(s=series, o=order, sea=seasonal, el=exog_list):
-                return sarimax_rs.sarimax_batch_fit(s, o, sea, exog_list=el)
+                return rustima.sarimax_batch_fit(s, o, sea, exog_list=el)
             _, rs_t = timeit(fit_rs_batch, repeat=3)
 
             # SM sequential
@@ -358,12 +358,12 @@ def bench_grid_parallel():
 
         # 병렬
         def par():
-            return sarimax_rs.sarimax_grid_search(y, pq, seas)
+            return rustima.sarimax_grid_search(y, pq, seas)
         _, par_t = timeit(par, repeat=3)
 
         # 순차
         def seq():
-            return [sarimax_rs.sarimax_fit(y, o, s) for o, s in zip(pq, seas)]
+            return [rustima.sarimax_fit(y, o, s) for o, s in zip(pq, seas)]
         _, seq_t = timeit(seq, repeat=3)
 
         speedup = seq_t / par_t if par_t > 0 else None
@@ -396,7 +396,7 @@ def fmt(v, decimals=2):
 def build_md(single, batch, auto, grid_par):
     lines = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    sm_note = "통합 비교(statsmodels)" if HAS_SM else "statsmodels 미설치 — sarimax_rs 단독"
+    sm_note = "통합 비교(statsmodels)" if HAS_SM else "statsmodels 미설치 — rustima 단독"
 
     lines += [
         f"# sarimax-rs v5 벤치마크 리포트",

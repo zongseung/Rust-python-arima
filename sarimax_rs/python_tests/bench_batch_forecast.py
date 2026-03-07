@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "python")
-import sarimax_rs
+import rustima
 
 # ─────────────────────────────────────────
 # 데이터 생성 유틸
@@ -98,18 +98,18 @@ def check_accuracy(spec, n_series=10):
     series = [spec["gen"](n_obs, seed) for seed in range(n_series)]
 
     # 각 시리즈 fit
-    fit_results = sarimax_rs.sarimax_batch_fit(series, order, seasonal)
+    fit_results = rustima.sarimax_batch_fit(series, order, seasonal)
     params_list = [np.array(r["params"]) for r in fit_results]
 
     # batch forecast
-    batch_fc = sarimax_rs.sarimax_batch_forecast(
+    batch_fc = rustima.sarimax_batch_forecast(
         series, order, seasonal, params_list, steps=STEPS, alpha=ALPHA,
     )
 
     # sequential forecast
     max_diffs = {"mean": 0.0, "variance": 0.0, "ci_lower": 0.0, "ci_upper": 0.0}
     for i in range(n_series):
-        seq_fc = sarimax_rs.sarimax_forecast(
+        seq_fc = rustima.sarimax_forecast(
             series[i], order, seasonal, params_list[i], steps=STEPS, alpha=ALPHA,
         )
         for key in max_diffs:
@@ -130,14 +130,14 @@ def bench_speed(spec, n_series):
     n_obs    = spec["n_obs"]
 
     series = [spec["gen"](n_obs, seed) for seed in range(n_series)]
-    fit_results = sarimax_rs.sarimax_batch_fit(series, order, seasonal)
+    fit_results = rustima.sarimax_batch_fit(series, order, seasonal)
     params_list = [np.array(r["params"]) for r in fit_results]
 
     # batch 속도
     batch_times = []
     for _ in range(REPEATS):
         t0 = time.perf_counter()
-        sarimax_rs.sarimax_batch_forecast(
+        rustima.sarimax_batch_forecast(
             series, order, seasonal, params_list, steps=STEPS, alpha=ALPHA,
         )
         batch_times.append(time.perf_counter() - t0)
@@ -147,7 +147,7 @@ def bench_speed(spec, n_series):
     for _ in range(REPEATS):
         t0 = time.perf_counter()
         for i in range(n_series):
-            sarimax_rs.sarimax_forecast(
+            rustima.sarimax_forecast(
                 series[i], order, seasonal, params_list[i], steps=STEPS, alpha=ALPHA,
             )
         seq_times.append(time.perf_counter() - t0)
@@ -167,7 +167,7 @@ def main():
     lines = []
     lines.append("# Batch Forecast 벤치마크\n")
     lines.append(f"> 생성: {datetime.now():%Y-%m-%d %H:%M}  ")
-    lines.append(f"> sarimax_rs v{sarimax_rs.version()}\n")
+    lines.append(f"> rustima v{rustima.version()}\n")
 
     # ── 정합성 검증 ──
     lines.append("## 1. 정합성 검증 (batch vs sequential)\n")

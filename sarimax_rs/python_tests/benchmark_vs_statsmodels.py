@@ -1,4 +1,4 @@
-"""Comprehensive sarimax_rs vs statsmodels benchmark.
+"""Comprehensive rustima vs statsmodels benchmark.
 
 Measures:
 1. Log-likelihood difference
@@ -23,7 +23,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
-import sarimax_rs
+import rustima
 from statsmodels.tsa.statespace.sarimax import SARIMAX as SM_SARIMAX
 
 warnings.filterwarnings("ignore")
@@ -115,7 +115,7 @@ def run_bench(label, order, seasonal_order, y, exog=None, n_reps=REPEAT):
     r = BenchResult(label=label, order=order, seasonal_order=seasonal_order,
                     n_obs=n, n_params=n_params)
     try:
-        # ── sarimax_rs ────────────────────────────────────────────────────
+        # ── rustima ────────────────────────────────────────────────────
         times_rs = []
         rs_result = None
         for _ in range(n_reps):
@@ -123,7 +123,7 @@ def run_bench(label, order, seasonal_order, y, exog=None, n_reps=REPEAT):
             kw = {}
             if exog is not None:
                 kw["exog"] = exog.astype(np.float64)
-            rs_result = sarimax_rs.sarimax_fit(
+            rs_result = rustima.sarimax_fit(
                 y.astype(np.float64), order, seasonal_order,
                 enforce_stationarity=False, enforce_invertibility=False,
                 **kw
@@ -153,7 +153,7 @@ def run_bench(label, order, seasonal_order, y, exog=None, n_reps=REPEAT):
         r.sm_llf = sm_result.llf
         r.sm_aic = sm_result.aic
         # statsmodels params exclude sigma2 when concentrate_scale=True;
-        # slice to match sarimax_rs param count (exclude last if mismatch)
+        # slice to match rustima param count (exclude last if mismatch)
         sm_p = np.array(sm_result.params)
         if len(sm_p) > n_params:
             sm_p = sm_p[:n_params]
@@ -262,11 +262,11 @@ class AutoBenchResult:
     pm_seasonal: Optional[tuple] = None
     order_match: bool = False
     # AIC from each library's own engine (NOT comparable cross-engine)
-    rs_aic_own: float = np.nan   # sarimax_rs AIC for rs-selected model
+    rs_aic_own: float = np.nan   # rustima AIC for rs-selected model
     pm_aic_own: float = np.nan   # pmdarima AIC for pm-selected model
-    # AIC re-fit with sarimax_rs engine for FAIR cross-model comparison
-    rs_aic_refit: float = np.nan  # sarimax_rs re-fit of rs-selected model
-    pm_aic_refit: float = np.nan  # sarimax_rs re-fit of pm-selected model
+    # AIC re-fit with rustima engine for FAIR cross-model comparison
+    rs_aic_refit: float = np.nan  # rustima re-fit of rs-selected model
+    pm_aic_refit: float = np.nan  # rustima re-fit of pm-selected model
     aic_diff_refit: float = np.nan  # rs_aic_refit - pm_aic_refit (fair)
     # Models evaluated
     rs_n_models: int = 0
@@ -291,7 +291,7 @@ def run_auto_bench(label, y, s, max_p=3, max_q=3, max_P=2, max_Q=2,
     seasonal = s > 1
 
     try:
-        # ── sarimax_rs auto_arima ─────────────────────────────────────────
+        # ── rustima auto_arima ─────────────────────────────────────────
         times_rs = []
         rs_res = None
         for _ in range(n_reps):
@@ -334,17 +334,17 @@ def run_auto_bench(label, y, s, max_p=3, max_q=3, max_P=2, max_Q=2,
         r.pm_aic_own = pm_res.aic()
         r.pm_time = np.median(times_pm)
 
-        # ── Fair cross-model comparison: re-fit BOTH with sarimax_rs ────
-        # sarimax_rs AIC for rs-selected model
-        rs_refit = sarimax_rs.sarimax_fit(
+        # ── Fair cross-model comparison: re-fit BOTH with rustima ────
+        # rustima AIC for rs-selected model
+        rs_refit = rustima.sarimax_fit(
             y.astype(np.float64), r.rs_order, r.rs_seasonal,
             enforce_stationarity=False, enforce_invertibility=False,
         )
         r.rs_aic_refit = rs_refit["aic"]
 
-        # sarimax_rs AIC for pm-selected model
+        # rustima AIC for pm-selected model
         pm_seasonal_full = r.pm_seasonal if len(r.pm_seasonal) == 4 else (*r.pm_seasonal, s)
-        pm_refit = sarimax_rs.sarimax_fit(
+        pm_refit = rustima.sarimax_fit(
             y.astype(np.float64), r.pm_order, pm_seasonal_full,
             enforce_stationarity=False, enforce_invertibility=False,
         )

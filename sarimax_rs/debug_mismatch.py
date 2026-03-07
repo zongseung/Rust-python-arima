@@ -6,7 +6,7 @@ Debug cross-loglike mismatches for:
 Compare step-by-step: manual Python Kalman filter (no steady-state) vs sarimax_rs.
 """
 import numpy as np
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 
 np.random.seed(42)
@@ -182,7 +182,7 @@ def diagnose_model(label, order, seasonal, use_exog=False):
 
     # Evaluate loglike on both sides at sm_params
     sm_ll = sm_model.loglike(sm_params)
-    rs_ll = sarimax_rs.sarimax_loglike(
+    rs_ll = rustima.sarimax_loglike(
         y, order=order, seasonal=seasonal,
         params=sm_params, exog=exog_arg,
         enforce_stationarity=False,

@@ -13,7 +13,7 @@ This script:
 """
 
 import numpy as np
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 
 # ===========================================================================
@@ -109,7 +109,7 @@ print(f"  param names = {list(sm_res.param_names)}")
 
 # --- sarimax_rs ---
 subsection("2b. sarimax_rs fit")
-rs_result = sarimax_rs.sarimax_fit(
+rs_result = rustima.sarimax_fit(
     y,
     order=ORDER,
     seasonal=SEASONAL,
@@ -139,7 +139,7 @@ sm_loglike_eval = sm_model.loglike(sm_params)
 print(f"  statsmodels loglike(sm_params) = {sm_loglike_eval:.12f}")
 
 # Evaluate sarimax_rs loglike at statsmodels params
-rs_loglike_eval = sarimax_rs.sarimax_loglike(
+rs_loglike_eval = rustima.sarimax_loglike(
     y,
     order=ORDER,
     seasonal=SEASONAL,

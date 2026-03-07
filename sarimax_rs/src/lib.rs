@@ -1168,7 +1168,7 @@ fn sarimax_diagnostics<'py>(
 
 /// Python module definition.
 #[pymodule]
-fn sarimax_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rustima(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_fit, m)?)?;

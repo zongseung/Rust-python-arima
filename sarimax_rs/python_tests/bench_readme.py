@@ -1,6 +1,6 @@
 """Comprehensive benchmark for README: accuracy + speed comparison.
 
-Runs sarimax_rs vs statsmodels on multiple model configurations,
+Runs rustima vs statsmodels on multiple model configurations,
 comparing both numerical accuracy and computation speed.
 
 Usage:
@@ -15,7 +15,7 @@ import warnings
 import numpy as np
 import statsmodels.api as sm
 
-import sarimax_rs
+import rustima
 
 warnings.filterwarnings("ignore")
 
@@ -106,9 +106,9 @@ MODELS = [
 ]
 
 def run_accuracy():
-    """Compare parameter estimates and loglike between sarimax_rs and statsmodels."""
+    """Compare parameter estimates and loglike between rustima and statsmodels."""
     print("\n" + "=" * 80)
-    print("ACCURACY COMPARISON: sarimax_rs vs statsmodels")
+    print("ACCURACY COMPARISON: rustima vs statsmodels")
     print("=" * 80)
 
     rows = []
@@ -116,8 +116,8 @@ def run_accuracy():
         y = data_fn()
         n_obs = len(y)
 
-        # --- sarimax_rs ---
-        rs = sarimax_rs.sarimax_fit(
+        # --- rustima ---
+        rs = rustima.sarimax_fit(
             y, order, seasonal,
             enforce_stationarity=True,
             enforce_invertibility=True,
@@ -186,7 +186,7 @@ def run_accuracy():
 def run_speed():
     """Compare computation speed across model configurations."""
     print("\n" + "=" * 80)
-    print("SPEED COMPARISON: sarimax_rs vs statsmodels")
+    print("SPEED COMPARISON: rustima vs statsmodels")
     print("=" * 80)
 
     configs = [
@@ -206,9 +206,9 @@ def run_speed():
     for name, data_fn, order, seasonal, n_rep in configs:
         y = data_fn()
 
-        # sarimax_rs
+        # rustima
         def rs_fit():
-            return sarimax_rs.sarimax_fit(
+            return rustima.sarimax_fit(
                 y, order, seasonal,
                 enforce_stationarity=True,
                 enforce_invertibility=True,
@@ -253,7 +253,7 @@ def run_speed():
         series = [gen_ar1(200, seed=i) for i in range(bs)]
 
         def rs_batch():
-            return sarimax_rs.sarimax_batch_fit(
+            return rustima.sarimax_batch_fit(
                 series, (1, 0, 0), (0, 0, 0, 0),
                 enforce_stationarity=True,
                 enforce_invertibility=True,
@@ -279,7 +279,7 @@ def run_speed():
     # --- Forecast comparison ---
     print("\n--- Forecast Speed (10 steps, after fit) ---")
     y = gen_arima111()
-    rs_res = sarimax_rs.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
+    rs_res = rustima.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
     rs_params = np.array(rs_res["params"])
 
     sm_model = sm.tsa.SARIMAX(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0),
@@ -287,7 +287,7 @@ def run_speed():
     sm_res = sm_model.fit(disp=False)
 
     def rs_fc():
-        return sarimax_rs.sarimax_forecast(y, (1, 1, 1), (0, 0, 0, 0), rs_params, steps=10)
+        return rustima.sarimax_forecast(y, (1, 1, 1), (0, 0, 0, 0), rs_params, steps=10)
 
     def sm_fc():
         return sm_res.get_forecast(steps=10)
@@ -305,11 +305,11 @@ def run_speed():
 # ---------------------------------------------------------------------------
 
 def main():
-    print("sarimax_rs vs statsmodels — Comprehensive Comparison")
+    print("rustima vs statsmodels — Comprehensive Comparison")
     print(f"Platform: {platform.platform()}")
     print(f"CPU: {platform.processor() or platform.machine()}")
     print(f"Python: {sys.version.split()[0]}")
-    print(f"sarimax_rs: {sarimax_rs.version()}")
+    print(f"rustima: {rustima.version()}")
     print(f"statsmodels: {sm.__version__}")
 
     accuracy_rows = run_accuracy()
@@ -327,7 +327,7 @@ def main():
         print(f"| {r['name']} | {r['n_obs']} | {r['n_params']} | {r['param_err']:.6f} | {r['ll_err']:.4f} | {r['aic_err']:.4f} |")
 
     print("\n### Speed (single fit)\n")
-    print("| Model | sarimax_rs | statsmodels | Speedup |")
+    print("| Model | rustima | statsmodels | Speedup |")
     print("|-------|:----------:|:-----------:|:-------:|")
     for r in speed_rows:
         sp = f"**{r['speedup']:.1f}x**" if r['speedup'] > 1.0 else f"{r['speedup']:.1f}x"

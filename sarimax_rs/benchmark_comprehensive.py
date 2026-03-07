@@ -4,7 +4,7 @@ Multiple ARIMA/SARIMA/SARIMAX orders with accuracy and speed comparison.
 """
 import time
 import numpy as np
-import sarimax_rs
+import rustima
 import statsmodels.api as sm
 
 np.random.seed(42)
@@ -69,7 +69,7 @@ for label, order, seasonal, use_exog, enforce_stat, enforce_inv in MODELS:
         # ── sarimax_rs fit ──
         seasonal_arg = seasonal if s > 0 else (0,0,0,0)
         t0 = time.perf_counter()
-        rs_result = sarimax_rs.sarimax_fit(
+        rs_result = rustima.sarimax_fit(
             y, order=order, seasonal=seasonal_arg,
             exog=exog_arg,
             enforce_stationarity=enforce_stat,
@@ -133,7 +133,7 @@ for label, order, seasonal, use_exog, enforce_stat, enforce_inv in CROSS_MODELS:
         sm_params = np.array(sm_res.params)
 
         sm_ll = sm_model.loglike(sm_params)
-        rs_ll = sarimax_rs.sarimax_loglike(
+        rs_ll = rustima.sarimax_loglike(
             y, order=order, seasonal=seasonal if s > 0 else (0,0,0,0),
             params=sm_params, exog=exog_arg,
             enforce_stationarity=enforce_stat,

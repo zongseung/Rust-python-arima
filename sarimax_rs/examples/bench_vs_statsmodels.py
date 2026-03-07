@@ -1,5 +1,5 @@
 """
-Direct benchmark: sarimax_rs (Rust) vs statsmodels (Python)
+Direct benchmark: rustima (Rust) vs statsmodels (Python)
 Includes s=12 and s=24 seasonal models.
 """
 import time
@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sarimax_rs import sarimax_fit
+from rustima import sarimax_fit
 
 # ──────────────────────────────────────────────────────────────────
 # Data generator (deterministic, reproducible)
