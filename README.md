@@ -937,8 +937,9 @@ Grid search with Rayon parallelization is **up to 12x faster** than stepwise on 
 rustima/
 ├── Cargo.toml                      # Rust dependencies and build config
 ├── pyproject.toml                   # Python package config (maturin)
+├── build.rs                         # cc build script (compiles lbfgsb_c/)
 │
-├── src/                             # Rust engine (16 modules, ~10,600 LOC)
+├── src/                             # Rust engine (19 modules, ~11,960 LOC)
 │   ├── lib.rs                       # PyO3 module entry point (11 Python functions)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror-based)
@@ -954,7 +955,10 @@ rustima/
 │   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
 │   ├── forecast.rs                  # h-step prediction + residuals + z_score
 │   ├── batch.rs                     # Rayon-based batch/grid search parallel processing
-│   └── pipeline.rs                  # Shared helpers (kalman_eval, kalman_filter_full)
+│   ├── pipeline.rs                  # Shared helpers (kalman_eval, kalman_filter_full)
+│   ├── lbfgsb_ffi.rs                # L-BFGS-B C FFI bindings (unsafe extern)
+│   ├── lbfgsb_wrapper.rs            # Safe Rust wrapper around L-BFGS-B C solver
+│   └── test_helpers.rs              # Shared test utilities (cfg(test) only)
 │
 ├── python/
 │   └── sarimax_py/                  # Python wrapper layer
@@ -962,10 +966,17 @@ rustima/
 │       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
 │       └── auto.py                  # auto_arima, AutoARIMAResult
 │
-├── python_tests/                    # Python integration tests (371 tests)
+├── python_tests/                    # Python integration tests (371 tests, 16 modules)
 │   ├── conftest.py                  # pytest fixtures
 │   ├── generate_fixtures.py         # statsmodels reference data generator
-│   └── test_*.py                    # 16 test modules
+│   └── test_*.py                    # test_fit, test_forecast, test_batch, test_exog, etc.
+│
+├── lbfgsb_c/                        # L-BFGS-B C source (compiled via cc build-dep)
+│   ├── lbfgsb.c                     # Main L-BFGS-B solver
+│   ├── lbfgsb.h                     # Header
+│   ├── linesearch.c                 # Line search subroutine
+│   ├── linpack.c                    # LINPACK routines
+│   └── miniCBLAS.c                  # Minimal CBLAS routines
 │
 ├── tests/fixtures/                  # statsmodels reference data (JSON)
 │
@@ -983,12 +994,16 @@ rustima/
 | nalgebra | 0.34 | Dynamic matrix/vector operations (DMatrix, DVector) |
 | argmin | 0.11 | L-BFGS, Nelder-Mead optimization framework |
 | argmin-math | 0.5 | nalgebra integration for argmin |
-| lbfgsb | 0.1 | L-BFGS-B bounded optimization (Fortran wrapper) |
+| anyhow | 1 | Error context propagation |
 | statrs | 0.18 | Statistical distributions |
 | rayon | 1.10 | Data parallelism (work-stealing thread pool) |
 | pyo3 | 0.28 | Python C-API bindings |
 | numpy | 0.28 | NumPy array zero-copy interop |
 | thiserror | 2 | Error type macros |
+| serde / serde_json | 1 | Test fixture serialization |
+| cc | 1 | C compiler driver (build-dep, compiles `lbfgsb_c/`) |
+
+> **Note:** L-BFGS-B is not a crate dependency — it is compiled from vendored C source (`lbfgsb_c/`) via `cc` and called through a safe Rust FFI wrapper (`lbfgsb_ffi.rs` + `lbfgsb_wrapper.rs`).
 
 ### Python (`pyproject.toml`)
 
@@ -996,9 +1011,12 @@ rustima/
 |---------|---------|
 | numpy >= 1.24 | Array operations (runtime) |
 | polars >= 1.0 | DataFrame output (runtime) |
+| ipykernel >= 7.2 | Jupyter notebook integration (runtime) |
 | pytest >= 7.0 | Test framework (dev) |
 | statsmodels >= 0.14 | Reference result generation (dev) |
 | scipy >= 1.10 | Statistical utilities (dev) |
+| pandas >= 2.0 | Benchmark comparison utilities (dev) |
+| matplotlib >= 3.7 | Visualization for benchmarks/reports (dev) |
 | maturin >= 1.7 | Rust → Python wheel build (dev) |
 
 ## Development
@@ -1007,7 +1025,7 @@ rustima/
 # Rust unit tests (155 tests)
 cargo test --all-targets
 
-# Python integration tests (371 tests, wheel build required)
+# Python integration tests (371 tests, wheel build required first)
 uv run maturin develop --release
 uv run python -m pytest python_tests/ -v
 
@@ -1029,21 +1047,23 @@ uv run python python_tests/generate_fixtures.py
 | Category | Tests | Coverage |
 |----------|:-----:|---------|
 | Rust unit tests | 155 | types, params, polynomial, state_space, initialization, kalman, score, css, inference, start_params, optimizer, forecast, batch |
-| Python smoke | 2 | import, version |
-| Python fit | 9 | fitting, AIC/BIC, convergence, start_params, Nelder-Mead |
+| Python smoke | 14 | import, version, basic API checks |
+| Python fit | 13 | fitting, AIC/BIC, convergence, start_params, Nelder-Mead |
 | Python forecast | 9 | forecast mean, CI, residuals vs statsmodels |
-| Python validation | 39 | param length, seasonal D/s, bounds, exog, NaN/Inf |
+| Python input validation | 64 | param length, seasonal D/s, bounds, exog, NaN/Inf |
 | Python batch | 6 | batch fit/forecast, parallel perf, error isolation |
 | Python exog | 14 | exogenous regressors, future_exog, batch exog |
-| Python accuracy | 20 | multi-order cross-validation vs statsmodels |
-| Python high-order | 17 | ARIMA(4–5), SARIMA(4,1,4)(2,1,2,12), s=24 |
-| Python inference | — | Rust Hessian/OPG inference |
+| Python multi-order accuracy | 27 | multi-order cross-validation vs statsmodels |
+| Python high-order accuracy | 20 | ARIMA(4–5), SARIMA(4,1,4)(2,1,2,12), s=24 |
+| Python inference | 70 | Rust Hessian/OPG inference, statsmodels parity |
 | Python trend | 16 | trend='n','c','t','ct' fit/forecast/residuals/summary |
 | Python Polars | 14 | to_dataframe(), params_table(), PredictionResult, HQIC |
 | Python auto_arima | 19 | stepwise, grid, history, criterion, summary |
-| Python safety guards | — | edge case safety, simple differencing |
-| Python parameter summary | 59 | param_names, inference modes, statsmodels parity |
-| **Total** | **526+** | |
+| Python safety guards | 44 | edge case safety, bounds checking |
+| Python simple differencing | 22 | simple_differencing=True path |
+| Python matrix tier A | 12 | state-space matrix construction validation |
+| Python prediction quality | 7 | in-sample/out-of-sample prediction accuracy |
+| **Total** | **526** | 155 Rust + 371 Python |
 
 ## Limitations
 

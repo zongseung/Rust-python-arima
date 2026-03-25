@@ -860,8 +860,9 @@ Grid search의 Rayon 병렬화로 시간단위(s=24) 데이터에서 stepwise �
 rustima/
 ├── Cargo.toml                      # Rust 의존성 및 빌드 설정
 ├── pyproject.toml                   # Python 패키지 설정(maturin)
+├── build.rs                         # cc 빌드 스크립트 (lbfgsb_c/ 컴파일)
 │
-├── src/                             # Rust 엔진 (16 모듈, ~10,600 LOC)
+├── src/                             # Rust 엔진 (19 모듈, ~11,960 LOC)
 │   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 11개)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror 기반)
@@ -877,7 +878,10 @@ rustima/
 │   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
 │   ├── forecast.rs                  # h-step 예측 + 잔차 + z_score
 │   ├── batch.rs                     # Rayon 기반 배치/grid search 병렬 처리
-│   └── pipeline.rs                  # 공유 헬퍼 (kalman_eval, kalman_filter_full)
+│   ├── pipeline.rs                  # 공유 헬퍼 (kalman_eval, kalman_filter_full)
+│   ├── lbfgsb_ffi.rs                # L-BFGS-B C FFI 바인딩 (unsafe extern)
+│   ├── lbfgsb_wrapper.rs            # L-BFGS-B C solver의 안전한 Rust 래퍼
+│   └── test_helpers.rs              # 공유 테스트 유틸리티 (cfg(test) 전용)
 │
 ├── python/
 │   └── sarimax_py/                  # Python 래퍼 레이어
@@ -885,10 +889,17 @@ rustima/
 │       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
 │       └── auto.py                  # auto_arima, AutoARIMAResult
 │
-├── python_tests/                    # Python 통합 테스트 (371 tests)
+├── python_tests/                    # Python 통합 테스트 (371 tests, 16개 모듈)
 │   ├── conftest.py                  # pytest fixture
 │   ├── generate_fixtures.py         # statsmodels 레퍼런스 데이터 생성기
-│   └── test_*.py                    # 16개 테스트 모듈
+│   └── test_*.py                    # test_fit, test_forecast, test_batch, test_exog 등
+│
+├── lbfgsb_c/                        # L-BFGS-B C 소스 (cc build-dep으로 컴파일)
+│   ├── lbfgsb.c                     # 메인 L-BFGS-B solver
+│   ├── lbfgsb.h                     # 헤더
+│   ├── linesearch.c                 # 라인 서치 서브루틴
+│   ├── linpack.c                    # LINPACK 루틴
+│   └── miniCBLAS.c                  # 최소 CBLAS 루틴
 │
 ├── tests/fixtures/                  # statsmodels 레퍼런스 데이터(JSON)
 │
@@ -906,12 +917,16 @@ rustima/
 | nalgebra | 0.34 | 동적 크기 행렬/벡터 연산(DMatrix, DVector) |
 | argmin | 0.11 | L-BFGS, Nelder-Mead 최적화 프레임워크 |
 | argmin-math | 0.5 | argmin용 nalgebra 통합 |
-| lbfgsb | 0.1 | 경계 제약 최적화용 L-BFGS-B(Fortran 래퍼) |
+| anyhow | 1 | 에러 컨텍스트 전파 |
 | statrs | 0.18 | 통계 분포 |
 | rayon | 1.10 | 데이터 병렬 처리(work-stealing thread pool) |
 | pyo3 | 0.28 | Python C-API 바인딩 |
 | numpy | 0.28 | NumPy 배열 zero-copy 전달 |
 | thiserror | 2 | 에러 타입 매크로 |
+| serde / serde_json | 1 | 테스트 fixture 직렬화 |
+| cc | 1 | C 컴파일러 드라이버(build-dep, `lbfgsb_c/` 컴파일) |
+
+> **참고:** L-BFGS-B는 crate 의존성이 아닙니다. 벤더링된 C 소스(`lbfgsb_c/`)를 `cc`로 컴파일하고 안전한 Rust FFI 래퍼(`lbfgsb_ffi.rs` + `lbfgsb_wrapper.rs`)를 통해 호출합니다.
 
 ### Python (`pyproject.toml`)
 
@@ -919,9 +934,12 @@ rustima/
 |---------|---------|
 | numpy >= 1.24 | 배열 연산(런타임 의존성) |
 | polars >= 1.0 | DataFrame 반환(런타임 의존성) |
+| ipykernel >= 7.2 | Jupyter notebook 연동(런타임 의존성) |
 | pytest >= 7.0 | 테스트 프레임워크(dev) |
 | statsmodels >= 0.14 | 레퍼런스 결과 생성(dev) |
 | scipy >= 1.10 | 통계 유틸리티(dev) |
+| pandas >= 2.0 | 벤치마크 비교 유틸리티(dev) |
+| matplotlib >= 3.7 | 벤치마크/리포트 시각화(dev) |
 | maturin >= 1.7 | Rust → Python wheel 빌드(dev) |
 
 ## 개발
@@ -952,21 +970,23 @@ uv run python python_tests/generate_fixtures.py
 | 카테고리 | 테스트 수 | 범위 |
 |----------|:-----:|---------|
 | Rust 단위 테스트 | 155 | types, params, polynomial, state_space, initialization, kalman, score, css, inference, start_params, optimizer, forecast, batch |
-| Python smoke | 2 | import, version |
-| Python fit | 9 | 적합, AIC/BIC, 수렴, start_params, Nelder-Mead |
+| Python smoke | 14 | import, version, 기본 API 검증 |
+| Python fit | 13 | 적합, AIC/BIC, 수렴, start_params, Nelder-Mead |
 | Python forecast | 9 | 예측 평균, CI, 잔차 vs statsmodels |
-| Python validation | 39 | 파라미터 길이, 계절 D/s, 범위, exog, NaN/Inf |
+| Python input validation | 64 | 파라미터 길이, 계절 D/s, 범위, exog, NaN/Inf |
 | Python batch | 6 | 배치 fit/forecast, 병렬 성능, 에러 격리 |
 | Python exog | 14 | 외생 회귀변수, future_exog, 배치 exog |
-| Python accuracy | 20 | 다차수 교차 검증 vs statsmodels |
-| Python high-order | 17 | ARIMA(4~5차), SARIMA(4,1,4)(2,1,2,12), s=24 고차 모델 |
-| Python inference | — | Rust Hessian/OPG 추론 |
+| Python multi-order accuracy | 27 | 다차수 교차 검증 vs statsmodels |
+| Python high-order accuracy | 20 | ARIMA(4~5차), SARIMA(4,1,4)(2,1,2,12), s=24 고차 모델 |
+| Python inference | 70 | Rust Hessian/OPG 추론, statsmodels 패리티 |
 | Python trend | 16 | trend='n','c','t','ct' 적합/예측/잔차/요약 |
 | Python Polars | 14 | to_dataframe(), params_table(), PredictionResult, HQIC |
 | Python auto_arima | 19 | stepwise, grid, history, criterion, summary |
-| Python safety guards | — | 엣지 케이스 안전성, simple differencing |
-| Python parameter summary | 59 | param_names, 추론 모드, statsmodels 패리티 |
-| **합계** | **526+** | |
+| Python safety guards | 44 | 엣지 케이스 안전성, 범위 검사 |
+| Python simple differencing | 22 | simple_differencing=True 경로 |
+| Python matrix tier A | 12 | 상태공간 행렬 구성 검증 |
+| Python prediction quality | 7 | in-sample/out-of-sample 예측 정확도 |
+| **합계** | **526** | Rust 155 + Python 371 |
 
 ## 제한 사항
 
@@ -977,4 +997,4 @@ uv run python python_tests/generate_fixtures.py
 
 ## 라이선스
 
-MIT
+GPL-3.0-or-later. 자세한 내용은 [LICENSE](LICENSE)를 참조하세요.
