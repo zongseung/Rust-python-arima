@@ -117,7 +117,7 @@ uv run python -c "import rustima; print(rustima.version())"
 적합한 상황: 다른 머신 배포, CI, 프로덕션.
 
 ```bash
-cd rustima/rustima
+cd rustima/
 uv sync --extra dev
 CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
 uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
