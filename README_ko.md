@@ -208,7 +208,7 @@ print(df)
 
 # ── 5. 잔차 검사 (랜덤 노이즈처럼 보여야 함) ──────────────────────────────
 diag = model.diagnostics()
-print(f"Ljung-Box p-value: {diag['ljung_box_pvalue'][0]:.3f}  (>0.05 이면 good)")
+print(f"Ljung-Box p-value: {diag['ljung_box_pvalue']:.3f}  (>0.05 이면 good)")
 ```
 
 **출력에서 봐야 할 것들:**
