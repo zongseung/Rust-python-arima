@@ -29,6 +29,35 @@ Python의 `statsmodels.tsa.SARIMAX`는 SARIMA 모델링의 사실상 표준이�
 - **메모리**: 스택 할당 + 연속적인 column-major 레이아웃으로 캐시 친화적
 - **Python 연동**: PyO3 + numpy 바인딩으로 `import rustima`
 
+## SARIMAX란? (입문자용)
+
+SARIMAX를 처음 접한다면, 30초 요약입니다:
+
+**SARIMAX = S + ARIMA + X**
+
+- **AR** (자기회귀) — 과거 값으로 오늘 값을 예측
+- **I** (차분) — 트렌드를 제거해 정상 시계열로 만들기 위해 "어제 - 오늘" 계산
+- **MA** (이동평균) — 과거 예측 오차를 활용해 오늘 예측 개선
+- **S** (계절성) — 반복되는 패턴 (주=7, 월=12, 시간=24)
+- **X** (외생변수) — `y`를 설명하는 추가 변수 (예: 기온, 가격, 프로모션)
+
+모델은 두 개의 튜플로 정의합니다.
+
+| 튜플 | 의미 | 예시 |
+|-------|---------|---------|
+| `order=(p, d, q)` | 비계절 (AR, 차분, MA) | `(1, 1, 1)` = AR lag 1, 차분 1회, MA lag 1 |
+| `seasonal_order=(P, D, Q, s)` | 계절 파트 + 주기 | `(1, 0, 1, 12)` = 월별 계절성 |
+
+**빠른 팁:**
+- 트렌드가 있나? → `d=1`
+- 월별 데이터에 1년 주기 패턴? → `s=12`
+- 차수 고르기 어렵나? → `auto_arima()`가 자동으로 선택
+
+**추천 학습 경로:**
+1. 일단 내 시계열에 `auto_arima()` 돌려보기 (차수 자동 선택)
+2. 이론 공부는 [Forecasting: Principles and Practice, Ch. 9](https://otexts.com/fpp3/arima.html) (무료 원서)
+3. 그 후에 `order` / `seasonal_order`를 수동으로 튜닝
+
 ## 지원 모델
 
 ```
@@ -49,19 +78,144 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + 외생 회귀변수
 
 ## 설치
 
+### 사전 요구사항
+
+rustima는 Rust 소스를 포함하므로 **로컬 빌드가 필요합니다** (아직 PyPI에 사전 빌드된 wheel 없음).
+
+| 도구 | 최소 버전 | 용도 | 설치 |
+|------|---------|-----|---------|
+| **Rust** | 1.83+ | 엔진 컴파일 | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **Python** | 3.10+ | 확장 모듈 호스팅 | [python.org](https://www.python.org/) 또는 `pyenv` |
+| **uv** | 최신 | 빠른 Python 패키지/환경 관리 | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **maturin** | 1.7+ | Rust ↔ Python 브리지 (`uv sync --extra dev` 시 자동 설치) | — |
+
+> **Windows 사용자:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)를 먼저 설치하세요 (Rust MSVC 툴체인에 필요).
+
+### 방법 A — 개발 모드 (대부분의 사용자에게 권장)
+
+적합한 상황: 테스트, Jupyter 노트북, 예제 실행. 코드 수정 시 빠른 재빌드.
+
 ```bash
-# 요구사항: Rust 1.83+, Python 3.10+, uv, maturin 1.7+
-cd rustima
+git clone https://github.com/<your-org>/rustima.git
+cd rustima/rustima        # 저장소 안에 `rustima/` 패키지 디렉터리가 있음
 
-# 빌드 + 설치
+# 1) 가상환경 생성 + Python 의존성 설치 (numpy, polars, pytest 등)
 uv sync --extra dev
-CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
-# 개발 모드 (in-place, 빠른 반복)
-uv pip install maturin
+# 2) Rust 엔진 release 모드 컴파일 + in-place 연결
 uv run maturin develop --release
 ```
+
+동작 확인:
+
+```bash
+uv run python -c "import rustima; print(rustima.version())"
+```
+
+### 방법 B — 재배포 가능한 wheel 빌드
+
+적합한 상황: 다른 머신 배포, CI, 프로덕션.
+
+```bash
+cd rustima/rustima
+uv sync --extra dev
+CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
+uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
+```
+
+`/tmp/wheels/`의 `.whl` 파일을 대상 머신으로 복사해서 `pip install` 하세요 (동일 OS + Python 버전 필요).
+
+### 설치 검증
+
+```python
+import rustima
+import numpy as np
+
+print(rustima.version())                              # "0.1.0"
+y = np.random.randn(100).cumsum()
+r = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
+print(f"converged={r['converged']}, AIC={r['aic']:.2f}")
+```
+
+에러 없이 출력되면 완료입니다. 실패 시 하단 **문제 해결 & FAQ** 참조.
+
+### Jupyter 노트북에서 사용
+
+```bash
+cd rustima/rustima
+uv sync --extra dev
+uv run maturin develop --release
+
+# 가상환경을 Jupyter 커널로 등록 (1회만)
+uv run python -m ipykernel install --user --name rustima --display-name "rustima"
+
+# Jupyter 실행
+uv run jupyter notebook
+```
+
+노트북 우상단에서 **"rustima"** 커널을 선택한 후:
+
+```python
+import rustima
+from rustima import SARIMAXModel, auto_arima
+```
+
+## 어떤 API를 써야 하나?
+
+rustima는 **두 개의 레이어**를 제공합니다. 용도에 맞게 선택하세요.
+
+| 하고 싶은 일 | 사용할 API | 이유 |
+|----------------|-----|-----|
+| `statsmodels.SARIMAX`를 더 빠른 것으로 드롭인 교체 | **`SARIMAXModel`** (고수준) | 동일한 클래스/메서드 이름, 동일한 출력 포맷, statsmodels 스타일 `.summary()` |
+| 라이브러리가 차수를 자동 선택 | **`auto_arima()`** (고수준) | pmdarima 같은 자동 (p,d,q)(P,D,Q,s) 탐색 |
+| **수천 개** 시계열을 병렬로 적합 | **`rustima.sarimax_batch_fit`** (저수준) | Python 객체 오버헤드 스킵, GIL 해제 |
+| 한 시계열에 여러 차수 시도 | **`rustima.sarimax_grid_search`** (저수준) | 차수 조합을 Rayon으로 병렬 처리 |
+| 연구용 raw log-likelihood/잔차 조회 | **`rustima.sarimax_loglike` / `sarimax_residuals`** | 칼만 필터 출력에 직접 접근 |
+
+**일반 규칙:** `SARIMAXModel` 또는 `auto_arima`부터 시작하세요. 다량의 시계열/차수를 동시에 적합해야 할 때만 저수준 API로 내려가면 됩니다.
+
+## 첫 예측 (5분 워크스루)
+
+완전한 엔드투엔드 예제. Python 파일이나 노트북에 복사하세요.
+
+```python
+import numpy as np
+from rustima import SARIMAXModel, auto_arima
+
+# ── 1. 트렌드 + 1년 계절성이 있는 월별 매출 데이터 시뮬레이션 ────────────
+rng = np.random.default_rng(42)
+n = 120  # 10년치 월별
+trend = 0.5 * np.arange(n)                           # 선형 상승 트렌드
+season = 10 * np.sin(2 * np.pi * np.arange(n) / 12)  # 1년 주기 (s=12)
+noise = rng.normal(0, 1.0, n)
+y = trend + season + noise
+
+# ── 2. auto_arima가 차수를 알아서 선택 ────────────────────────────────────
+auto_result = auto_arima(y, s=12, trace=True)  # trace=True → 시도한 모델 출력
+print(auto_result.search_summary())
+# >>> Best: SARIMA(0,1,1)(0,1,1)[12]  AIC=345.67  (evaluated 23 models)
+
+# ── 3. 선택된 모델 살펴보기 ────────────────────────────────────────────────
+model = auto_result.result              # SARIMAXResult 객체
+print(model.summary())                  # statsmodels 스타일 파라미터 테이블
+print(f"AIC={model.aic:.2f}  BIC={model.bic:.2f}")
+
+# ── 4. 다음 12개월 95% 신뢰구간으로 예측 ──────────────────────────────────
+forecast = model.forecast(steps=12, alpha=0.05)
+df = forecast.to_dataframe()            # Polars DataFrame
+print(df)
+# 형태 (12, 5): step | mean | variance | ci_lower | ci_upper
+
+# ── 5. 잔차 검사 (랜덤 노이즈처럼 보여야 함) ──────────────────────────────
+diag = model.diagnostics()
+print(f"Ljung-Box p-value: {diag['ljung_box_pvalue'][0]:.3f}  (>0.05 이면 good)")
+```
+
+**출력에서 봐야 할 것들:**
+- **`converged=True`** → 최적화 성공
+- **낮은 AIC / BIC** → 더 나은 모델 적합 (다른 차수 대비 상대적으로)
+- **Ljung-Box p > 0.05** → 잔차가 백색잡음처럼 보임 (good)
+- **`ci_lower` / `ci_upper`** → 불확실성 밴드; 넓을수록 덜 확신
 
 ## 빠른 시작
 
@@ -94,7 +248,7 @@ res = rustima.sarimax_residuals(
 ### 고수준 API (`SARIMAXModel` — statsmodels 호환)
 
 ```python
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="c")
 result = model.fit()
@@ -135,7 +289,7 @@ diag = result.diagnostics()
 ### auto_arima — 자동 차수 선택
 
 ```python
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 # Stepwise (Hyndman-Khandakar, 기본)
 res = auto_arima(y, max_p=5, max_q=5, s=12, stepwise=True, trace=True)
@@ -237,8 +391,8 @@ for r in results:
 graph TB
     subgraph Python["Python Layer"]
         USER["User Code"]
-        MODEL["SARIMAXModel<br/><i>python/sarimax_py/model.py</i>"]
-        AUTO["auto_arima<br/><i>python/sarimax_py/auto.py</i>"]
+        MODEL["SARIMAXModel<br/><i>python/rustima/model.py</i>"]
+        AUTO["auto_arima<br/><i>python/rustima/auto.py</i>"]
         USER --> MODEL
         USER --> AUTO
     end
@@ -542,14 +696,14 @@ print(diag["jarque_bera_stat"])   # Jarque-Bera 정규성
 print(diag["het_stat"])           # 이분산 검정
 ```
 
-### 고수준 클래스 (`sarimax_py`)
+### 고수준 클래스 (`rustima`)
 
 Rust 엔진을 사용하는 statsmodels 호환 Python 래퍼입니다.
 
 #### `SARIMAXModel`
 
 ```python
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 model = SARIMAXModel(
     endog=y,                        # 시계열 데이터
@@ -642,7 +796,7 @@ pred.to_dataframe()    # Polars DataFrame (index, predicted_mean)
 #### `AutoARIMAResult`
 
 ```python
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 res = auto_arima(y, max_p=5, max_q=5, s=12)
 
@@ -884,10 +1038,11 @@ rustima/
 │   └── test_helpers.rs              # 공유 테스트 유틸리티 (cfg(test) 전용)
 │
 ├── python/
-│   └── sarimax_py/                  # Python 래퍼 레이어
-│       ├── __init__.py              # 패키지 export
+│   └── rustima/                     # Python 패키지 (네이티브 확장 + 고수준 API)
+│       ├── __init__.py              # 패키지 export (저수준 + 고수준 API 통합)
 │       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
-│       └── auto.py                  # auto_arima, AutoARIMAResult
+│       ├── auto.py                  # auto_arima, AutoARIMAResult
+│       └── rustima.*.so             # 컴파일된 Rust 확장 모듈 (maturin 빌드 산출물)
 │
 ├── python_tests/                    # Python 통합 테스트 (371 tests, 16개 모듈)
 │   ├── conftest.py                  # pytest fixture
@@ -987,6 +1142,63 @@ uv run python python_tests/generate_fixtures.py
 | Python matrix tier A | 12 | 상태공간 행렬 구성 검증 |
 | Python prediction quality | 7 | in-sample/out-of-sample 예측 정확도 |
 | **합계** | **526** | Rust 155 + Python 371 |
+
+## 문제 해결 & FAQ
+
+### 설치/빌드 문제
+
+**`error: linker 'cc' not found` / `failed to run custom build command for 'rustima'`**
+C 컴파일러가 없습니다. macOS는 `xcode-select --install`, Ubuntu는 `sudo apt install build-essential`, Windows는 [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 설치.
+
+**`maturin develop` 후에도 `ModuleNotFoundError: No module named 'rustima'`**
+Rust 확장은 빌드됐는데 Python이 못 찾는 상황. 같은 venv 안에서 실행 중인지 확인:
+```bash
+uv run python -c "import sys; print(sys.executable)"
+# rustima/ 폴더 안 .venv/bin/python을 가리켜야 함
+```
+Jupyter라면 **"rustima"** 커널을 선택했는지 확인 (설치 섹션 참조).
+
+**Jupyter 노트북에서 `rustima`가 없다고 나옴, 근데 `uv run python`은 잘 됨**
+커널이 다른 Python을 가리키는 상황. 재등록:
+```bash
+uv run python -m ipykernel install --user --name rustima --display-name "rustima"
+```
+이후 커널 재시작 + "rustima" 선택.
+
+**`error: can't find Rust compiler`**
+Rust 설치: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` 후 `source ~/.cargo/env`.
+
+### 모델링 질문
+
+**수렴 실패 (`converged=False`) 입니다. 어떻게 해야 하나요?**
+1. `method="nelder-mead"` 시도 (느리지만 더 강건)
+2. `maxiter=1000` 로 늘리기
+3. 차수 낮추기 — `p`, `q`, `P`, `Q` 너무 크면 식별 실패 빈번
+4. NaN/Inf 확인: `np.isfinite(y).all()` 이 `True` 여야 함
+
+**`auto_arima`가 hourly 데이터(s=24)에서 너무 오래 걸림**
+`stepwise=False` 로 전환해 Rayon 병렬 grid search 사용. Hourly 데이터에서는 stepwise보다 **10배 빠른** 경우가 많음 (벤치마크 참조).
+
+**예측이 거의 일직선으로 나와요**
+보통 트렌드 있는 시계열에 `d=0`을 썼거나, 모델이 "평균 예측이 최선"이라 판단한 경우. `d=1` 로 수동 지정하거나 `trend='c'` / `trend='t'` 추가.
+
+**결과가 statsmodels와 살짝 달라요**
+예상된 현상입니다. rustima는 analytical gradient + L-BFGS-B, statsmodels는 수치 gradient + L-BFGS 사용. `|ΔAIC| < 2` 이내 차이는 정상 범위 (위 정확도 벤치마크 참조).
+
+**어떤 `order` / `seasonal_order` 를 써야 할지 모르겠어요**
+1. 쉬운 방법: `auto_arima(y, s=<주기>)` 로 자동 선택
+2. 이론 방법: ACF/PACF 플롯 + 단위근 검정 — [FPP3 Ch. 9](https://otexts.com/fpp3/arima.html) 참조
+
+**`simple_differencing=True`는 언제 써야 하나요?**
+R의 기본 동작을 재현하거나 사전 차분된 시계열에 R-스타일 AIC/BIC를 맞출 때만. 기본값 (`False`) 은 statsmodels와 매칭.
+
+### 성능
+
+**첫 fit은 느리고 다음부터 빨라지는 이유가?**
+Python import, Rust의 specialized monomorphization 컴파일, Rayon 스레드 풀 웜업 때문. 벤치마크 전 한번 웜업 필요.
+
+**Debug 빌드가 statsmodels보다 느려요!**
+반드시 `--release` 로 빌드하세요. 이 플래그 없이는 최적화 없이 컴파일되어 release 대비 ~10배 느림.
 
 ## 제한 사항
 

@@ -29,6 +29,35 @@ Python's `statsmodels.tsa.SARIMAX` is the de facto standard for SARIMA modeling,
 - **Memory**: Stack allocation + contiguous column-major layout for cache-friendliness
 - **Python interop**: PyO3 + numpy bindings — `import rustima`
 
+## What is SARIMAX? (For Beginners)
+
+If you've never used SARIMAX before, here's a 30-second primer:
+
+**SARIMAX = S + ARIMA + X**
+
+- **AR** (AutoRegressive) — predict today's value from the past few days
+- **I** (Integrated / differencing) — subtract today from yesterday to make a trending series stationary
+- **MA** (Moving Average) — use past forecast errors to improve today's prediction
+- **S** (Seasonal) — a repeating pattern (weekly=7, monthly=12, hourly=24)
+- **X** (eXogenous) — extra columns that help explain `y` (e.g. temperature, price, promotions)
+
+You describe the model with two tuples:
+
+| Tuple | Meaning | Example |
+|-------|---------|---------|
+| `order=(p, d, q)` | Non-seasonal (AR, diff, MA) | `(1, 1, 1)` = 1 lag AR, 1 diff, 1 lag MA |
+| `seasonal_order=(P, D, Q, s)` | Seasonal part + period | `(1, 0, 1, 12)` = monthly seasonality |
+
+**Quick rules of thumb:**
+- Has trend? → `d=1`
+- Has yearly pattern in monthly data? → `s=12`
+- Not sure about orders? → Use `auto_arima()` and it picks for you
+
+**Recommended learning path:**
+1. Try `auto_arima()` on your series first (it picks orders automatically)
+2. Read [Forecasting: Principles and Practice, Ch. 9](https://otexts.com/fpp3/arima.html) (free textbook) for theory
+3. Come back to tune `order`/`seasonal_order` manually
+
 ## Supported Models
 
 ```
@@ -49,19 +78,144 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + exogenous regressors
 
 ## Installation
 
+### Prerequisites
+
+Because rustima ships Rust source, **you must build it locally** (there is no pre-built wheel on PyPI yet). You need:
+
+| Tool | Minimum | Why | Install |
+|------|---------|-----|---------|
+| **Rust** | 1.83+ | Compiles the engine | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **Python** | 3.10+ | Hosts the extension | [python.org](https://www.python.org/) or `pyenv` |
+| **uv** | latest | Fast Python package/env manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **maturin** | 1.7+ | Rust ↔ Python bridge (auto-installed by `uv sync --extra dev`) | — |
+
+> **Windows users:** install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) first (needed by Rust's MSVC toolchain).
+
+### Option A — Development mode (recommended for most users)
+
+Best for: testing, Jupyter notebooks, running examples. Fast rebuilds on code changes.
+
 ```bash
-# Requirements: Rust 1.83+, Python 3.10+, uv, maturin 1.7+
-cd rustima
+git clone https://github.com/<your-org>/rustima.git
+cd rustima/rustima        # the repo has an inner `rustima/` package directory
 
-# Build + install
+# 1) Create virtualenv + install Python deps (numpy, polars, pytest, etc.)
 uv sync --extra dev
-CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
-uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
-# Development mode (in-place, fast iteration)
-uv pip install maturin
+# 2) Compile Rust engine in release mode and link it in-place
 uv run maturin develop --release
 ```
+
+After this you can run:
+
+```bash
+uv run python -c "import rustima; print(rustima.version())"
+```
+
+### Option B — Build a redistributable wheel
+
+Best for: deploying to another machine, CI, production.
+
+```bash
+cd rustima/rustima
+uv sync --extra dev
+CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
+uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
+```
+
+Copy the `.whl` from `/tmp/wheels/` to the target machine and `pip install` it there (must have the same OS + Python version).
+
+### Verifying the install
+
+```python
+import rustima
+import numpy as np
+
+print(rustima.version())                              # "0.1.0"
+y = np.random.randn(100).cumsum()
+r = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
+print(f"converged={r['converged']}, AIC={r['aic']:.2f}")
+```
+
+If this prints without error you're good to go. See **Troubleshooting** at the bottom if it fails.
+
+### Using inside Jupyter Notebook
+
+```bash
+cd rustima/rustima
+uv sync --extra dev
+uv run maturin develop --release
+
+# Register the venv as a Jupyter kernel (run once)
+uv run python -m ipykernel install --user --name rustima --display-name "rustima"
+
+# Launch Jupyter
+uv run jupyter notebook
+```
+
+In the notebook, select the kernel **"rustima"** from the top-right corner, then:
+
+```python
+import rustima
+from rustima import SARIMAXModel, auto_arima
+```
+
+## Which API Should I Use?
+
+rustima exposes **two layers**. Pick one based on what you're doing:
+
+| You want to... | Use | Why |
+|----------------|-----|-----|
+| Replace `statsmodels.SARIMAX` with a faster drop-in | **`SARIMAXModel`** (high-level) | Same class/method names, same output format, statsmodels-style `.summary()` |
+| Let the library pick the order for you | **`auto_arima()`** (high-level) | Automatic (p,d,q)(P,D,Q,s) search, like pmdarima |
+| Fit **thousands** of series in parallel | **`rustima.sarimax_batch_fit`** (low-level) | Skips Python object overhead, releases GIL |
+| Try many orders on one series | **`rustima.sarimax_grid_search`** (low-level) | Rayon-parallel over order combinations |
+| Inspect raw log-likelihood / residuals for research | **`rustima.sarimax_loglike` / `sarimax_residuals`** | Direct access to Kalman filter output |
+
+**Rule of thumb:** Start with `SARIMAXModel` or `auto_arima`. Drop to the low-level API only when you need to fit many series/orders at once.
+
+## Your First Forecast (5-minute walkthrough)
+
+A complete end-to-end example. Copy-paste into a Python file or notebook.
+
+```python
+import numpy as np
+from rustima import SARIMAXModel, auto_arima
+
+# ── 1. Simulate monthly sales data with trend + yearly seasonality ─────────
+rng = np.random.default_rng(42)
+n = 120  # 10 years of monthly data
+trend = 0.5 * np.arange(n)                           # linear upward trend
+season = 10 * np.sin(2 * np.pi * np.arange(n) / 12)  # yearly cycle (s=12)
+noise = rng.normal(0, 1.0, n)
+y = trend + season + noise
+
+# ── 2. Let auto_arima pick the orders for you ─────────────────────────────
+auto_result = auto_arima(y, s=12, trace=True)  # trace=True prints each try
+print(auto_result.search_summary())
+# >>> Best: SARIMA(0,1,1)(0,1,1)[12]  AIC=345.67  (evaluated 23 models)
+
+# ── 3. Inspect the chosen model ───────────────────────────────────────────
+model = auto_result.result              # a SARIMAXResult
+print(model.summary())                  # statsmodels-style parameter table
+print(f"AIC={model.aic:.2f}  BIC={model.bic:.2f}")
+
+# ── 4. Forecast the next 12 months with 95% confidence intervals ──────────
+forecast = model.forecast(steps=12, alpha=0.05)
+df = forecast.to_dataframe()            # Polars DataFrame
+print(df)
+# shape (12, 5): step | mean | variance | ci_lower | ci_upper
+
+# ── 5. Check residuals (should look like random noise) ────────────────────
+diag = model.diagnostics()
+print(f"Ljung-Box p-value: {diag['ljung_box_pvalue'][0]:.3f}  (>0.05 = good)")
+```
+
+**What to look at in the output:**
+- **`converged=True`** → optimization succeeded
+- **Low AIC / BIC** → better model fit (relative to other orders)
+- **Ljung-Box p > 0.05** → residuals look like white noise (good)
+- **`ci_lower` / `ci_upper`** → uncertainty band; wider = less confident
 
 ## Quick Start
 
@@ -94,7 +248,7 @@ res = rustima.sarimax_residuals(
 ### High-Level API (`SARIMAXModel` — statsmodels compatible)
 
 ```python
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 model = SARIMAXModel(y, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0), trend="c")
 result = model.fit()
@@ -135,7 +289,7 @@ diag = result.diagnostics()
 ### auto_arima — Automatic Order Selection
 
 ```python
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 # Stepwise (Hyndman-Khandakar, default)
 res = auto_arima(y, max_p=5, max_q=5, s=12, stepwise=True, trace=True)
@@ -237,8 +391,8 @@ for r in results:
 graph TB
     subgraph Python["Python Layer"]
         USER["User Code"]
-        MODEL["SARIMAXModel<br/><i>python/sarimax_py/model.py</i>"]
-        AUTO["auto_arima<br/><i>python/sarimax_py/auto.py</i>"]
+        MODEL["SARIMAXModel<br/><i>python/rustima/model.py</i>"]
+        AUTO["auto_arima<br/><i>python/rustima/auto.py</i>"]
         USER --> MODEL
         USER --> AUTO
     end
@@ -618,14 +772,14 @@ print(diag["jarque_bera_stat"])   # Jarque-Bera normality
 print(diag["het_stat"])           # Heteroskedasticity test
 ```
 
-### High-Level Classes (`sarimax_py`)
+### High-Level Classes (`rustima`)
 
 statsmodels-compatible Python wrapper using the Rust engine.
 
 #### `SARIMAXModel`
 
 ```python
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 model = SARIMAXModel(
     endog=y,                        # time series data
@@ -721,7 +875,7 @@ pred.to_dataframe()    # Polars DataFrame (index, predicted_mean)
 #### `AutoARIMAResult`
 
 ```python
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 res = auto_arima(y, max_p=5, max_q=5, s=12)
 
@@ -961,10 +1115,11 @@ rustima/
 │   └── test_helpers.rs              # Shared test utilities (cfg(test) only)
 │
 ├── python/
-│   └── sarimax_py/                  # Python wrapper layer
-│       ├── __init__.py              # Package exports
+│   └── rustima/                     # Python package (native ext + high-level API)
+│       ├── __init__.py              # Package exports (low-level + high-level API)
 │       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
-│       └── auto.py                  # auto_arima, AutoARIMAResult
+│       ├── auto.py                  # auto_arima, AutoARIMAResult
+│       └── rustima.*.so             # Compiled Rust extension (built by maturin)
 │
 ├── python_tests/                    # Python integration tests (371 tests, 16 modules)
 │   ├── conftest.py                  # pytest fixtures
@@ -1064,6 +1219,63 @@ uv run python python_tests/generate_fixtures.py
 | Python matrix tier A | 12 | state-space matrix construction validation |
 | Python prediction quality | 7 | in-sample/out-of-sample prediction accuracy |
 | **Total** | **526** | 155 Rust + 371 Python |
+
+## Troubleshooting & FAQ
+
+### Install / Build problems
+
+**`error: linker 'cc' not found` / `failed to run custom build command for 'rustima'`**
+You don't have a C compiler. On macOS run `xcode-select --install`; on Ubuntu `sudo apt install build-essential`; on Windows install [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+
+**`ModuleNotFoundError: No module named 'rustima'` after `maturin develop`**
+The Rust extension was built but Python can't find it. Check you are running Python *inside* the same venv:
+```bash
+uv run python -c "import sys; print(sys.executable)"
+# Should point to .venv/bin/python inside the rustima/ folder
+```
+If you're in Jupyter, make sure you selected the **"rustima"** kernel (see Installation).
+
+**Jupyter notebook says `rustima` is missing even though `uv run python` works**
+Your notebook kernel is pointing to a different Python. Re-register it:
+```bash
+uv run python -m ipykernel install --user --name rustima --display-name "rustima"
+```
+Then restart the kernel and pick "rustima" from the kernel menu.
+
+**`error: can't find Rust compiler`**
+Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, then `source ~/.cargo/env`.
+
+### Modeling questions
+
+**My model didn't converge (`converged=False`). What now?**
+1. Try `method="nelder-mead"` (slower but more robust)
+2. Increase `maxiter=1000`
+3. Reduce the orders — high `p`, `q`, `P`, `Q` often fail to identify
+4. Check your data has no NaN/Inf: `np.isfinite(y).all()` should be `True`
+
+**`auto_arima` takes forever on my hourly data (s=24)**
+Use `stepwise=False` to switch to the Rayon-parallel grid search. On hourly data it's often **10x faster** than stepwise (see benchmarks).
+
+**My forecast looks like a flat line**
+Usually means `d=0` on a trending series, or the model decided the best prediction is the mean. Try setting `d=1` manually, or add `trend='c'` / `trend='t'`.
+
+**Results are slightly different from statsmodels**
+Expected. rustima uses L-BFGS-B with analytical gradients (statsmodels uses L-BFGS with numerical gradients). Differences within `|ΔAIC| < 2` are normal. See the accuracy benchmarks above.
+
+**How do I know which `order` / `seasonal_order` to use?**
+1. Easy path: just call `auto_arima(y, s=<period>)` and use what it picks
+2. Theory path: ACF/PACF plots + unit-root tests — see [FPP3 Ch. 9](https://otexts.com/fpp3/arima.html)
+
+**When should I use `simple_differencing=True`?**
+Only when you want to match R's default behavior or reproduce results with R-style AIC/BIC on a pre-differenced series. Default (`False`) matches statsmodels.
+
+### Performance
+
+**Why is the first fit slow but subsequent ones fast?**
+Python imports, Rust JIT-friendly compilation of specialized monomorphizations, and Rayon thread-pool warmup. Warm up once before benchmarking.
+
+**Debug build is slower than statsmodels!**
+Always build with `--release`. Without it, Rust runs with no optimizations and is ~10× slower than a release build.
 
 ## Limitations
 
