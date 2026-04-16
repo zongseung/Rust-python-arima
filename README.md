@@ -97,7 +97,7 @@ Best for: testing, Jupyter notebooks, running examples. Fast rebuilds on code ch
 
 ```bash
 git clone https://github.com/<your-org>/rustima.git
-cd rustima/rustima        # the repo has an inner `rustima/` package directory
+cd rustima/        # the repo has an inner `rustima/` package directory
 
 # 1) Create virtualenv + install Python deps (numpy, polars, pytest, etc.)
 uv sync --extra dev
@@ -117,7 +117,7 @@ uv run python -c "import rustima; print(rustima.version())"
 Best for: deploying to another machine, CI, production.
 
 ```bash
-cd rustima/rustima
+cd rustima/
 uv sync --extra dev
 CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out /tmp/wheels
 uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
@@ -142,7 +142,7 @@ If this prints without error you're good to go. See **Troubleshooting** at the b
 ### Using inside Jupyter Notebook
 
 ```bash
-cd rustima/rustima
+cd rustima/
 uv sync --extra dev
 uv run maturin develop --release
 

@@ -97,7 +97,7 @@ rustima는 Rust 소스를 포함하므로 **로컬 빌드가 필요합니다** (
 
 ```bash
 git clone https://github.com/<your-org>/rustima.git
-cd rustima/rustima        # 저장소 안에 `rustima/` 패키지 디렉터리가 있음
+cd rustima/      # 저장소 안에 `rustima/` 패키지 디렉터리가 있음
 
 # 1) 가상환경 생성 + Python 의존성 설치 (numpy, polars, pytest 등)
 uv sync --extra dev
@@ -142,7 +142,7 @@ print(f"converged={r['converged']}, AIC={r['aic']:.2f}")
 ### Jupyter 노트북에서 사용
 
 ```bash
-cd rustima/rustima
+cd rustima/
 uv sync --extra dev
 uv run maturin develop --release
 
