@@ -19,9 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-# sarimax_py 고수준 API 경로 추가
+# rustima 고수준 API 경로 추가
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 
 # ── 데이터 생성 ─────────────────────────────────────────────────────────────

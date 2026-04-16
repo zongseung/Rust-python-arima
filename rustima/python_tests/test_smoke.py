@@ -67,7 +67,7 @@ def test_batch_fit_length():
 
 def test_model_wrapper_end_to_end():
     """SARIMAXModel fit + forecast end-to-end."""
-    from sarimax_py import SARIMAXModel
+    from rustima import SARIMAXModel
     from conftest import generate_ar1_rng
     y = generate_ar1_rng(n=100, phi=0.5, seed=42)
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
@@ -88,7 +88,7 @@ def _make_ar1():
 
 def test_model_get_forecast_alias():
     """get_forecast() should produce identical results to forecast()."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     f1 = result.forecast(steps=5)
@@ -99,7 +99,7 @@ def test_model_get_forecast_alias():
 
 def test_model_residuals():
     """result.resid should have length > 0 and finite values."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     resid = result.resid
@@ -109,7 +109,7 @@ def test_model_residuals():
 
 def test_model_summary_string():
     """summary() should contain expected keywords."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     s = result.summary()
@@ -120,7 +120,7 @@ def test_model_summary_string():
 
 def test_model_aic_bic():
     """AIC and BIC should be finite floats."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     assert isinstance(result.aic, float) and np.isfinite(result.aic)
@@ -129,7 +129,7 @@ def test_model_aic_bic():
 
 def test_model_conf_int():
     """conf_int() should return (steps, 2) shaped array with lower <= upper."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     ci = result.forecast(steps=7).conf_int()
@@ -141,7 +141,7 @@ def test_model_conf_int():
 def test_model_matches_raw_api():
     """SARIMAXModel results should match rustima raw API."""
     import rustima
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     result = SARIMAXModel(y, order=(1, 0, 0)).fit()
     raw = rustima.sarimax_fit(y, (1, 0, 0), (0, 0, 0, 0))
@@ -151,7 +151,7 @@ def test_model_matches_raw_api():
 
 def test_forecast_result_attributes():
     """ForecastResult should have predicted_mean, variance, ci_lower, ci_upper."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
     y = _make_ar1()
     fcast = SARIMAXModel(y, order=(1, 0, 0)).fit().forecast(steps=3)
     for attr in ("predicted_mean", "variance", "ci_lower", "ci_upper"):

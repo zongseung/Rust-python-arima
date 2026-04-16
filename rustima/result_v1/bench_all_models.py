@@ -47,7 +47,7 @@ def generate_exog(n, k, seed=123):
 # ── sarimax_rs wrapper ──────────────────────────────────────────────────────
 
 def fit_rs(y, order, seasonal_order=(0,0,0,0), exog=None, trend='n'):
-    from sarimax_py import SARIMAXModel
+    from rustima import SARIMAXModel
     p, d, q = order
     P, D, Q, s = seasonal_order
     model = SARIMAXModel(y, order=(p, d, q), seasonal_order=(P, D, Q, s),

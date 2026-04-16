@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, "python")
 import rustima
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 try:
     from statsmodels.tsa.statespace.sarimax import SARIMAX as SM_SARIMAX

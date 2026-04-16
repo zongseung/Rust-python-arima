@@ -215,7 +215,7 @@ def test_zero_col_exog_row_mismatch_raises():
 
 def test_auto_arima_grid_only_candidate_returns_result():
     """Grid-search with only one candidate should return a result, not None."""
-    from sarimax_py.auto import auto_arima
+    from rustima.auto import auto_arima
 
     y = np.random.default_rng(42).normal(size=100)
     res = auto_arima(
@@ -230,7 +230,7 @@ def test_auto_arima_grid_only_candidate_returns_result():
 
 def test_auto_arima_stepwise_s0_no_seasonal_explored():
     """Stepwise with s=0 should never explore P>0 or Q>0."""
-    from sarimax_py.auto import auto_arima
+    from rustima.auto import auto_arima
 
     y = np.random.default_rng(42).normal(size=100)
     res = auto_arima(
@@ -274,7 +274,7 @@ def test_batch_forecast_short_exog_no_panic():
 
 def test_ndiffs_uses_adf_when_statsmodels_available():
     """_ndiffs should use ADF test (not variance fallback) when statsmodels exists."""
-    from sarimax_py.auto import _ndiffs
+    from rustima.auto import _ndiffs
 
     y = np.random.default_rng(42).normal(size=200)
     d = _ndiffs(y, max_d=2)
@@ -283,7 +283,7 @@ def test_ndiffs_uses_adf_when_statsmodels_available():
 
 def test_invalid_criterion_raises_for_grid_search():
     """Invalid criterion must raise ValueError for grid search too, not silently fallback."""
-    from sarimax_py.auto import auto_arima
+    from rustima.auto import auto_arima
 
     y = np.random.default_rng(42).normal(size=60)
     with pytest.raises(ValueError, match="Unknown criterion"):
@@ -299,7 +299,7 @@ def test_invalid_criterion_raises_for_grid_search():
 
 def test_1d_exog_auto_reshaped():
     """1D exog array should be auto-reshaped to (n, 1) in SARIMAXModel."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     y = np.random.default_rng(42).normal(size=50)
     x = np.random.default_rng(43).normal(size=50)  # 1D
@@ -312,7 +312,7 @@ def test_1d_exog_auto_reshaped():
 
 def test_list_start_params_accepted():
     """Python list start_params should be auto-coerced to ndarray."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     y = np.random.default_rng(42).normal(size=50)
     m = SARIMAXModel(y, order=(1, 0, 0))
@@ -322,7 +322,7 @@ def test_list_start_params_accepted():
 
 def test_1d_forecast_exog_accepted():
     """1D forecast exog should be auto-reshaped to (steps, 1)."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     y = np.random.default_rng(42).normal(size=50)
     x = np.random.default_rng(43).normal(size=(50, 1))
@@ -338,7 +338,7 @@ def test_1d_forecast_exog_accepted():
 
 def test_simple_differencing_resid_propagated():
     """resid with simple_differencing=True must use the correct Rust path."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(2)
     y = np.cumsum(np.random.randn(100))
@@ -360,7 +360,7 @@ def test_simple_differencing_resid_propagated():
 
 def test_simple_differencing_rust_inference_propagated():
     """Rust inference with simple_differencing=True must compute on correct path."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(4)
     y = np.cumsum(np.random.randn(200))
@@ -381,7 +381,7 @@ def test_simple_differencing_rust_inference_propagated():
 
 def test_trend_ct_statsmodels_inference_no_crash():
     """trend='ct' + statsmodels inference should not raise IndexError/ValueError."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(7)
     y = np.random.randn(120)
@@ -461,7 +461,7 @@ def test_forecast_error_message_unified():
 
 def test_opg_vs_hessian_ar1_reasonable():
     """OPG SE should be within 10x of Hessian SE for a stable AR(1)."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(1)
     y = np.random.randn(200)
@@ -489,7 +489,7 @@ def test_opg_vs_hessian_ar1_reasonable():
 
 def test_opg_vs_hessian_arma11_reasonable():
     """OPG SE should be reasonable for ARMA(1,1)."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(2)
     y = np.random.randn(300)
@@ -512,7 +512,7 @@ def test_opg_vs_hessian_arma11_reasonable():
 
 def test_opg_status_ok_for_simple_model():
     """OPG should return status='ok' for a well-identified AR(1)."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(3)
     y = np.random.randn(200)
@@ -526,7 +526,7 @@ def test_opg_status_ok_for_simple_model():
 
 def test_statsmodels_inference_non_converged_status():
     """statsmodels inference bridge should report non-converged status, not 'ok'."""
-    from sarimax_py.model import _compute_statsmodels_inference
+    from rustima.model import _compute_statsmodels_inference
 
     np.random.seed(10)
     y = np.random.randn(50)
@@ -544,7 +544,7 @@ def test_statsmodels_inference_non_converged_status():
 
 def test_statsmodels_inference_simple_differencing_passed():
     """statsmodels inference bridge should pass simple_differencing through."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(5)
     y = np.cumsum(np.random.randn(200))
@@ -571,7 +571,7 @@ def test_statsmodels_inference_simple_differencing_passed():
 
 def test_get_prediction_simple_differencing_no_crash():
     """get_prediction() must not crash with simple_differencing=True."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(0)
     y = np.cumsum(np.random.randn(120))
@@ -590,7 +590,7 @@ def test_get_prediction_simple_differencing_no_crash():
 
 def test_get_prediction_seasonal_simple_differencing():
     """get_prediction() with seasonal simple_differencing pads correct NaN count."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(1)
     y = np.cumsum(np.random.randn(200))
@@ -612,7 +612,7 @@ def test_get_prediction_seasonal_simple_differencing():
 
 def test_get_prediction_oos_simple_differencing():
     """get_prediction(end>n) with simple_differencing should work for OOS."""
-    from sarimax_py.model import SARIMAXModel
+    from rustima.model import SARIMAXModel
 
     np.random.seed(0)
     y = np.cumsum(np.random.randn(120))

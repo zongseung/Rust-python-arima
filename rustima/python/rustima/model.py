@@ -3,7 +3,7 @@
 import math
 
 import numpy as np
-import rustima
+from . import rustima
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from conftest import generate_ar1_rng, generate_trend_data
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ class TestNsdiffs:
         seasonal unit root.  The variance-ratio fix requires the seasonal
         difference to reduce variance by >36 % before suggesting D=1.
         """
-        from sarimax_py.auto import _nsdiffs
+        from rustima.auto import _nsdiffs
 
         # Generate stationary SARMA(1,0)(1,1,24): y[t] = 0.5*y[t-1] +
         # 0.4*y[t-24] - 0.2*y[t-25] + eps[t] + 0.3*eps[t-24]
@@ -189,7 +189,7 @@ class TestNsdiffs:
 
     def test_seasonal_unit_root_gives_d1(self):
         """True seasonal random walk must trigger D=1."""
-        from sarimax_py.auto import _nsdiffs
+        from rustima.auto import _nsdiffs
 
         rng = np.random.default_rng(99)
         s = 12

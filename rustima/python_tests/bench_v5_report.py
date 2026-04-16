@@ -23,7 +23,7 @@ except ImportError:
 # rustima path
 sys.path.insert(0, "python")
 import rustima
-from sarimax_py import SARIMAXModel, auto_arima
+from rustima import SARIMAXModel, auto_arima
 
 # ─────────────────────────────────────────
 # 데이터 생성 유틸

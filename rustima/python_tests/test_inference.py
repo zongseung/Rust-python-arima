@@ -15,7 +15,7 @@ import pytest
 import warnings
 import rustima
 from conftest import generate_ar1, generate_random_walk
-from sarimax_py.model import (
+from rustima.model import (
     SARIMAXModel,
     _generate_param_names,
     _compute_numerical_hessian,

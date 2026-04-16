@@ -279,7 +279,7 @@ class AutoBenchResult:
 
 def run_auto_bench(label, y, s, max_p=3, max_q=3, max_P=2, max_Q=2,
                    max_d=2, max_D=1, n_reps=3):
-    from sarimax_py.auto import auto_arima as rs_auto
+    from rustima.auto import auto_arima as rs_auto
     try:
         import pmdarima as pm
     except ImportError:

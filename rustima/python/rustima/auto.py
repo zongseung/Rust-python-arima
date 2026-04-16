@@ -370,7 +370,7 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
                  method, maxiter, trace,
                  exog=None, simple_differencing=False):
     """Exhaustive grid search using Rust Rayon-parallel grid_search."""
-    import rustima
+    from . import rustima
 
     p_range = range(0, max_p + 1)
     q_range = range(0, max_q + 1)

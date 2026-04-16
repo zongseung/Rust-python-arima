@@ -20,7 +20,7 @@ import numpy as np
 from statsmodels.tsa.arima_process import arma_generate_sample
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from sarimax_py import auto_arima
+from rustima import auto_arima
 
 
 # ─── 합성 데이터 생성 ────────────────────────────────────────────────────────

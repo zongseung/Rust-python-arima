@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 from conftest import generate_trend_data, generate_ar1_rng
-from sarimax_py import SARIMAXModel
+from rustima import SARIMAXModel
 
 
 @pytest.fixture
