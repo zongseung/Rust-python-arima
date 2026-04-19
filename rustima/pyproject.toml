@@ -10,6 +10,7 @@ description = "High-performance SARIMAX via Rust + PyO3"
 license = {text = "GPL-3.0-or-later"}
 dependencies = [
     "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
     "numpy>=1.24",
     "polars>=1.0",
 ]
