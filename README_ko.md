@@ -362,7 +362,7 @@ for i, r in enumerate(results):
 params_list = [np.array(r["params"]) for r in results]
 forecasts = rustima.sarimax_batch_forecast(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
-    params_list=params_list, steps=10, alpha=0.05,
+    params_list=params_list, steps=10, alpha=0.05
 )
 ```
 
@@ -374,7 +374,7 @@ results = rustima.sarimax_grid_search(
     y,
     order_list=[(0,1,0), (1,1,0), (1,1,1), (2,1,1)],
     seasonal_list=[(0,0,0,0)] * 4,
-    trend="c",
+    trend="c"
 )
 for r in results:
     if "error" not in r:
@@ -531,7 +531,7 @@ ll = rustima.sarimax_loglike(
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
     params=np.array([8.0, 0.5, 0.3, 0.2, -0.4]),    # [intercept, ar, ma, sar, sma]
     concentrate_scale=True,    # 우도에서 sigma2를 집중화
-    trend="c",                 # 추세: "n", "c", "t", "ct"
+    trend="c"                 # 추세: "n", "c", "t", "ct"
 )
 ```
 
@@ -548,7 +548,7 @@ result = rustima.sarimax_fit(
     enforce_invertibility=True,  # MA 가역성 제약
     method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "nelder-mead"
     maxiter=500,
-    trend="c",                   # 추세
+    trend="c"                   # 추세
 )
 ```
 
@@ -581,7 +581,7 @@ fc = rustima.sarimax_forecast(
     alpha=0.05,        # 95% 신뢰구간
     exog=X_train,      # 모델이 exog를 쓰는 경우 과거 exog
     future_exog=X_future,  # 예측 기간 미래 exog
-    trend="c",
+    trend="c"
 )
 
 print(fc["mean"])       # 점예측 (list[float])
@@ -600,7 +600,7 @@ res = rustima.sarimax_residuals(
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
     params=np.array([8.0, 0.5, 0.3]),    # [intercept, ar, ma]
-    trend="c",
+    trend="c"
 )
 
 print(res["residuals"])                # 혁신항 v_t
@@ -619,7 +619,7 @@ results = rustima.sarimax_batch_fit(
     enforce_stationarity=True,
     method="lbfgsb",
     maxiter=500,
-    trend="c",
+    trend="c"
 )
 # 반환: list[dict] — sarimax_fit과 동일 키
 # 실패한 시계열: {"error": "...", "converged": false}
@@ -638,7 +638,7 @@ forecasts = rustima.sarimax_batch_forecast(
     seasonal=(0, 0, 0, 0),
     params_list=params_list,
     steps=10,
-    alpha=0.05,
+    alpha=0.05
 )
 # 반환: mean, variance, ci_lower, ci_upper를 포함한 list[dict]
 ```
@@ -656,7 +656,7 @@ results = rustima.sarimax_grid_search(
     enforce_invertibility=True,
     trend="c",
     method="lbfgsb",
-    maxiter=500,
+    maxiter=500
 )
 # 반환: list[dict] — sarimax_fit과 동일 키 + "order", "seasonal_order"
 ```
@@ -671,7 +671,7 @@ inf = rustima.sarimax_inference(
     params=np.array([0.15, 0.99, 0.05]),    # [intercept, ar, ma]
     method="hessian",   # "hessian" | "opg"
     alpha=0.05,
-    trend="c",
+    trend="c"
 )
 print(inf["std_err"])   # 표준오차
 print(inf["z_stat"])    # z 통계량
@@ -688,7 +688,7 @@ print(inf["ci_upper"])  # 신뢰구간 상한
 diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.4, 0.5, 0.3]),   # [intercept, ar, ma]
-    trend="c",
+    trend="c"
 )
 print(diag["ljung_box_stat"])     # Ljung-Box Q 통계량
 print(diag["ljung_box_pvalue"])   # Ljung-Box p-value
@@ -712,7 +712,7 @@ model = SARIMAXModel(
     #exog=X_train,                  # 선택: 외생 회귀변수
     trend="c",                      # 추세: 'n', 'c', 't', 'ct'
     enforce_stationarity=True,
-    enforce_invertibility=True,
+    enforce_invertibility=True
 )
 ```
 

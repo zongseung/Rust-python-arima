@@ -362,7 +362,7 @@ for i, r in enumerate(results):
 params_list = [np.array(r["params"]) for r in results]
 forecasts = rustima.sarimax_batch_forecast(
     series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
-    params_list=params_list, steps=10, alpha=0.05,
+    params_list=params_list, steps=10, alpha=0.0
 )
 ```
 
@@ -374,7 +374,7 @@ results = rustima.sarimax_grid_search(
     y,
     order_list=[(0,1,0), (1,1,0), (1,1,1), (2,1,1)],
     seasonal_list=[(0,0,0,0)] * 4,
-    trend="c",
+    trend="c"
 )
 for r in results:
     if "error" not in r:
@@ -607,7 +607,7 @@ ll = rustima.sarimax_loglike(
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
     params=np.array([8.0, 0.5, 0.3, 0.2, -0.4]),    # [intercept, ar, ma, sar, sma]
     concentrate_scale=True,    # concentrate sigma2 in likelihood
-    trend="c",                 # trend: "n", "c", "t", "ct"
+    trend="c"                 # trend: "n", "c", "t", "ct"
 )
 ```
 
@@ -624,7 +624,7 @@ result = rustima.sarimax_fit(
     enforce_invertibility=True,  # MA invertibility constraint
     method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "nelder-mead"
     maxiter=500,
-    trend="c",
+    trend="c"
 )
 ```
 
@@ -657,7 +657,7 @@ fc = rustima.sarimax_forecast(
     alpha=0.05,        # 95% confidence interval
     exog=X_train,      # past exog if model uses exog
     future_exog=X_future,
-    trend="c",
+    trend="c"
 )
 
 print(fc["mean"])       # point forecast (list[float])
@@ -676,7 +676,7 @@ res = rustima.sarimax_residuals(
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
     params=np.array([8.0, 0.5, 0.3]),    # [intercept, ar, ma]
-    trend="c",
+    trend="c"
 )
 
 print(res["residuals"])                # innovations v_t
@@ -695,7 +695,7 @@ results = rustima.sarimax_batch_fit(
     enforce_stationarity=True,
     method="lbfgsb",
     maxiter=500,
-    trend="c",
+    trend="c"
 )
 # Returns: list[dict] — same keys as sarimax_fit
 # Failed series: {"error": "...", "converged": false}
@@ -714,7 +714,7 @@ forecasts = rustima.sarimax_batch_forecast(
     seasonal=(0, 0, 0, 0),
     params_list=params_list,
     steps=10,
-    alpha=0.05,
+    alpha=0.05
 )
 # Returns: list[dict] with mean, variance, ci_lower, ci_upper
 ```
@@ -732,7 +732,7 @@ results = rustima.sarimax_grid_search(
     enforce_invertibility=True,
     trend="c",
     method="lbfgsb",
-    maxiter=500,
+    maxiter=500
 )
 # Returns: list[dict] — same keys as sarimax_fit + "order", "seasonal_order"
 ```
@@ -747,7 +747,7 @@ inf = rustima.sarimax_inference(
     params=np.array([0.15, 0.99, 0.05]),    # [intercept, ar, ma]
     method="hessian",   # "hessian" | "opg"
     alpha=0.05,
-    trend="c",
+    trend="c"
 )
 print(inf["std_err"])   # standard errors
 print(inf["z_stat"])    # z statistics
@@ -764,7 +764,7 @@ Performs residual diagnostic tests.
 diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
     params=np.array([0.4, 0.5, 0.3]),   # [intercept, ar, ma]
-    trend="c",
+    trend="c"
 )
 print(diag["ljung_box_stat"])     # Ljung-Box Q statistic
 print(diag["ljung_box_pvalue"])   # Ljung-Box p-value
@@ -788,7 +788,7 @@ model = SARIMAXModel(
     #exog=X_train,                  # optional: exogenous regressors
     trend="c",                      # trend: 'n', 'c', 't', 'ct'
     enforce_stationarity=True,
-    enforce_invertibility=True,
+    enforce_invertibility=True
 )
 ```
 
