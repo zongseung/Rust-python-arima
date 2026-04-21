@@ -605,7 +605,7 @@ ll = rustima.sarimax_loglike(
     y,
     order=(1, 1, 1),           # (p, d, q)
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
-    params=np.array([0.5, 0.3, 0.2, -0.4]),  # [ar, ma, sar, sma]
+    params=np.array([8.0, 0.5, 0.3, 0.2, -0.4]),    # [intercept, ar, ma, sar, sma]
     concentrate_scale=True,    # concentrate sigma2 in likelihood
     trend="c",                 # trend: "n", "c", "t", "ct"
 )
@@ -652,7 +652,7 @@ fc = rustima.sarimax_forecast(
     y,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
-    params=np.array([0.65]),
+    params=np.array([8.0, 0.42, 0.33, 0.65]),   # [intercept, exog, future_exog, ar]
     steps=10,
     alpha=0.05,        # 95% confidence interval
     exog=X_train,      # past exog if model uses exog
@@ -675,7 +675,7 @@ res = rustima.sarimax_residuals(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([8.0, 0.5, 0.3]),    # [intercept, ar, ma]
     trend="c",
 )
 
@@ -744,7 +744,7 @@ Computes Hessian or OPG-based inference statistics on fitted parameters.
 ```python
 inf = rustima.sarimax_inference(
     y, order=(1,0,1), seasonal=(0,0,0,0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([0.15, 0.99, 0.05]),    # [intercept, ar, ma]
     method="hessian",   # "hessian" | "opg"
     alpha=0.05,
     trend="c",
@@ -763,7 +763,7 @@ Performs residual diagnostic tests.
 ```python
 diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([0.4, 0.5, 0.3]),   # [intercept, ar, ma]
     trend="c",
 )
 print(diag["ljung_box_stat"])     # Ljung-Box Q statistic
@@ -785,7 +785,7 @@ model = SARIMAXModel(
     endog=y,                        # time series data
     order=(1, 1, 1),                # ARIMA(p, d, q)
     seasonal_order=(1, 0, 0, 12),   # (P, D, Q, s)
-    exog=X,                         # optional: exogenous regressors
+    #exog=X_train,                  # optional: exogenous regressors
     trend="c",                      # trend: 'n', 'c', 't', 'ct'
     enforce_stationarity=True,
     enforce_invertibility=True,
@@ -814,7 +814,7 @@ result.resid           # np.ndarray — standardized residuals (lazy computed)
 
 # Methods
 result.forecast(steps=10, alpha=0.05)     # → ForecastResult
-result.forecast(steps=10, exog=X_future)  # with future exog
+result.forecast(steps=10, exog=X_future)  # with future exog(In this case, the exogenous regressor (exog) is mandatory, not optional. When running the code, # in front of exog=X_train in the model just before should be deleted and then execute it.)
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels compat)
 result.get_prediction(start=0, end=210)   # → PredictionResult (in-sample + OOS)
 result.summary()                          # → str (default: parameter table)
