@@ -529,7 +529,7 @@ ll = rustima.sarimax_loglike(
     y,
     order=(1, 1, 1),           # (p, d, q)
     seasonal=(1, 1, 1, 12),    # (P, D, Q, s)
-    params=np.array([0.5, 0.3, 0.2, -0.4]),  # [ar, ma, sar, sma]
+    params=np.array([8.0, 0.5, 0.3, 0.2, -0.4]),    # [intercept, ar, ma, sar, sma]
     concentrate_scale=True,    # 우도에서 sigma2를 집중화
     trend="c",                 # 추세: "n", "c", "t", "ct"
 )
@@ -576,7 +576,7 @@ fc = rustima.sarimax_forecast(
     y,
     order=(1, 0, 0),
     seasonal=(0, 0, 0, 0),
-    params=np.array([0.65]),
+    params=np.array([8.0, 0.42, 0.33, 0.65]),   # [intercept, exog, future_exog, ar]
     steps=10,          # 예측 구간
     alpha=0.05,        # 95% 신뢰구간
     exog=X_train,      # 모델이 exog를 쓰는 경우 과거 exog
@@ -599,7 +599,7 @@ res = rustima.sarimax_residuals(
     y,
     order=(1, 0, 1),
     seasonal=(0, 0, 0, 0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([8.0, 0.5, 0.3]),    # [intercept, ar, ma]
     trend="c",
 )
 
@@ -668,7 +668,7 @@ results = rustima.sarimax_grid_search(
 ```python
 inf = rustima.sarimax_inference(
     y, order=(1,0,1), seasonal=(0,0,0,0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([0.15, 0.99, 0.05]),    # [intercept, ar, ma]
     method="hessian",   # "hessian" | "opg"
     alpha=0.05,
     trend="c",
@@ -687,7 +687,7 @@ print(inf["ci_upper"])  # 신뢰구간 상한
 ```python
 diag = rustima.sarimax_diagnostics(
     y, order=(1,0,1), seasonal=(0,0,0,0),
-    params=np.array([0.5, 0.3]),
+    params=np.array([0.4, 0.5, 0.3]),   # [intercept, ar, ma]
     trend="c",
 )
 print(diag["ljung_box_stat"])     # Ljung-Box Q 통계량
@@ -709,7 +709,7 @@ model = SARIMAXModel(
     endog=y,                        # 시계열 데이터
     order=(1, 1, 1),                # ARIMA(p, d, q)
     seasonal_order=(1, 0, 0, 12),   # (P, D, Q, s)
-    exog=X,                         # 선택: 외생 회귀변수
+    #exog=X_train,                  # 선택: 외생 회귀변수
     trend="c",                      # 추세: 'n', 'c', 't', 'ct'
     enforce_stationarity=True,
     enforce_invertibility=True,
@@ -738,7 +738,7 @@ result.resid           # np.ndarray — 표준화 잔차(지연 계산)
 
 # 메서드
 result.forecast(steps=10, alpha=0.05)     # → ForecastResult
-result.forecast(steps=10, exog=X_future)  # 미래 exog 포함
+result.forecast(steps=10, exog=X_future)  # 미래 exog 포함(이때 외생 회귀변수 exog는 선택이 아닌 필수 → 코드 실행 시, model의 exog=X_train 앞 # 풀고 따로 실행)
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels 호환)
 result.get_prediction(start=0, end=210)   # → PredictionResult (in-sample + out-of-sample)
 result.summary()                          # → str (기본 파라미터 테이블)
