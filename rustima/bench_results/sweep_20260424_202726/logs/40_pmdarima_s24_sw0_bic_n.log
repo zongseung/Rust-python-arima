@@ -1,0 +1,58 @@
+ ARIMA(0,1,0)(0,0,0)[24] intercept   : BIC=344055.531, Time=0.24 sec
+ ARIMA(0,1,0)(0,0,1)[24] intercept   : BIC=341254.583, Time=6.50 sec
+ ARIMA(0,1,0)(0,0,2)[24] intercept   : BIC=340227.129, Time=28.20 sec
+ ARIMA(0,1,0)(1,0,0)[24] intercept   : BIC=340283.594, Time=3.19 sec
+ ARIMA(0,1,0)(1,0,1)[24] intercept   : BIC=inf, Time=14.48 sec
+ ARIMA(0,1,0)(1,0,2)[24] intercept   : BIC=inf, Time=57.28 sec
+ ARIMA(0,1,0)(2,0,0)[24] intercept   : BIC=338984.972, Time=28.40 sec
+ ARIMA(0,1,0)(2,0,1)[24] intercept   : BIC=inf, Time=73.83 sec
+Traceback (most recent call last):
+  File "c:\Rust-python-arima\rustima\bench_results\sweep_20260424_202726\_worker.py", line 63, in <module>
+    res = pm.auto_arima(
+        y, seasonal=(s > 0), m=s if s > 0 else 1, trend=trend,
+        stepwise=stepwise, suppress_warnings=True,
+        information_criterion=criterion, trace=True)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\auto.py", line 701, in auto_arima
+    sorted_res = search.solve()
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 127, in solve
+    all_res = Parallel(n_jobs=n_jobs)(
+        delayed(fit_partial)(
+    ...<3 lines>...
+        for order, seasonal_order in gen
+    )
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\joblib\parallel.py", line 1986, in __call__
+    return output if self.return_generator else list(output)
+                                                ~~~~^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\joblib\parallel.py", line 1914, in _get_sequential_output
+    res = func(*args, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 508, in _fit_candidate_model
+    fit.fit(y, X=X, **fit_params)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 610, in fit
+    self._fit(y, X, **fit_args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 531, in _fit
+    fit, self.arima_res_ = _fit_wrapper()
+                           ~~~~~~~~~~~~^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 517, in _fit_wrapper
+    fitted = arima.fit(
+        start_params=start_params,
+    ...<3 lines>...
+        **fit_args,
+    )
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 729, in fit
+    res = func(mlefit.params, transformed=False, includes_fixed=False,
+               cov_type=cov_type, cov_kwds=cov_kwds)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 887, in smooth
+    result = self.ssm.smooth(complex_step=complex_step, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 410, in smooth
+    results.update_filter(kfilter)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_filter.py", line 1545, in update_filter
+    self.predicted_state_cov = np.array(
+                               ~~~~~~~~^
+        kalman_filter.predicted_state_cov, copy=True
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 835. MiB for an array with shape (50, 50, 43801) and data type float64

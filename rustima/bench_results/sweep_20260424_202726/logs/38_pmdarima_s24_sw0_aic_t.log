@@ -1,0 +1,65 @@
+ ARIMA(0,1,0)(0,0,0)[24] intercept   : AIC=344048.843, Time=3.78 sec
+ ARIMA(0,1,0)(0,0,1)[24] intercept   : AIC=341492.905, Time=43.83 sec
+ ARIMA(0,1,0)(0,0,2)[24] intercept   : AIC=340813.522, Time=186.37 sec
+ ARIMA(0,1,0)(1,0,0)[24] intercept   : AIC=340427.124, Time=44.40 sec
+ ARIMA(0,1,0)(1,0,1)[24] intercept   : AIC=338884.269, Time=48.16 sec
+ ARIMA(0,1,0)(1,0,2)[24] intercept   : AIC=339372.868, Time=214.48 sec
+ ARIMA(0,1,0)(2,0,0)[24] intercept   : AIC=339246.141, Time=207.11 sec
+ ARIMA(0,1,0)(2,0,1)[24] intercept   : AIC=338434.568, Time=237.91 sec
+Traceback (most recent call last):
+  File "c:\Rust-python-arima\rustima\bench_results\sweep_20260424_202726\_worker.py", line 63, in <module>
+    res = pm.auto_arima(
+        y, seasonal=(s > 0), m=s if s > 0 else 1, trend=trend,
+        stepwise=stepwise, suppress_warnings=True,
+        information_criterion=criterion, trace=True)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\auto.py", line 701, in auto_arima
+    sorted_res = search.solve()
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 127, in solve
+    all_res = Parallel(n_jobs=n_jobs)(
+        delayed(fit_partial)(
+    ...<3 lines>...
+        for order, seasonal_order in gen
+    )
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\joblib\parallel.py", line 1986, in __call__
+    return output if self.return_generator else list(output)
+                                                ~~~~^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\joblib\parallel.py", line 1914, in _get_sequential_output
+    res = func(*args, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 508, in _fit_candidate_model
+    fit.fit(y, X=X, **fit_params)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 610, in fit
+    self._fit(y, X, **fit_args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 531, in _fit
+    fit, self.arima_res_ = _fit_wrapper()
+                           ~~~~~~~~~~~~^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 517, in _fit_wrapper
+    fitted = arima.fit(
+        start_params=start_params,
+    ...<3 lines>...
+        **fit_args,
+    )
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 729, in fit
+    res = func(mlefit.params, transformed=False, includes_fixed=False,
+               cov_type=cov_type, cov_kwds=cov_kwds)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 887, in smooth
+    result = self.ssm.smooth(complex_step=complex_step, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 419, in smooth
+    smoother = self._smooth(smoother_output, results=results, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 355, in _smooth
+    self._initialize_smoother(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        smoother_output, smooth_method, prefix=prefix, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ))
+    ^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 161, in _initialize_smoother
+    self._initialize_filter(prefix, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_filter.py", line 480, in _initialize_filter
+    prefix, dtype, create_statespace = self._initialize_representation()
+                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\representation.py", line 1003, in _initialize_representation
+    new = getattr(self, '_' + matrix).astype(dtype)
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 16.7 MiB for an array with shape (50, 43800) and data type float64

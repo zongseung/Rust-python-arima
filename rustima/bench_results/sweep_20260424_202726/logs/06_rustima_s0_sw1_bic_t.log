@@ -1,0 +1,12 @@
+  ARIMA(0,0,0)(0,0,0)[0] : bic=522409.969
+  ARIMA(2,0,2)(0,0,0)[0] : bic=343926.764
+  ARIMA(1,0,0)(0,0,0)[0] : bic=343934.135
+  ARIMA(0,0,1)(0,0,0)[0] : bic=469781.589
+  ARIMA(3,0,2)(0,0,0)[0] : bic=344145.352
+  ARIMA(1,0,2)(0,0,0)[0] : bic=344093.709
+  ARIMA(2,0,3)(0,0,0)[0] : bic=344002.981
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(2,1) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(2,0,1)(0,0,0)[0] : bic=344100.925
+  ARIMA(3,0,3)(0,0,0)[0] : bic=344114.394
+  ARIMA(1,0,1)(0,0,0)[0] : bic=343969.880

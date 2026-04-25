@@ -1,0 +1,40 @@
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : HQIC=344059.054, Time=4.91 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : HQIC=344054.875, Time=6.43 sec
+ ARIMA(0,1,2)(0,0,0)[0] intercept   : HQIC=343999.628, Time=8.39 sec
+ ARIMA(0,1,3)(0,0,0)[0] intercept   : HQIC=343994.654, Time=10.80 sec
+ ARIMA(0,1,4)(0,0,0)[0] intercept   : HQIC=343678.084, Time=12.86 sec
+ ARIMA(0,1,5)(0,0,0)[0] intercept   : HQIC=342999.245, Time=16.16 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : HQIC=344054.199, Time=6.14 sec
+ ARIMA(1,1,1)(0,0,0)[0] intercept   : HQIC=inf, Time=24.28 sec
+ ARIMA(1,1,2)(0,0,0)[0] intercept   : HQIC=344983.403, Time=9.78 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(1,1,3)(0,0,0)[0] intercept   : HQIC=344094.064, Time=12.44 sec
+ ARIMA(1,1,4)(0,0,0)[0] intercept   : HQIC=381866.223, Time=14.64 sec
+ ARIMA(2,1,0)(0,0,0)[0] intercept   : HQIC=343998.240, Time=8.08 sec
+ ARIMA(2,1,1)(0,0,0)[0] intercept   : HQIC=344098.711, Time=4.80 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : HQIC=344081.939, Time=11.16 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,3)(0,0,0)[0] intercept   : HQIC=344100.257, Time=14.02 sec
+ ARIMA(3,1,0)(0,0,0)[0] intercept   : HQIC=343968.039, Time=10.08 sec
+ ARIMA(3,1,1)(0,0,0)[0] intercept   : HQIC=343971.764, Time=11.52 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(3,1,2)(0,0,0)[0] intercept   : HQIC=344088.896, Time=12.58 sec
+ ARIMA(4,1,0)(0,0,0)[0] intercept   : HQIC=343756.827, Time=11.80 sec
+ ARIMA(4,1,1)(0,0,0)[0] intercept   : HQIC=343757.990, Time=13.40 sec
+ ARIMA(5,1,0)(0,0,0)[0] intercept   : HQIC=343440.114, Time=15.36 sec
+
+Best model:  ARIMA(0,1,5)(0,0,0)[0] intercept
+Total fit time: 239.652 seconds

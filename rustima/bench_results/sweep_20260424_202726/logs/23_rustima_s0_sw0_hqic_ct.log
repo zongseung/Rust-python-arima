@@ -1,0 +1,44 @@
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,1) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,4) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(4,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+  ARIMA(0,0,0)(0,0,0)[0] : hqic=467684.268
+  ARIMA(0,0,1)(0,0,0)[0] : hqic=421593.455
+  ARIMA(0,0,2)(0,0,0)[0] : hqic=394485.098
+  ARIMA(0,0,3)(0,0,0)[0] : hqic=378550.540
+  ARIMA(0,0,4)(0,0,0)[0] : hqic=368545.738
+  ARIMA(0,0,5)(0,0,0)[0] : hqic=362142.095
+  ARIMA(1,0,0)(0,0,0)[0] : hqic=494076.134
+  ARIMA(1,0,1)(0,0,0)[0] : hqic=349243.262
+  ARIMA(1,0,2)(0,0,0)[0] : hqic=343753.472
+  ARIMA(1,0,3)(0,0,0)[0] : hqic=343725.109
+  ARIMA(1,0,4)(0,0,0)[0] : hqic=348041.116
+  ARIMA(1,0,5)(0,0,0)[0] : hqic=348011.888
+  ARIMA(2,0,0)(0,0,0)[0] : hqic=349643.590
+  ARIMA(2,0,1)(0,0,0)[0] : hqic=344075.658
+  ARIMA(2,0,2)(0,0,0)[0] : hqic=348087.905
+  ARIMA(2,0,3)(0,0,0)[0] : hqic=345567.010
+  ARIMA(2,0,4)(0,0,0)[0] : hqic=344021.558
+  ARIMA(2,0,5)(0,0,0)[0] : hqic=343691.394
+  ARIMA(3,0,0)(0,0,0)[0] : hqic=349538.905
+  ARIMA(3,0,1)(0,0,0)[0] : hqic=348195.683
+  ARIMA(3,0,2)(0,0,0)[0] : hqic=396475.910
+  ARIMA(3,0,3)(0,0,0)[0] : hqic=345191.379
+  ARIMA(3,0,4)(0,0,0)[0] : hqic=375056.345
+  ARIMA(3,0,5)(0,0,0)[0] : hqic=370457.548
+  ARIMA(4,0,0)(0,0,0)[0] : hqic=349541.346
+  ARIMA(4,0,1)(0,0,0)[0] : hqic=345837.222
+  ARIMA(4,0,2)(0,0,0)[0] : hqic=345269.682
+  ARIMA(4,0,3)(0,0,0)[0] : hqic=344388.458
+  ARIMA(4,0,4)(0,0,0)[0] : hqic=365151.419
+  ARIMA(4,0,5)(0,0,0)[0] : hqic=361560.242
+  ARIMA(5,0,0)(0,0,0)[0] : hqic=349441.717
+  ARIMA(5,0,1)(0,0,0)[0] : hqic=349115.877
+  ARIMA(5,0,2)(0,0,0)[0] : hqic=401428.061
+  ARIMA(5,0,3)(0,0,0)[0] : hqic=347567.586
+  ARIMA(5,0,4)(0,0,0)[0] : hqic=344222.356
+  ARIMA(5,0,5)(0,0,0)[0] : hqic=343979.489

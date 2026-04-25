@@ -1,0 +1,19 @@
+Performing stepwise search to minimize hqic
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : HQIC=343946.959, Time=6.98 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : HQIC=344049.582, Time=0.23 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : HQIC=344044.727, Time=0.30 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : HQIC=344045.387, Time=0.62 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : HQIC=344049.582, Time=0.23 sec
+ ARIMA(1,1,2)(0,0,0)[0] intercept   : HQIC=inf, Time=5.40 sec
+ ARIMA(2,1,1)(0,0,0)[0] intercept   : HQIC=343984.801, Time=4.34 sec
+ ARIMA(3,1,2)(0,0,0)[0] intercept   : HQIC=338951.650, Time=13.84 sec
+ ARIMA(3,1,1)(0,0,0)[0] intercept   : HQIC=340233.992, Time=7.84 sec
+ ARIMA(4,1,2)(0,0,0)[0] intercept   : HQIC=339586.964, Time=19.01 sec
+ ARIMA(3,1,3)(0,0,0)[0] intercept   : HQIC=339109.177, Time=20.50 sec
+ ARIMA(2,1,3)(0,0,0)[0] intercept   : HQIC=338958.719, Time=16.15 sec
+ ARIMA(4,1,1)(0,0,0)[0] intercept   : HQIC=339988.698, Time=10.36 sec
+ ARIMA(4,1,3)(0,0,0)[0] intercept   : HQIC=inf, Time=21.49 sec
+ ARIMA(3,1,2)(0,0,0)[0]             : HQIC=338951.650, Time=13.89 sec
+
+Best model:  ARIMA(3,1,2)(0,0,0)[0] intercept
+Total fit time: 141.198 seconds

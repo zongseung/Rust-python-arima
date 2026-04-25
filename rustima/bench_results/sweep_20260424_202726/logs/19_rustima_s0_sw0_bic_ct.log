@@ -1,0 +1,44 @@
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,1) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(2,4) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+C:\Rust-python-arima\rustima\python\rustima\auto.py:401: UserWarning: near-cancellation detected in fitted ARMA(4,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  raw_results = rustima.sarimax_grid_search(
+  ARIMA(0,0,0)(0,0,0)[0] : bic=467702.116
+  ARIMA(0,0,1)(0,0,0)[0] : bic=421617.252
+  ARIMA(0,0,2)(0,0,0)[0] : bic=394514.844
+  ARIMA(0,0,3)(0,0,0)[0] : bic=378586.235
+  ARIMA(0,0,4)(0,0,0)[0] : bic=368587.383
+  ARIMA(0,0,5)(0,0,0)[0] : bic=362189.689
+  ARIMA(1,0,0)(0,0,0)[0] : bic=494099.931
+  ARIMA(1,0,1)(0,0,0)[0] : bic=349273.008
+  ARIMA(1,0,2)(0,0,0)[0] : bic=343789.167
+  ARIMA(1,0,3)(0,0,0)[0] : bic=343766.754
+  ARIMA(1,0,4)(0,0,0)[0] : bic=348088.710
+  ARIMA(1,0,5)(0,0,0)[0] : bic=348065.431
+  ARIMA(2,0,0)(0,0,0)[0] : bic=349673.337
+  ARIMA(2,0,1)(0,0,0)[0] : bic=344111.354
+  ARIMA(2,0,2)(0,0,0)[0] : bic=348129.550
+  ARIMA(2,0,3)(0,0,0)[0] : bic=345614.604
+  ARIMA(2,0,4)(0,0,0)[0] : bic=344075.101
+  ARIMA(2,0,5)(0,0,0)[0] : bic=343750.887
+  ARIMA(3,0,0)(0,0,0)[0] : bic=349574.600
+  ARIMA(3,0,1)(0,0,0)[0] : bic=348237.327
+  ARIMA(3,0,2)(0,0,0)[0] : bic=396523.504
+  ARIMA(3,0,3)(0,0,0)[0] : bic=345244.923
+  ARIMA(3,0,4)(0,0,0)[0] : bic=375115.838
+  ARIMA(3,0,5)(0,0,0)[0] : bic=370522.990
+  ARIMA(4,0,0)(0,0,0)[0] : bic=349582.990
+  ARIMA(4,0,1)(0,0,0)[0] : bic=345884.816
+  ARIMA(4,0,2)(0,0,0)[0] : bic=345323.225
+  ARIMA(4,0,3)(0,0,0)[0] : bic=344447.950
+  ARIMA(4,0,4)(0,0,0)[0] : bic=365216.861
+  ARIMA(4,0,5)(0,0,0)[0] : bic=361631.633
+  ARIMA(5,0,0)(0,0,0)[0] : bic=349489.311
+  ARIMA(5,0,1)(0,0,0)[0] : bic=349169.420
+  ARIMA(5,0,2)(0,0,0)[0] : bic=401487.554
+  ARIMA(5,0,3)(0,0,0)[0] : bic=347633.028
+  ARIMA(5,0,4)(0,0,0)[0] : bic=344293.747
+  ARIMA(5,0,5)(0,0,0)[0] : bic=344056.829

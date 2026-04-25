@@ -1,0 +1,11 @@
+  ARIMA(0,0,0)(0,0,0)[0] : hqic=468352.744
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(2,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(2,0,2)(0,0,0)[0] : hqic=344062.911
+  ARIMA(1,0,0)(0,0,0)[0] : hqic=343456.121
+  ARIMA(0,0,1)(0,0,0)[0] : hqic=422160.452
+  ARIMA(2,0,0)(0,0,0)[0] : hqic=343460.857
+  ARIMA(1,0,1)(0,0,0)[0] : hqic=343460.858
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(2,1) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(2,0,1)(0,0,0)[0] : hqic=344063.995
