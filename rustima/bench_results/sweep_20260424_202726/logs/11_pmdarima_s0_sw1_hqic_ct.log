@@ -1,0 +1,30 @@
+Performing stepwise search to minimize hqic
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : HQIC=344081.939, Time=11.02 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : HQIC=344059.054, Time=4.90 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : HQIC=344054.199, Time=6.12 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : HQIC=344054.875, Time=6.44 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : HQIC=344059.054, Time=4.91 sec
+ ARIMA(2,1,0)(0,0,0)[0] intercept   : HQIC=343998.240, Time=8.04 sec
+ ARIMA(3,1,0)(0,0,0)[0] intercept   : HQIC=343968.039, Time=9.96 sec
+ ARIMA(4,1,0)(0,0,0)[0] intercept   : HQIC=343756.827, Time=11.71 sec
+ ARIMA(5,1,0)(0,0,0)[0] intercept   : HQIC=343440.114, Time=15.03 sec
+ ARIMA(5,1,1)(0,0,0)[0] intercept   : HQIC=343438.152, Time=16.65 sec
+ ARIMA(4,1,1)(0,0,0)[0] intercept   : HQIC=343757.990, Time=13.29 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(5,1,2)(0,0,0)[0] intercept   : HQIC=344103.563, Time=17.76 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(4,1,2)(0,0,0)[0] intercept   : HQIC=344098.825, Time=15.51 sec
+ ARIMA(5,1,1)(0,0,0)[0]             : HQIC=343438.152, Time=16.83 sec
+
+Best model:  ARIMA(5,1,1)(0,0,0)[0] intercept
+Total fit time: 158.188 seconds

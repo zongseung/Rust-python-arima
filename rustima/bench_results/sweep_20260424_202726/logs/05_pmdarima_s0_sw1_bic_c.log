@@ -1,0 +1,27 @@
+Performing stepwise search to minimize bic
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : BIC=343987.393, Time=15.44 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : BIC=344066.218, Time=0.45 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : BIC=344067.313, Time=0.56 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : BIC=344067.973, Time=1.34 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : BIC=344066.218, Time=0.45 sec
+ ARIMA(1,1,2)(0,0,0)[0] intercept   : BIC=inf, Time=12.46 sec
+ ARIMA(2,1,1)(0,0,0)[0] intercept   : BIC=344019.286, Time=10.25 sec
+ ARIMA(3,1,2)(0,0,0)[0] intercept   : BIC=340082.654, Time=28.99 sec
+ ARIMA(3,1,1)(0,0,0)[0] intercept   : BIC=340274.403, Time=20.59 sec
+ ARIMA(4,1,2)(0,0,0)[0] intercept   : BIC=339964.960, Time=41.16 sec
+ ARIMA(4,1,1)(0,0,0)[0] intercept   : BIC=340035.067, Time=26.87 sec
+ ARIMA(5,1,2)(0,0,0)[0] intercept   : BIC=340053.981, Time=24.92 sec
+ ARIMA(4,1,3)(0,0,0)[0] intercept   : BIC=inf, Time=45.36 sec
+ ARIMA(3,1,3)(0,0,0)[0] intercept   : BIC=339164.696, Time=46.35 sec
+ ARIMA(2,1,3)(0,0,0)[0] intercept   : BIC=340043.087, Time=33.63 sec
+ ARIMA(3,1,4)(0,0,0)[0] intercept   : BIC=inf, Time=44.06 sec
+ ARIMA(2,1,4)(0,0,0)[0] intercept   : BIC=340507.281, Time=45.33 sec
+ ARIMA(4,1,4)(0,0,0)[0] intercept   : BIC=339027.980, Time=53.31 sec
+ ARIMA(5,1,4)(0,0,0)[0] intercept   : BIC=339024.547, Time=56.89 sec
+ ARIMA(5,1,3)(0,0,0)[0] intercept   : BIC=inf, Time=52.89 sec
+ ARIMA(5,1,5)(0,0,0)[0] intercept   : BIC=339052.394, Time=71.09 sec
+ ARIMA(4,1,5)(0,0,0)[0] intercept   : BIC=339046.655, Time=61.29 sec
+ ARIMA(5,1,4)(0,0,0)[0]             : BIC=339024.547, Time=56.82 sec
+
+Best model:  ARIMA(5,1,4)(0,0,0)[0]          
+Total fit time: 750.530 seconds

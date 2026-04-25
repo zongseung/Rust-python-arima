@@ -1,0 +1,21 @@
+  ARIMA(0,0,0)(0,0,0)[0] : aic=561881.826
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(2,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(2,0,2)(0,0,0)[0] : aic=343934.175
+  ARIMA(1,0,0)(0,0,0)[0] : aic=344016.364
+  ARIMA(0,0,1)(0,0,0)[0] : aic=506416.405
+  ARIMA(3,0,2)(0,0,0)[0] : aic=341153.397
+  ARIMA(1,0,2)(0,0,0)[0] : aic=343938.704
+  ARIMA(2,0,3)(0,0,0)[0] : aic=343942.165
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(2,1) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(2,0,1)(0,0,0)[0] : aic=343973.096
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(3,3) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(3,0,3)(0,0,0)[0] : aic=343929.994
+  ARIMA(1,0,1)(0,0,0)[0] : aic=344011.404
+C:\Rust-python-arima\rustima\python\rustima\model.py:630: UserWarning: near-cancellation detected in fitted ARMA(4,2) parameters (min inverted-root distance < 0.05). Model may be non-identifiable.
+  result_dict = rustima.sarimax_fit(
+  ARIMA(4,0,2)(0,0,0)[0] : aic=343933.593
+  ARIMA(3,0,1)(0,0,0)[0] : aic=343940.493
+  ARIMA(4,0,3)(0,0,0)[0] : aic=343958.672

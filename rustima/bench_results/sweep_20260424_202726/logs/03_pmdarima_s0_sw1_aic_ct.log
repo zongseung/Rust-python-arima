@@ -1,0 +1,30 @@
+Performing stepwise search to minimize aic
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : AIC=344062.772, Time=11.33 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : AIC=344050.840, Time=5.08 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : AIC=344043.247, Time=6.23 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : AIC=344043.923, Time=6.50 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : AIC=344050.840, Time=4.99 sec
+ ARIMA(2,1,0)(0,0,0)[0] intercept   : AIC=343984.549, Time=8.22 sec
+ ARIMA(3,1,0)(0,0,0)[0] intercept   : AIC=343951.610, Time=10.20 sec
+ ARIMA(4,1,0)(0,0,0)[0] intercept   : AIC=343737.660, Time=12.03 sec
+ ARIMA(5,1,0)(0,0,0)[0] intercept   : AIC=343418.209, Time=15.39 sec
+ ARIMA(5,1,1)(0,0,0)[0] intercept   : AIC=343413.509, Time=17.10 sec
+ ARIMA(4,1,1)(0,0,0)[0] intercept   : AIC=343736.085, Time=13.55 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(5,1,2)(0,0,0)[0] intercept   : AIC=344076.182, Time=18.10 sec
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(4,1,2)(0,0,0)[0] intercept   : AIC=344074.182, Time=15.64 sec
+ ARIMA(5,1,1)(0,0,0)[0]             : AIC=343413.509, Time=17.35 sec
+
+Best model:  ARIMA(5,1,1)(0,0,0)[0] intercept
+Total fit time: 161.712 seconds

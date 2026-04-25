@@ -1,0 +1,76 @@
+Performing stepwise search to minimize bic
+ ARIMA(2,1,2)(1,0,1)[24] intercept   : BIC=inf, Time=68.02 sec
+ ARIMA(0,1,0)(0,0,0)[24] intercept   : BIC=344055.531, Time=0.24 sec
+ ARIMA(1,1,0)(1,0,0)[24] intercept   : BIC=339552.294, Time=7.15 sec
+ ARIMA(0,1,1)(0,0,1)[24] intercept   : BIC=340917.964, Time=9.10 sec
+ ARIMA(0,1,0)(0,0,0)[24]             : BIC=344055.531, Time=0.24 sec
+ ARIMA(1,1,0)(0,0,0)[24] intercept   : BIC=344056.626, Time=0.30 sec
+ ARIMA(1,1,0)(2,0,0)[24] intercept   : BIC=337930.359, Time=28.36 sec
+ ARIMA(1,1,0)(2,0,1)[24] intercept   : BIC=inf, Time=85.55 sec
+ ARIMA(1,1,0)(1,0,1)[24] intercept   : BIC=inf, Time=18.95 sec
+ ARIMA(0,1,0)(2,0,0)[24] intercept   : BIC=338984.972, Time=24.98 sec
+ ARIMA(2,1,0)(2,0,0)[24] intercept   : BIC=337832.823, Time=45.01 sec
+Traceback (most recent call last):
+  File "c:\Rust-python-arima\rustima\bench_results\sweep_20260424_202726\_worker.py", line 63, in <module>
+    res = pm.auto_arima(
+        y, seasonal=(s > 0), m=s if s > 0 else 1, trend=trend,
+        stepwise=stepwise, suppress_warnings=True,
+        information_criterion=criterion, trace=True)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\auto.py", line 701, in auto_arima
+    sorted_res = search.solve()
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 335, in solve
+    self._do_fit((p, d, q), (P - 1, D, Q, m)):
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 235, in _do_fit
+    fit, fit_time, new_ic = self._fit_arima(
+                            ~~~~~~~~~~~~~~~^
+        order=order,
+        ^^^^^^^^^^^^
+        seasonal_order=seasonal_order,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        with_intercept=constant)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\_auto_solvers.py", line 508, in _fit_candidate_model
+    fit.fit(y, X=X, **fit_params)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 610, in fit
+    self._fit(y, X, **fit_args)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 531, in _fit
+    fit, self.arima_res_ = _fit_wrapper()
+                           ~~~~~~~~~~~~^^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\pmdarima\arima\arima.py", line 517, in _fit_wrapper
+    fitted = arima.fit(
+        start_params=start_params,
+    ...<3 lines>...
+        **fit_args,
+    )
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 729, in fit
+    res = func(mlefit.params, transformed=False, includes_fixed=False,
+               cov_type=cov_type, cov_kwds=cov_kwds)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\mlemodel.py", line 887, in smooth
+    result = self.ssm.smooth(complex_step=complex_step, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 419, in smooth
+    smoother = self._smooth(smoother_output, results=results, **kwargs)
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 355, in _smooth
+    self._initialize_smoother(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^
+        smoother_output, smooth_method, prefix=prefix, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ))
+    ^
+  File "c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\kalman_smoother.py", line 179, in _initialize_smoother
+    self._kalman_smoothers[prefix] = cls(
+                                     ~~~^
+        self._statespaces[prefix], self._kalman_filters[prefix],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        smoother_output, smooth_method
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "statsmodels/tsa/statespace/_kalman_smoother.pyx", line 964, in statsmodels.tsa.statespace._kalman_smoother.dKalmanSmoother.__init__
+  File "statsmodels/tsa/statespace/_kalman_smoother.pyx", line 1134, in statsmodels.tsa.statespace._kalman_smoother.dKalmanSmoother.set_smoother_output
+  File "statsmodels/tsa/statespace/_kalman_smoother.pyx", line 1168, in statsmodels.tsa.statespace._kalman_smoother.dKalmanSmoother.reset
+  File "statsmodels/tsa/statespace/_kalman_smoother.pyx", line 1121, in statsmodels.tsa.statespace._kalman_smoother.dKalmanSmoother.reset_filter_method
+  File "statsmodels/tsa/statespace/_kalman_smoother.pyx", line 1014, in statsmodels.tsa.statespace._kalman_smoother.dKalmanSmoother.allocate_arrays
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 244. MiB for an array with shape (27, 27, 43801) and data type float64

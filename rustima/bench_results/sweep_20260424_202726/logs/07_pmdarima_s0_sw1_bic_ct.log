@@ -1,0 +1,14 @@
+Performing stepwise search to minimize bic
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+c:\Rust-python-arima\rustima\.venv\Lib\site-packages\statsmodels\tsa\statespace\sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : BIC=344123.584, Time=11.00 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : BIC=344076.902, Time=4.89 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : BIC=344077.996, Time=6.11 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : BIC=344078.672, Time=6.47 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : BIC=344076.902, Time=4.90 sec
+ ARIMA(1,1,1)(0,0,0)[0] intercept   : BIC=inf, Time=24.19 sec
+
+Best model:  ARIMA(0,1,0)(0,0,0)[0] intercept
+Total fit time: 57.574 seconds
