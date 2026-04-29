@@ -1,0 +1,24 @@
+ ARIMA(0,0,0)(0,0,0)[0]             : AIC=455.691, Time=0.01 sec
+ ARIMA(0,0,1)(0,0,0)[0]             : AIC=373.928, Time=0.02 sec
+ ARIMA(0,0,2)(0,0,0)[0]             : AIC=343.032, Time=0.02 sec
+ ARIMA(0,0,3)(0,0,0)[0]             : AIC=324.865, Time=0.02 sec
+ ARIMA(0,0,4)(0,0,0)[0]             : AIC=312.531, Time=0.04 sec
+ ARIMA(0,0,5)(0,0,0)[0]             : AIC=308.011, Time=0.04 sec
+ ARIMA(1,0,0)(0,0,0)[0]             : AIC=284.637, Time=0.01 sec
+ ARIMA(1,0,1)(0,0,0)[0]             : AIC=286.569, Time=0.03 sec
+ ARIMA(1,0,2)(0,0,0)[0]             : AIC=288.397, Time=0.02 sec
+ ARIMA(1,0,3)(0,0,0)[0]             : AIC=288.956, Time=0.04 sec
+ ARIMA(1,0,4)(0,0,0)[0]             : AIC=290.938, Time=0.04 sec
+ ARIMA(2,0,0)(0,0,0)[0]             : AIC=286.580, Time=0.02 sec
+ ARIMA(2,0,1)(0,0,0)[0]             : AIC=288.443, Time=0.03 sec
+ ARIMA(2,0,2)(0,0,0)[0]             : AIC=289.907, Time=0.04 sec
+ ARIMA(2,0,3)(0,0,0)[0]             : AIC=290.921, Time=0.04 sec
+ ARIMA(3,0,0)(0,0,0)[0]             : AIC=288.328, Time=0.04 sec
+ ARIMA(3,0,1)(0,0,0)[0]             : AIC=289.721, Time=0.04 sec
+ ARIMA(3,0,2)(0,0,0)[0]             : AIC=291.697, Time=0.04 sec
+ ARIMA(4,0,0)(0,0,0)[0]             : AIC=289.035, Time=0.03 sec
+ ARIMA(4,0,1)(0,0,0)[0]             : AIC=291.191, Time=0.04 sec
+ ARIMA(5,0,0)(0,0,0)[0]             : AIC=290.946, Time=0.03 sec
+
+Best model:  ARIMA(1,0,0)(0,0,0)[0]          
+Total fit time: 0.633 seconds
