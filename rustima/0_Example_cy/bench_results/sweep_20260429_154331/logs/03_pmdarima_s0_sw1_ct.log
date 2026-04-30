@@ -1,0 +1,30 @@
+Performing stepwise search to minimize aic
+ ARIMA(2,1,2)(0,0,0)[0] intercept   : AIC=179505.368, Time=4.31 sec
+ ARIMA(0,1,0)(0,0,0)[0] intercept   : AIC=190592.423, Time=0.81 sec
+ ARIMA(1,1,0)(0,0,0)[0] intercept   : AIC=182617.080, Time=0.98 sec
+ ARIMA(0,1,1)(0,0,0)[0] intercept   : AIC=184404.850, Time=1.17 sec
+ ARIMA(0,1,0)(0,0,0)[0]             : AIC=190592.423, Time=0.82 sec
+ ARIMA(1,1,2)(0,0,0)[0] intercept   : AIC=182944.012, Time=0.96 sec
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(2,1,1)(0,0,0)[0] intercept   : AIC=192366.346, Time=1.63 sec
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(3,1,2)(0,0,0)[0] intercept   : AIC=192993.217, Time=2.04 sec
+ ARIMA(2,1,3)(0,0,0)[0] intercept   : AIC=193512.180, Time=1.69 sec
+ ARIMA(1,1,1)(0,0,0)[0] intercept   : AIC=182387.844, Time=1.39 sec
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1901: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ar)**-1
+/Users/lab2/Documents/GitHub/Rust-python-arima2/rustima/.venv/lib/python3.11/site-packages/statsmodels/tsa/statespace/sarimax.py:1908: RuntimeWarning: divide by zero encountered in reciprocal
+  return np.roots(self.polynomial_reduced_ma)**-1
+ ARIMA(1,1,3)(0,0,0)[0] intercept   : AIC=193421.424, Time=2.20 sec
+ ARIMA(3,1,1)(0,0,0)[0] intercept   : AIC=181676.637, Time=1.82 sec
+ ARIMA(3,1,3)(0,0,0)[0] intercept   : AIC=198033.648, Time=3.39 sec
+ ARIMA(2,1,2)(0,0,0)[0]             : AIC=179505.368, Time=4.36 sec
+
+Best model:  ARIMA(2,1,2)(0,0,0)[0] intercept
+Total fit time: 27.559 seconds
