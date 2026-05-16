@@ -34,3 +34,4 @@ target_wheel/
 /sarimax_rs/docs/
 /sarimax_rs/result_v1/
 /ver5/
+.env

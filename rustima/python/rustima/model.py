@@ -10,7 +10,7 @@ from . import rustima
 # Parameter naming helpers
 # ---------------------------------------------------------------------------
 
-def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=True, trend="n"):
+def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=False, trend="n"):
     """Generate statsmodels-style parameter names from model specification.
 
     Layout: [trend(kt) | exog(k) | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]

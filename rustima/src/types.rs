@@ -113,7 +113,7 @@ impl Default for SarimaxConfig {
             trend: Trend::None,
             enforce_stationarity: false,
             enforce_invertibility: false,
-            concentrate_scale: true,
+            concentrate_scale: false,
             simple_differencing: false,
             measurement_error: false,
         }

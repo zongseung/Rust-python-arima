@@ -8,6 +8,7 @@
 
 use crate::error::{Result, SarimaxError};
 use crate::types::SarimaxConfig;
+use nalgebra::{DMatrix, DVector};
 
 /// Apply regular differencing d times.
 fn difference(y: &[f64], d: usize) -> Vec<f64> {
@@ -515,33 +516,171 @@ fn seasonal_ar_residuals(y: &[f64], sar: &[f64], s: usize) -> Vec<f64> {
     resid
 }
 
-/// Estimate exogenous variable coefficients via simple regression.
+/// Estimate exogenous variable coefficients via multivariate OLS.
 ///
-/// For each exog variable j, computes β_j = cov(y, x_j) / var(x_j).
+/// Matches statsmodels SARIMAX.start_params: β = pinv(X)·y (SVD-based pseudo-inverse).
+/// Uses the first `n = endog.len()` rows of each exog column (caller is responsible
+/// for differencing exog the same way as endog).
 fn estimate_exog_coeffs(endog: &[f64], exog: &[Vec<f64>]) -> Vec<f64> {
-    let n = endog.len();
-    if n == 0 {
-        return vec![0.0; exog.len()];
+    let k = exog.len();
+    if k == 0 {
+        return vec![];
     }
-    let y_mean: f64 = endog.iter().sum::<f64>() / n as f64;
+    let n = endog.len().min(exog.iter().map(|c| c.len()).min().unwrap_or(0));
+    if n == 0 {
+        return vec![0.0; k];
+    }
 
+    // Build X (n × k) column-major from exog cols, and y (n).
+    let mut x_mat = DMatrix::<f64>::zeros(n, k);
+    for (j, col) in exog.iter().enumerate() {
+        for t in 0..n {
+            x_mat[(t, j)] = col[t];
+        }
+    }
+    let y_vec = DVector::<f64>::from_iterator(n, endog.iter().take(n).copied());
+
+    // β = pinv(X) · y  via SVD (matches numpy.linalg.pinv)
+    let svd = x_mat.svd(true, true);
+    match svd.solve(&y_vec, 1e-12) {
+        Ok(b) => b.iter().copied().collect(),
+        Err(_) => vec![0.0; k],
+    }
+}
+
+/// Apply the same regular + seasonal differencing to each exog column.
+fn difference_exog_cols(exog: &[Vec<f64>], d: usize, dd: usize, s: usize) -> Vec<Vec<f64>> {
     exog.iter()
         .map(|col| {
-            let x_mean: f64 = col.iter().sum::<f64>() / n as f64;
-            let mut cov = 0.0;
-            let mut var_x = 0.0;
-            for t in 0..n.min(col.len()) {
-                let dx = col[t] - x_mean;
-                cov += (endog[t] - y_mean) * dx;
-                var_x += dx * dx;
-            }
-            if var_x.abs() < 1e-15 {
-                0.0
-            } else {
-                cov / var_x
-            }
+            let c = difference(col, d);
+            seasonal_difference(&c, dd, s)
         })
         .collect()
+}
+
+/// General multivariate OLS via SVD pseudo-inverse: β = pinv(X) · y.
+/// X is provided as columns. Returns vec of length n_cols, or None on failure.
+fn ols_pinv(x_cols: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
+    let k = x_cols.len();
+    if k == 0 || y.is_empty() {
+        return Some(vec![0.0; k]);
+    }
+    let n = y.len().min(x_cols.iter().map(|c| c.len()).min().unwrap_or(0));
+    if n < k {
+        return None;
+    }
+    let mut x_mat = DMatrix::<f64>::zeros(n, k);
+    for (j, col) in x_cols.iter().enumerate() {
+        for t in 0..n {
+            x_mat[(t, j)] = col[t];
+        }
+    }
+    let y_vec = DVector::<f64>::from_iterator(n, y.iter().take(n).copied());
+    let svd = x_mat.svd(true, true);
+    svd.solve(&y_vec, 1e-12).ok().map(|b| b.iter().copied().collect())
+}
+
+/// statsmodels-style conditional sum-of-squares 2-stage ARMA estimator.
+///
+/// Replicates statsmodels SARIMAX._conditional_sum_squares (sarimax.py:820).
+/// For a possibly-sparse ARMA whose AR lags are at positions `ar_lags` (1-indexed)
+/// and MA lags at `ma_lags` (1-indexed), uses:
+///
+///   1. Long AR(`k_ar_long = 2 * max_ma_lag`) fit by OLS to get MA-innovation proxies
+///   2. OLS regression of y on [y_{t-l} for l in ar_lags, resid_{t-l} for l in ma_lags]
+///
+/// Returns `(ar_params, ma_params, residual_variance)` or None if the system is too small.
+///
+/// `ar_lags` and `ma_lags` are 1-indexed lag positions (e.g. [1,2,3] for AR(3),
+/// [24] for seasonal AR with s=24 and P=1).
+fn css_two_stage(
+    endog: &[f64],
+    ar_lags: &[usize],
+    ma_lags: &[usize],
+) -> Option<(Vec<f64>, Vec<f64>, f64)> {
+    let n = endog.len();
+    let n_ar = ar_lags.len();
+    let n_ma = ma_lags.len();
+    let max_ma_lag = ma_lags.iter().copied().max().unwrap_or(0);
+    let max_ar_lag = ar_lags.iter().copied().max().unwrap_or(0);
+
+    // statsmodels: k = 2 * k_ma (where k_ma is the polynomial degree, i.e. max MA lag)
+    let k_long = 2 * max_ma_lag;
+    let r = (k_long + max_ma_lag).max(max_ar_lag);
+
+    // Stage 1: long AR fit to get MA-innovation residuals
+    let mut residuals: Vec<f64> = vec![0.0; n];
+    if n_ma > 0 && k_long > 0 {
+        if n <= k_long + 2 {
+            return None;
+        }
+        // Build lag matrix: X[t,l] = endog[t - l - 1] for t = k_long..n, l = 0..k_long
+        // (matches statsmodels lagmat trim='both')
+        let n_rows = n - k_long;
+        let mut x_cols: Vec<Vec<f64>> = (0..k_long)
+            .map(|l| (k_long..n).map(|t| endog[t - l - 1]).collect())
+            .collect();
+        let y_long: Vec<f64> = endog[k_long..].to_vec();
+        let beta_long = ols_pinv(&x_cols, &y_long)?;
+        // residuals indexed at t = k_long..n  (length n - k_long)
+        for (i, t) in (k_long..n).enumerate() {
+            let mut fitted = 0.0;
+            for l in 0..k_long {
+                fitted += beta_long[l] * x_cols[l][i];
+            }
+            residuals[t] = endog[t] - fitted;
+        }
+        // Suppress warning about unused x_cols mutability path
+        drop(x_cols);
+    }
+
+    // Stage 2: ARMA regression on y[r..]
+    if n <= r + 2 {
+        return None;
+    }
+    let y_target: Vec<f64> = endog[r..].to_vec();
+    let n_rows = n - r;
+
+    let mut x_cols: Vec<Vec<f64>> = Vec::with_capacity(n_ar + n_ma);
+    // AR columns: y_{t - lag}
+    for &lag in ar_lags.iter() {
+        let col: Vec<f64> = (r..n).map(|t| {
+            if t >= lag { endog[t - lag] } else { 0.0 }
+        }).collect();
+        x_cols.push(col);
+    }
+    // MA columns: resid_{t - lag}  (uses long-AR residuals)
+    for &lag in ma_lags.iter() {
+        let col: Vec<f64> = (r..n).map(|t| {
+            if t >= lag { residuals[t - lag] } else { 0.0 }
+        }).collect();
+        x_cols.push(col);
+    }
+
+    let beta = ols_pinv(&x_cols, &y_target)?;
+    let ar_params: Vec<f64> = beta[..n_ar].to_vec();
+    let ma_params: Vec<f64> = beta[n_ar..n_ar + n_ma].to_vec();
+
+    // Residual variance
+    let mut final_resid: Vec<f64> = Vec::with_capacity(n_rows);
+    for i in 0..n_rows {
+        let mut fitted = 0.0;
+        for j in 0..(n_ar + n_ma) {
+            fitted += beta[j] * x_cols[j][i];
+        }
+        final_resid.push(y_target[i] - fitted);
+    }
+    // statsmodels: params_variance = mean(residuals[k_params_ma:]**2)
+    // We use straight mean(resid^2) which is essentially the same for our purposes.
+    let skip = n_ma;  // skip first n_ma residuals (analogous to k_params_ma)
+    let used = &final_resid[skip..];
+    let var = if used.is_empty() {
+        autocovariance(&final_resid, 0)
+    } else {
+        used.iter().map(|x| x * x).sum::<f64>() / used.len() as f64
+    };
+
+    Some((ar_params, ma_params, var.max(1e-6)))
 }
 
 /// Compute starting parameters for SARIMAX model.
@@ -569,9 +708,9 @@ pub fn compute_start_params(
         + qq
         + if config.concentrate_scale { 0 } else { 1 };
 
-    // Apply differencing
-    let diffed = difference(endog, order.d);
-    let diffed = seasonal_difference(&diffed, order.dd, s);
+    // Apply differencing (statsmodels also differences exog the same way)
+    let mut diffed = difference(endog, order.d);
+    diffed = seasonal_difference(&diffed, order.dd, s);
 
     if diffed.len() < 3 {
         return Ok(vec![0.0; n_params]);
@@ -585,29 +724,89 @@ pub fn compute_start_params(
         params[0] = mean;
     }
 
-    // Exog coefficients: OLS estimates or zeros
+    // Exog coefficients via multivariate OLS on **differenced** exog,
+    // then RESIDUALIZE `diffed` so the subsequent ARMA estimation sees
+    // only the unexplained variance. This matches statsmodels SARIMAX
+    // start_params (lines 916-947 in sarimax.py).
     if config.n_exog > 0 {
         if let Some(exog_cols) = exog {
-            let exog_betas = estimate_exog_coeffs(&diffed, exog_cols);
+            let exog_diffed = difference_exog_cols(exog_cols, order.d, order.dd, s);
+            // Truncate to common length (defensive)
+            let nd = diffed.len().min(
+                exog_diffed.iter().map(|c| c.len()).min().unwrap_or(0)
+            );
+            let diffed_trim: Vec<f64> = diffed[..nd].to_vec();
+            let exog_trim: Vec<Vec<f64>> = exog_diffed.iter()
+                .map(|c| c[..nd].to_vec())
+                .collect();
+
+            let exog_betas = estimate_exog_coeffs(&diffed_trim, &exog_trim);
             params.extend_from_slice(&exog_betas);
+
+            // Residualize: diffed ← diffed − Xd · β
+            for t in 0..nd {
+                let mut fitted = 0.0;
+                for (j, col) in exog_trim.iter().enumerate() {
+                    fitted += exog_betas[j] * col[t];
+                }
+                diffed[t] -= fitted;
+            }
         } else {
             params.extend(vec![0.0; config.n_exog]);
         }
     }
 
-    // Try Hannan-Rissanen joint estimation for seasonal models with MA components.
-    // HR produces significantly better joint estimates for seasonal AR-MA interaction.
-    // Root cause analysis: SARIMA(0,1,1)(0,1,1,12) start_params gap was max|diff|=0.27,
-    // causing 61 vs 8 iterations. HR joint estimation closes this gap.
-    // For non-seasonal models, the per-component estimation is well-tested and sufficient.
-    let use_hr = qq > 0 && s > 0;
-    let hr_result = if use_hr {
-        hannan_rissanen(&diffed, p, q, pp, qq, s)
+    // statsmodels-style CSS 2-stage estimation:
+    //   - Non-seasonal ARMA(p,q) → separate CSS call on `diffed`
+    //   - Seasonal SARMA(P,Q)[s]  → separate CSS call on `diffed`
+    // Each returns (params, residual_variance). We use the non-seasonal variance
+    // for sigma² when available (matches sm), else seasonal, else fallback.
+    //
+    // Note: ar_lags / ma_lags are passed as the **nonzero polynomial positions**
+    // — for non-seasonal these are 1..=p; for seasonal these are s, 2s, ..., P·s.
+    let mut css_variance: Option<f64> = None;
+
+    let (ar_vec, ma_vec) = if p > 0 || q > 0 {
+        let ar_lags: Vec<usize> = (1..=p).collect();
+        let ma_lags: Vec<usize> = (1..=q).collect();
+        match css_two_stage(&diffed, &ar_lags, &ma_lags) {
+            Some((ar, ma, var)) => {
+                css_variance = Some(var);
+                (ar, ma)
+            }
+            None => (vec![0.0; p], vec![0.0; q]),
+        }
     } else {
-        None
+        (vec![], vec![])
     };
 
-    if let Some((ar, ma, sar, sma)) = hr_result {
+    let (sar_vec, sma_vec) = if (pp > 0 || qq > 0) && s > 0 {
+        let sar_lags: Vec<usize> = (1..=pp).map(|i| i * s).collect();
+        let sma_lags: Vec<usize> = (1..=qq).map(|i| i * s).collect();
+        match css_two_stage(&diffed, &sar_lags, &sma_lags) {
+            Some((sar, sma, var)) => {
+                // statsmodels uses non-seasonal variance first; only fall through to
+                // seasonal if non-seasonal returned nothing.
+                css_variance.get_or_insert(var);
+                (sar, sma)
+            }
+            None => (vec![0.0; pp], vec![0.0; qq]),
+        }
+    } else {
+        (vec![0.0; pp], vec![0.0; qq])
+    };
+
+    // Clamp coefficients to keep them in a sensible range for the transform (Monahan/Jones
+    // will further constrain stationarity/invertibility if requested).
+    let clamp = |v: Vec<f64>| v.into_iter().map(|x| x.clamp(-0.99, 0.99)).collect::<Vec<_>>();
+    let css_result: Option<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> =
+        if !ar_vec.is_empty() || !ma_vec.is_empty() || !sar_vec.is_empty() || !sma_vec.is_empty() {
+            Some((clamp(ar_vec), clamp(ma_vec), clamp(sar_vec), clamp(sma_vec)))
+        } else {
+            None
+        };
+
+    if let Some((ar, ma, sar, sma)) = css_result {
         params.extend_from_slice(&ar);
         params.extend_from_slice(&ma);
         params.extend_from_slice(&sar);
@@ -654,9 +853,24 @@ pub fn compute_start_params(
         }
     }
 
-    // sigma2 if not concentrated
+    // sigma2 if not concentrated. Use CSS residual variance from the 2-stage
+    // estimator above (matches statsmodels SARIMAX.start_params, line 902).
+    // Falls back to AR-residual variance, then sample variance, if CSS unavailable.
     if !config.concentrate_scale {
-        let var = autocovariance(&diffed, 0).max(1e-6);
+        let var = if let Some(v) = css_variance {
+            v
+        } else {
+            let kt_ne = kt + config.n_exog;
+            let ar_slice = &params[kt_ne..kt_ne + p];
+            let sar_slice = &params[kt_ne + p + q..kt_ne + p + q + pp];
+            let r1 = if p > 0 { ar_residuals(&diffed, ar_slice) } else { diffed.clone() };
+            let r2 = if pp > 0 && s > 0 {
+                seasonal_ar_residuals(&r1, sar_slice, s)
+            } else {
+                r1
+            };
+            autocovariance(&r2, 0).max(1e-6)
+        };
         params.push(var);
     }
 

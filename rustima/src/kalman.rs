@@ -583,11 +583,44 @@ fn kalman_core(
                     pz_prev.copy_from(&pz);
                 }
             } else if t >= burn {
-                return Err(SarimaxError::DataError(format!(
-                    "innovation variance F_t <= 0 at t={} (F_t={}); \
-                     model parameters may be numerically unstable",
-                    t, f_t
-                )));
+                // SAFEGUARD (numerical wall at parameter boundary).
+                //
+                // F_t <= 0 means the predicted innovation variance went non-
+                // positive — typically because the model is at a near-non-
+                // stationary boundary (AR roots ≈ unit circle). Aborting here
+                // hides the entire likelihood surface beyond the boundary from
+                // the optimizer: L-BFGS-B sees only a hard wall (NaN return)
+                // and backs off, never reaching the genuine local maxima that
+                // statsmodels finds at e.g. ar1 ≈ 1.04.
+                //
+                // Instead, treat the offending observation as having huge
+                // variance: contribute a large `log F_t` and tiny `v²/F_t` to
+                // the likelihood. The resulting LL is bad (so the optimizer
+                // gets a clear "worse" signal and shrinks its step), but is
+                // finite and smooth in the parameters, so gradient descent can
+                // still steer back into a stable basin.
+                if store_full {
+                    a_filtered.copy_from(&a);
+                    p_filtered.copy_from(&p);
+                }
+                let f_safe: f64 = crate::optimizer::KF_FT_FALLBACK_VARIANCE;
+                sum_log_f += f_safe.ln();
+                sum_v2_f += v_t * v_t / f_safe;
+
+                // Skip the Kalman state/cov update (we have no valid F_t to
+                // weight the innovation by) and just predict forward.
+                strategy.predict_state(
+                    t_mat,
+                    &sparse_t,
+                    &a,
+                    &mut a_next,
+                    &ss.state_intercept,
+                    t,
+                    k,
+                    has_state_intercept,
+                );
+                strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
+                std::mem::swap(&mut a, &mut a_next);
             } else {
                 // F_t <= 0 during burn-in: skip update, predict from current state
                 if store_full {

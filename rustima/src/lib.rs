@@ -523,7 +523,7 @@ fn version() -> &'static str {
 
 /// Compute the SARIMAX concentrated (or full) log-likelihood.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true,
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false,
                     enforce_stationarity=true, enforce_invertibility=true,
                     trend=None, simple_differencing=false))]
 fn sarimax_loglike<'py>(
@@ -564,7 +564,7 @@ fn sarimax_loglike<'py>(
 /// Returns a dict with: params, loglike, scale, aic, bic, n_obs, n_iter, converged, method.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, start_params=None, exog=None,
-                    concentrate_scale=true, enforce_stationarity=true,
+                    concentrate_scale=false, enforce_stationarity=true,
                     enforce_invertibility=true, method=None, maxiter=None,
                     trend=None, simple_differencing=false))]
 fn sarimax_fit<'py>(
@@ -621,7 +621,7 @@ fn sarimax_fit<'py>(
 /// Returns a dict with: mean, variance, ci_lower, ci_upper.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, steps=10, alpha=0.05,
-                    exog=None, future_exog=None, concentrate_scale=true,
+                    exog=None, future_exog=None, concentrate_scale=false,
                     trend=None, simple_differencing=false))]
 fn sarimax_forecast<'py>(
     py: Python<'py>,
@@ -710,7 +710,7 @@ fn sarimax_forecast<'py>(
 ///
 /// Returns a dict with: residuals, standardized_residuals.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true, trend=None, simple_differencing=false))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
 fn sarimax_residuals<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -749,7 +749,7 @@ fn sarimax_residuals<'py>(
 /// Returns a list of dicts, each with "loglike" key or "error" key.
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal, params,
-                    exog_list=None, concentrate_scale=true,
+                    exog_list=None, concentrate_scale=false,
                     enforce_stationarity=false, enforce_invertibility=false,
                     trend=None, simple_differencing=false))]
 fn sarimax_batch_loglike<'py>(
@@ -815,7 +815,7 @@ fn sarimax_batch_loglike<'py>(
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal,
                     enforce_stationarity=true, enforce_invertibility=true,
-                    concentrate_scale=true, method=None, maxiter=None,
+                    concentrate_scale=false, method=None, maxiter=None,
                     exog_list=None, trend=None, simple_differencing=false))]
 fn sarimax_batch_fit<'py>(
     py: Python<'py>,
@@ -889,7 +889,7 @@ fn sarimax_batch_fit<'py>(
 #[pyfunction]
 #[pyo3(signature = (y, order_list, seasonal_list,
                     enforce_stationarity=true, enforce_invertibility=true,
-                    concentrate_scale=true, method=None, maxiter=None,
+                    concentrate_scale=false, method=None, maxiter=None,
                     exog=None, trend=None, simple_differencing=false))]
 fn sarimax_grid_search<'py>(
     py: Python<'py>,
@@ -988,7 +988,7 @@ fn sarimax_grid_search<'py>(
 /// Returns a list of dicts (one per series).
 #[pyfunction]
 #[pyo3(signature = (series_list, order, seasonal, params_list,
-                    steps=10, alpha=0.05, concentrate_scale=true,
+                    steps=10, alpha=0.05, concentrate_scale=false,
                     exog_list=None, exog_forecast_list=None, trend=None,
                     simple_differencing=false))]
 fn sarimax_batch_forecast<'py>(
@@ -1072,7 +1072,7 @@ fn sarimax_batch_forecast<'py>(
 /// cov_params, n_params, status, message.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, method="hessian", alpha=0.05,
-                    exog=None, concentrate_scale=true,
+                    exog=None, concentrate_scale=false,
                     enforce_stationarity=true, enforce_invertibility=true,
                     trend=None, simple_differencing=false))]
 fn sarimax_inference<'py>(
@@ -1126,7 +1126,7 @@ fn sarimax_inference<'py>(
 /// Returns a dict with: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
 /// jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=true, trend=None, simple_differencing=false))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
 fn sarimax_diagnostics<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
