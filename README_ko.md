@@ -345,6 +345,26 @@ result = model.fit()
 fcast = result.forecast(steps=10, exog=X_future)
 ```
 
+**약식별(weakly identified) 외생 계수를 위한 Profiled Kalman-GLS Trust-Region.**
+외생 β 방향으로 likelihood가 평탄해 기본 옵티마이저가 β를 나쁜 basin에
+남겨두는 경우, `profile-trust-region` 메서드 (학술명: *Profiled Kalman-GLS
+Trust-Region*, 동등 표현 *innovations-form profile likelihood with
+trust-region BFGS*) 는 β를 비선형 최적화에서 제외하고 매 likelihood 평가마다
+innovation-space GLS로 정확히 풀어냅니다. 옵티마이저는
+`[trend | AR | MA | sAR | sMA | sigma2]` 만 봅니다. 외생 SARIMAX 케이스에서
+R `stats::arima(method="CSS-ML")` 의 β 부호/크기를 재현하는 경향이 있습니다:
+
+```python
+result = model.fit(method="profile-trust-region", maxiter=200)
+```
+
+`n_exog == 0` 이면 일반 `trust-region` 경로로 폴백. `simple_differencing=True`
+일 때는 동일한 차분 연산자가 `endog` 와 모든 `exog` 컬럼에 적용되어
+`Δy_t = (Δx_t) β + ARMA noise` 가 일관된 사전 차분 데이터셋 위에서 풀립니다.
+알고리즘, statsmodels/R과의 파라미터 단위 비교, 초기화 스킴 주의사항은
+[`rustima/docs/profiled_kalman_gls_plan.md`](rustima/docs/profiled_kalman_gls_plan.md)
+를 참고하세요.
+
 ### 배치 병렬 처리
 
 ```python
@@ -546,7 +566,9 @@ result = rustima.sarimax_fit(
     seasonal=(0, 0, 0, 0),
     enforce_stationarity=True,   # AR 정상성 제약
     enforce_invertibility=True,  # MA 가역성 제약
-    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "nelder-mead"
+    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "bfgs"
+                                 # | "trust-region" | "profile-trust-region"
+                                 # | "nelder-mead"
     maxiter=500,
     trend="c",                   # 추세
 )
@@ -1171,10 +1193,13 @@ Rust 설치: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` �
 ### 모델링 질문
 
 **수렴 실패 (`converged=False`) 입니다. 어떻게 해야 하나요?**
-1. `method="nelder-mead"` 시도 (느리지만 더 강건)
-2. `maxiter=1000` 로 늘리기
-3. 차수 낮추기 — `p`, `q`, `P`, `Q` 너무 크면 식별 실패 빈번
-4. NaN/Inf 확인: `np.isfinite(y).all()` 이 `True` 여야 함
+1. 외생 회귀변수가 있는 모델이면 `method="profile-trust-region"` 시도
+   — β를 Kalman-GLS profile로 비선형 최적화에서 제외해서, R `stats::arima` 의
+   β 추정과 더 가깝게 떨어지는 경우가 많음.
+2. `method="nelder-mead"` 시도 (느리지만 더 강건)
+3. `maxiter=1000` 로 늘리기
+4. 차수 낮추기 — `p`, `q`, `P`, `Q` 너무 크면 식별 실패 빈번
+5. NaN/Inf 확인: `np.isfinite(y).all()` 이 `True` 여야 함
 
 **`auto_arima`가 hourly 데이터(s=24)에서 너무 오래 걸림**
 `stepwise=False` 로 전환해 Rayon 병렬 grid search 사용. Hourly 데이터에서는 stepwise보다 **10배 빠른** 경우가 많음 (벤치마크 참조).
@@ -1191,6 +1216,19 @@ Rust 설치: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh` �
 
 **`simple_differencing=True`는 언제 써야 하나요?**
 R의 기본 동작을 재현하거나 사전 차분된 시계열에 R-스타일 AIC/BIC를 맞출 때만. 기본값 (`False`) 은 statsmodels와 매칭.
+`True` 일 때는 같은 차분 연산자가 `endog` 와 모든 `exog` 컬럼에 적용되므로
+`Δy_t = (Δx_t) β + noise` 회귀가 일관된 사전 차분 데이터셋 위에서 풀립니다.
+이 경로의 LL/AIC는 n = n_obs − d − s·D 유효 관측치를 사용합니다.
+
+**외생 SARIMAX 에서 `simple_differencing=True` 경로의 LL이 statsmodels와 다른데요?**
+`enforce_stationarity=False, enforce_invertibility=False` 를 양쪽에 맞추면
+같은 파라미터 벡터에서 rustima의 Kalman log-likelihood가 statsmodels와
+**비트 단위로 동일**합니다. `enforce=True` 에서는 두 엔진이 정상 상태 초기
+공분산을 서로 다른 방식으로 초기화하기 때문에 n 누적분만큼 LL 스케일이
+어긋납니다. 파라미터 추정치 자체는 가깝게 유지되므로 동일하지 않다고
+해서 잘못된 것은 아닙니다. 외생 모델에서 엔진 간 like-for-like LL 비교가
+필요하면 이 init divergence가 나타나지 않는 exact 경로
+(`simple_differencing=False`) 를 권장합니다.
 
 ### 성능
 

@@ -345,6 +345,28 @@ result = model.fit()
 fcast = result.forecast(steps=10, exog=X_future)
 ```
 
+**Profiled Kalman-GLS Trust-Region for weakly identified exog coefficients.**
+When the exog block is weakly identified (flat likelihood in the β direction),
+the default optimizer can leave β in a poor basin. The `profile-trust-region`
+method (academic name: *Profiled Kalman-GLS Trust-Region*, equivalently
+*innovations-form profile likelihood with trust-region BFGS*) removes β from
+the nonlinear optimizer and solves it exactly via innovation-space GLS at
+each likelihood evaluation. The optimizer only sees `[trend | AR | MA | sAR |
+sMA | sigma2]`. On exogenous SARIMAX cases it tends to reproduce R
+`stats::arima(method="CSS-ML")` β estimates in sign and magnitude:
+
+```python
+result = model.fit(method="profile-trust-region", maxiter=200)
+```
+
+If `n_exog == 0` the method falls back to the regular `trust-region` path.
+When `simple_differencing=True`, the same differencing operator is now
+applied to both `endog` and every `exog` column so that the regression
+`Δy_t = (Δx_t) β + ARMA noise` is solved on a consistent pre-differenced
+dataset. See [`rustima/docs/profiled_kalman_gls_plan.md`](rustima/docs/profiled_kalman_gls_plan.md)
+for the algorithm, parameter-level comparison against statsmodels and R, and
+init-scheme caveats.
+
 ### Batch Parallel Processing
 
 ```python
@@ -622,7 +644,9 @@ result = rustima.sarimax_fit(
     seasonal=(0, 0, 0, 0),
     enforce_stationarity=True,   # AR stationarity constraint
     enforce_invertibility=True,  # MA invertibility constraint
-    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "nelder-mead"
+    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "bfgs"
+                                 # | "trust-region" | "profile-trust-region"
+                                 # | "nelder-mead"
     maxiter=500,
     trend="c",
 )
@@ -1248,10 +1272,13 @@ Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`, 
 ### Modeling questions
 
 **My model didn't converge (`converged=False`). What now?**
-1. Try `method="nelder-mead"` (slower but more robust)
-2. Increase `maxiter=1000`
-3. Reduce the orders — high `p`, `q`, `P`, `Q` often fail to identify
-4. Check your data has no NaN/Inf: `np.isfinite(y).all()` should be `True`
+1. If the model has exogenous regressors, try `method="profile-trust-region"`
+   — it eliminates β from the nonlinear search by Kalman-GLS profiling and
+   often matches R `stats::arima` β estimates more closely.
+2. Try `method="nelder-mead"` (slower but more robust)
+3. Increase `maxiter=1000`
+4. Reduce the orders — high `p`, `q`, `P`, `Q` often fail to identify
+5. Check your data has no NaN/Inf: `np.isfinite(y).all()` should be `True`
 
 **`auto_arima` takes forever on my hourly data (s=24)**
 Use `stepwise=False` to switch to the Rayon-parallel grid search. On hourly data it's often **10x faster** than stepwise (see benchmarks).
@@ -1268,6 +1295,21 @@ Expected. rustima uses L-BFGS-B with analytical gradients (statsmodels uses L-BF
 
 **When should I use `simple_differencing=True`?**
 Only when you want to match R's default behavior or reproduce results with R-style AIC/BIC on a pre-differenced series. Default (`False`) matches statsmodels.
+When `True`, the same differencing operator is applied to both `endog` and
+every `exog` column (so the regression `Δy_t = (Δx_t) β + noise` is fitted on
+a consistently pre-differenced dataset). LL/AIC on this path uses
+n = n_obs − d − s·D effective observations.
+
+**Why does my exog SARIMAX LL differ from statsmodels on the
+`simple_differencing=True` path?**
+Under matched `enforce_stationarity=False, enforce_invertibility=False`,
+rustima's Kalman log-likelihood at the same parameter vector is **bit-
+identical** to statsmodels. Under `enforce=True`, the two engines initialize
+the stationary state covariance with different schemes, which accumulates a
+likelihood-scale offset over n. Parameter estimates remain close. For
+like-for-like LL comparisons across engines on exogenous models, prefer the
+exact path (`simple_differencing=False`) where this divergence does not
+appear.
 
 ### Performance
 
