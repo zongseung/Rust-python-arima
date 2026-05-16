@@ -19,7 +19,7 @@ use crate::css;
 use crate::error::{Result, SarimaxError};
 use crate::pipeline;
 use crate::initialization::KalmanInit;
-use crate::kalman::kalman_loglike;
+use crate::kalman::{kalman_filter, kalman_loglike};
 use crate::params::{self, SarimaxParams};
 use crate::score;
 use crate::start_params::compute_start_params;
@@ -385,6 +385,249 @@ fn apply_transform_jacobian(
 ) -> std::result::Result<Vec<f64>, String> {
     crate::params::transform_jacobian_t_vec(unconstrained, config, score_constrained)
         .map_err(|e| e.to_string())
+}
+
+/// Parameter length for the profiled objective.
+///
+/// Layout is the standard unconstrained layout with the exog beta block removed:
+/// `[trend | ar(p) | ma(q) | sar(P) | sma(Q) | sigma2?]`.
+fn profiled_param_len(config: &SarimaxConfig) -> usize {
+    expected_param_len(config).saturating_sub(config.n_exog)
+}
+
+fn remove_exog_block(flat: &[f64], config: &SarimaxConfig) -> Vec<f64> {
+    let kt = config.trend.k_trend();
+    let n_exog = config.n_exog;
+    let mut out = Vec::with_capacity(flat.len().saturating_sub(n_exog));
+    out.extend_from_slice(&flat[..kt]);
+    out.extend_from_slice(&flat[kt + n_exog..]);
+    out
+}
+
+fn insert_exog_block(profiled: &[f64], exog_beta: &[f64], config: &SarimaxConfig) -> Vec<f64> {
+    let kt = config.trend.k_trend();
+    let mut out = Vec::with_capacity(profiled.len() + exog_beta.len());
+    out.extend_from_slice(&profiled[..kt]);
+    out.extend_from_slice(exog_beta);
+    out.extend_from_slice(&profiled[kt..]);
+    out
+}
+
+/// Objective value and recovered full parameterization for the profiled method.
+struct ProfiledEval {
+    negll: f64,
+    full_unconstrained: Vec<f64>,
+    full_params: SarimaxParams,
+}
+
+/// SARIMAX objective that profiles out exogenous regression coefficients.
+///
+/// For fixed nonlinear parameters, beta is estimated by GLS in Kalman
+/// innovation space. The optimizer only sees the non-exog coordinates.
+#[derive(Clone)]
+struct ProfiledSarimaxObjective {
+    endog: Vec<f64>,
+    config: SarimaxConfig,
+    exog: Vec<Vec<f64>>,
+}
+
+impl ProfiledSarimaxObjective {
+    fn eval_profiled(&self, profiled_unconstrained: &[f64]) -> std::result::Result<ProfiledEval, String> {
+        if profiled_unconstrained.len() != profiled_param_len(&self.config) {
+            return Err(format!(
+                "profiled parameter length mismatch: expected {}, got {}",
+                profiled_param_len(&self.config),
+                profiled_unconstrained.len()
+            ));
+        }
+
+        let zero_beta = vec![0.0; self.config.n_exog];
+        let full_zero_unconstrained =
+            insert_exog_block(profiled_unconstrained, &zero_beta, &self.config);
+        let full_zero_constrained =
+            transform_params(&full_zero_unconstrained, &self.config).map_err(|e| e.to_string())?;
+        let zero_params =
+            SarimaxParams::from_flat(&full_zero_constrained, &self.config).map_err(|e| e.to_string())?;
+
+        let (beta_hat, loglike) = self.profile_beta_and_loglike(&zero_params)?;
+        let full_unconstrained =
+            insert_exog_block(profiled_unconstrained, &beta_hat, &self.config);
+        let full_constrained =
+            transform_params(&full_unconstrained, &self.config).map_err(|e| e.to_string())?;
+        let full_params =
+            SarimaxParams::from_flat(&full_constrained, &self.config).map_err(|e| e.to_string())?;
+
+        Ok(ProfiledEval {
+            negll: -loglike,
+            full_unconstrained,
+            full_params,
+        })
+    }
+
+    fn profile_beta_and_loglike(
+        &self,
+        zero_params: &SarimaxParams,
+    ) -> std::result::Result<(Vec<f64>, f64), String> {
+        let n_exog = self.config.n_exog;
+        if n_exog == 0 {
+            let ss = StateSpace::new(&self.config, zero_params, &self.endog, None)
+                .map_err(|e| e.to_string())?;
+            let init = KalmanInit::from_config_default(&ss, &self.config);
+            let output =
+                kalman_loglike(&self.endog, &ss, &init, self.config.concentrate_scale)
+                    .map_err(|e| e.to_string())?;
+            return Ok((Vec::new(), output.loglike));
+        }
+
+        let ss_y = StateSpace::new(&self.config, zero_params, &self.endog, None)
+            .map_err(|e| e.to_string())?;
+        let init_y = KalmanInit::from_config_default(&ss_y, &self.config);
+        let y_filter =
+            kalman_filter(&self.endog, &ss_y, &init_y, self.config.concentrate_scale)
+                .map_err(|e| e.to_string())?;
+
+        let burn = y_filter
+            .innovations
+            .len()
+            .saturating_sub(y_filter.n_obs_effective);
+        let n_eff = y_filter.n_obs_effective;
+        if n_eff == 0 {
+            return Err("profiled objective has no effective observations".to_string());
+        }
+
+        let mut x_innovations: Vec<Vec<f64>> = Vec::with_capacity(n_exog);
+        let mut x_params = zero_params.clone();
+        for coeff in x_params.trend_coeffs.iter_mut() {
+            *coeff = 0.0;
+        }
+        for coeff in x_params.exog_coeffs.iter_mut() {
+            *coeff = 0.0;
+        }
+
+        for j in 0..n_exog {
+            let col = self
+                .exog
+                .get(j)
+                .ok_or_else(|| format!("missing exog column {}", j))?;
+            let ss_x =
+                StateSpace::new(&self.config, &x_params, col, None).map_err(|e| e.to_string())?;
+            let init_x = KalmanInit::from_config_default(&ss_x, &self.config);
+            let x_filter =
+                kalman_filter(col, &ss_x, &init_x, self.config.concentrate_scale)
+                    .map_err(|e| e.to_string())?;
+            if x_filter.innovations.len() != y_filter.innovations.len() {
+                return Err("profiled exog innovation length mismatch".to_string());
+            }
+            x_innovations.push(x_filter.innovations);
+        }
+
+        let mut xtwx = DMatrix::<f64>::zeros(n_exog, n_exog);
+        let mut xtwy = DVector::<f64>::zeros(n_exog);
+
+        for t in burn..y_filter.innovations.len() {
+            let f_t = y_filter
+                .innovation_vars
+                .get(t)
+                .copied()
+                .unwrap_or(KF_FT_FALLBACK_VARIANCE);
+            let f_safe = if f_t > 0.0 && f_t.is_finite() {
+                f_t
+            } else {
+                KF_FT_FALLBACK_VARIANCE
+            };
+            let w = 1.0 / f_safe;
+            let vy = y_filter.innovations[t];
+            for i in 0..n_exog {
+                let xi = x_innovations[i][t];
+                xtwy[i] += xi * vy * w;
+                for j in 0..n_exog {
+                    xtwx[(i, j)] += xi * x_innovations[j][t] * w;
+                }
+            }
+        }
+
+        let beta_vec = xtwx
+            .svd(true, true)
+            .solve(&xtwy, 1e-12)
+            .map_err(|e| format!("profiled exog GLS solve failed: {}", e))?;
+        let beta_hat: Vec<f64> = beta_vec.iter().copied().collect();
+
+        let mut sum_log_f = 0.0;
+        let mut sum_v2_f = 0.0;
+        for t in burn..y_filter.innovations.len() {
+            let f_t = y_filter
+                .innovation_vars
+                .get(t)
+                .copied()
+                .unwrap_or(KF_FT_FALLBACK_VARIANCE);
+            let f_safe = if f_t > 0.0 && f_t.is_finite() {
+                f_t
+            } else {
+                KF_FT_FALLBACK_VARIANCE
+            };
+            let mut resid = y_filter.innovations[t];
+            for j in 0..n_exog {
+                resid -= beta_hat[j] * x_innovations[j][t];
+            }
+            sum_log_f += f_safe.ln();
+            sum_v2_f += resid * resid / f_safe;
+        }
+
+        if !sum_log_f.is_finite() || !sum_v2_f.is_finite() {
+            return Err("profiled objective produced non-finite Kalman sums".to_string());
+        }
+
+        let loglike = if self.config.concentrate_scale {
+            let sigma2_hat = (sum_v2_f / n_eff as f64).max(1e-300);
+            -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
+                - 0.5 * (n_eff as f64) * sigma2_hat.ln()
+                - 0.5 * (n_eff as f64)
+                - 0.5 * sum_log_f
+        } else {
+            -0.5 * (n_eff as f64) * (2.0 * std::f64::consts::PI).ln()
+                - 0.5 * sum_log_f
+                - 0.5 * sum_v2_f
+        };
+
+        if loglike.is_finite() {
+            Ok((beta_hat, loglike))
+        } else {
+            Err("profiled objective produced non-finite loglike".to_string())
+        }
+    }
+
+    fn eval_negloglike(&self, profiled_unconstrained: &[f64]) -> std::result::Result<f64, String> {
+        self.eval_profiled(profiled_unconstrained).map(|e| e.negll)
+    }
+
+    fn analytical_gradient_negloglike(
+        &self,
+        profiled_unconstrained: &[f64],
+    ) -> std::result::Result<Vec<f64>, String> {
+        let eval = self.eval_profiled(profiled_unconstrained)?;
+        let ss = StateSpace::new(
+            &self.config,
+            &eval.full_params,
+            &self.endog,
+            Some(&self.exog),
+        )
+        .map_err(|e| e.to_string())?;
+        let init = KalmanInit::from_config_default(&ss, &self.config);
+        let score_constrained = score::score(
+            &self.endog,
+            &ss,
+            &init,
+            &self.config,
+            &eval.full_params,
+            self.config.concentrate_scale,
+            Some(&self.exog),
+        )
+        .map_err(|e| e.to_string())?;
+        let full_grad =
+            apply_transform_jacobian(&score_constrained, &eval.full_unconstrained, &self.config)?;
+        let profiled_grad = remove_exog_block(&full_grad, &self.config);
+        Ok(profiled_grad.iter().map(|&g| -g).collect())
+    }
 }
 
 impl CostFunction for SarimaxObjective {
@@ -842,16 +1085,479 @@ fn run_trust_region_bfgs(
     Ok((best_params, best_cost, n_iter, converged))
 }
 
-/// Wrapper: trust-region BFGS as a fit method (single-start). Falls back to
+fn finite_diff_grad_profile_negll(
+    objective: &ProfiledSarimaxObjective,
+    x: &[f64],
+    eps: f64,
+) -> std::result::Result<Vec<f64>, String> {
+    let n = x.len();
+    let mut grad = vec![0.0; n];
+    for i in 0..n {
+        let h = eps * (1.0 + x[i].abs());
+        let mut xp = x.to_vec();
+        let mut xm = x.to_vec();
+        xp[i] += h;
+        xm[i] -= h;
+        let fp = objective.eval_negloglike(&xp)?;
+        let fm = objective.eval_negloglike(&xm)?;
+        grad[i] = (fp - fm) / (2.0 * h);
+    }
+    Ok(grad)
+}
+
+/// Trust-region BFGS on the profiled exog objective.
+///
+/// Exog beta is eliminated by Kalman-GLS at each objective evaluation. The
+/// gradient uses the existing TLKF score at `(theta, beta_hat(theta))`; by the
+/// envelope theorem, derivatives of `beta_hat(theta)` are not required.
+fn run_profile_trust_region_bfgs(
+    objective: ProfiledSarimaxObjective,
+    init_params: Vec<f64>,
+    maxiter: u64,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+    let n = init_params.len();
+    let tol_grad = 1e-5_f64;
+    let tol_radius = 1e-8_f64;
+    let max_radius = 100.0_f64;
+    let eta = 0.1_f64;
+
+    let mut x = DVector::<f64>::from_iterator(n, init_params.iter().copied());
+    let mut cur_cost = objective
+        .eval_negloglike(&x.iter().copied().collect::<Vec<_>>())
+        .map_err(|e| format!("profile-trust-region: initial cost failed: {}", e))?;
+
+    let grad_eps = 1e-5_f64;
+    let mut grad_vec = objective
+        .analytical_gradient_negloglike(&x.iter().copied().collect::<Vec<_>>())
+        .or_else(|_| {
+            finite_diff_grad_profile_negll(
+                &objective,
+                &x.iter().copied().collect::<Vec<_>>(),
+                grad_eps,
+            )
+        })
+        .map_err(|e| format!("profile-trust-region: initial gradient failed: {}", e))?;
+    if grad_vec.len() != n {
+        return Err(format!(
+            "profile-trust-region: gradient len {} != n {}",
+            grad_vec.len(),
+            n
+        ));
+    }
+
+    let mut inv_h: DMatrix<f64> = DMatrix::zeros(n, n);
+    for i in 0..n {
+        inv_h[(i, i)] = DIAG_PRECOND_SCALE / grad_vec[i].abs().max(1e-3);
+    }
+
+    let mut radius = (n as f64).sqrt() * DIAG_PRECOND_SCALE * 2.0;
+    let init_radius = radius;
+    let mut best_x = x.clone();
+    let mut best_cost = cur_cost;
+    let mut n_iter = 0_u64;
+    let mut converged = false;
+    let mut n_consec_rejects = 0_u32;
+    let mut n_resets = 0_u32;
+
+    while n_iter < maxiter {
+        let g_norm = grad_vec.iter().map(|g| g * g).sum::<f64>().sqrt();
+        if g_norm < tol_grad {
+            converged = true;
+            break;
+        }
+
+        if radius < tol_radius {
+            if n_resets < TRUST_REGION_MAX_RESETS {
+                radius = init_radius;
+                n_resets += 1;
+                n_consec_rejects = 0;
+            } else {
+                break;
+            }
+        }
+
+        let (step, step_norm, pred_red) = trust_region_step(&inv_h, &grad_vec, radius);
+        let x_trial = &x + DVector::<f64>::from_iterator(n, step.iter().copied());
+        let trial_params: Vec<f64> = x_trial.iter().copied().collect();
+        let trial_cost = objective
+            .eval_negloglike(&trial_params)
+            .unwrap_or(f64::INFINITY);
+
+        let actual_red = cur_cost - trial_cost;
+        let rho = if pred_red.abs() < 1e-30 {
+            0.0
+        } else {
+            actual_red / pred_red
+        };
+
+        if rho < 0.25 {
+            radius *= 0.25;
+        } else if rho > 0.75 && (step_norm - radius).abs() < 1e-6 * radius {
+            radius = (2.0 * radius).min(max_radius);
+        }
+
+        if rho > eta && trial_cost.is_finite() && trial_cost < cur_cost {
+            n_consec_rejects = 0;
+            let grad_new = objective
+                .analytical_gradient_negloglike(&trial_params)
+                .or_else(|_| finite_diff_grad_profile_negll(&objective, &trial_params, grad_eps))
+                .unwrap_or_else(|_| grad_vec.clone());
+
+            let s = DVector::<f64>::from_iterator(n, step.iter().copied());
+            let y = DVector::<f64>::from_iterator(
+                n,
+                grad_new.iter().zip(grad_vec.iter()).map(|(a, b)| a - b),
+            );
+            let ys = y.dot(&s);
+            if ys > 1e-10 {
+                let rho_bfgs = 1.0 / ys;
+                let i_mat: DMatrix<f64> = DMatrix::identity(n, n);
+                let syt = &s * y.transpose();
+                let yst = &y * s.transpose();
+                let left = &i_mat - &(&syt * rho_bfgs);
+                let right = &i_mat - &(&yst * rho_bfgs);
+                let sst = &s * s.transpose();
+                inv_h = &left * &inv_h * &right + &sst * rho_bfgs;
+            }
+
+            x = x_trial;
+            cur_cost = trial_cost;
+            grad_vec = grad_new;
+            if cur_cost < best_cost {
+                best_cost = cur_cost;
+                best_x = x.clone();
+            }
+        } else {
+            n_consec_rejects += 1;
+            if n_consec_rejects > TRUST_REGION_REJECT_THRESHOLD {
+                radius *= 0.5;
+            }
+        }
+
+        n_iter += 1;
+    }
+
+    Ok((best_x.iter().copied().collect(), best_cost, n_iter, converged))
+}
+
+/// Brent's method: 1D bounded minimization combining golden-section search
+/// with parabolic interpolation (Brent 1973, "Algorithms for Minimization
+/// without Derivatives", §5.8). Returns (x_min, f_min).
+///
+/// Iterates until the bracket width falls below `tol · (|x| + tol)` or the
+/// budget is exhausted. Standard implementation — no problem-specific
+/// hyperparameters apart from the bracket and tolerance.
+fn brent_minimize<F>(
+    mut f: F,
+    mut a: f64,
+    mut b: f64,
+    tol: f64,
+    max_iter: u32,
+) -> (f64, f64)
+where
+    F: FnMut(f64) -> f64,
+{
+    // Golden ratio constants
+    let c_g = 0.5 * (3.0 - 5.0_f64.sqrt()); // ≈ 0.3819660
+    let eps = (f64::EPSILON).sqrt();
+
+    if b < a {
+        std::mem::swap(&mut a, &mut b);
+    }
+    let mut x = a + c_g * (b - a);
+    let mut w = x;
+    let mut v = x;
+    let mut fx = f(x);
+    let mut fw = fx;
+    let mut fv = fx;
+    let mut d = 0.0_f64;
+    let mut e = 0.0_f64;
+
+    for _ in 0..max_iter {
+        let xm = 0.5 * (a + b);
+        let tol1 = tol * x.abs() + eps;
+        let tol2 = 2.0 * tol1;
+        if (x - xm).abs() <= tol2 - 0.5 * (b - a) {
+            return (x, fx);
+        }
+
+        // Try parabolic interpolation
+        let mut use_golden = true;
+        if e.abs() > tol1 {
+            let r = (x - w) * (fx - fv);
+            let q0 = (x - v) * (fx - fw);
+            let mut p = (x - v) * q0 - (x - w) * r;
+            let mut q = 2.0 * (q0 - r);
+            if q > 0.0 {
+                p = -p;
+            } else {
+                q = -q;
+            }
+            let etemp = e;
+            e = d;
+            if p.abs() < (0.5 * q * etemp).abs()
+                && p > q * (a - x)
+                && p < q * (b - x)
+            {
+                d = p / q;
+                let u = x + d;
+                if (u - a) < tol2 || (b - u) < tol2 {
+                    d = if xm - x >= 0.0 { tol1 } else { -tol1 };
+                }
+                use_golden = false;
+            }
+        }
+        if use_golden {
+            e = if x >= xm { a - x } else { b - x };
+            d = c_g * e;
+        }
+        let u = if d.abs() >= tol1 {
+            x + d
+        } else if d >= 0.0 {
+            x + tol1
+        } else {
+            x - tol1
+        };
+        let fu = f(u);
+        if fu <= fx {
+            if u >= x {
+                a = x;
+            } else {
+                b = x;
+            }
+            v = w;
+            fv = fw;
+            w = x;
+            fw = fx;
+            x = u;
+            fx = fu;
+        } else {
+            if u < x {
+                a = u;
+            } else {
+                b = u;
+            }
+            if fu <= fw || w == x {
+                v = w;
+                fv = fw;
+                w = u;
+                fw = fu;
+            } else if fu <= fv || v == x || v == w {
+                v = u;
+                fv = fu;
+            }
+        }
+    }
+    (x, fx)
+}
+
+const EXOG_POLISH_REL_TOL: f64 = 1.0e-9;
+const EXOG_POLISH_ABS_TOL: f64 = 1.0e-8;
+const EXOG_POLISH_MIN_STEP: f64 = 1.0e-8;
+const EXOG_POLISH_MAX_BRACKET_ITERS: usize = 24;
+const EXOG_POLISH_BRENT_TOL: f64 = 1.0e-5;
+const EXOG_POLISH_BRENT_ITERS: u32 = 40;
+
+fn sample_std(values: &[f64]) -> Option<f64> {
+    if values.len() < 2 {
+        return None;
+    }
+
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let var = values
+        .iter()
+        .map(|v| {
+            let d = v - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / (values.len() - 1) as f64;
+    let std = var.sqrt();
+    if std.is_finite() && std > 0.0 {
+        Some(std)
+    } else {
+        None
+    }
+}
+
+fn exog_beta_scale(objective: &SarimaxObjective, exog_idx: usize) -> f64 {
+    let Some(exog) = objective.exog.as_ref() else {
+        return 1.0;
+    };
+    let Some(col) = exog.get(exog_idx) else {
+        return 1.0;
+    };
+
+    let y_scale = sample_std(&objective.endog).unwrap_or(1.0).max(1.0);
+    let x_scale = sample_std(col).unwrap_or(1.0).max(1.0e-12);
+    (y_scale / x_scale).max(1.0)
+}
+
+fn exog_polish_improvement_tol(cost: f64) -> f64 {
+    EXOG_POLISH_ABS_TOL.max(EXOG_POLISH_REL_TOL * cost.abs().max(1.0))
+}
+
+fn eval_coord_cost(
+    objective: &SarimaxObjective,
+    params: &[f64],
+    idx: usize,
+    value: f64,
+) -> f64 {
+    let mut probe = params.to_vec();
+    probe[idx] = value;
+    objective
+        .eval_loglike(&probe)
+        .map(|ll| -ll)
+        .unwrap_or(f64::INFINITY)
+}
+
+fn polish_exog_coordinate(
+    objective: &SarimaxObjective,
+    params: &[f64],
+    exog_idx: usize,
+    param_idx: usize,
+    cur_cost: f64,
+) -> Option<(f64, f64)> {
+    let cur = params[param_idx];
+    let min_step = EXOG_POLISH_MIN_STEP * (1.0 + cur.abs());
+    let natural_scale = exog_beta_scale(objective, exog_idx);
+    let mut step = 0.25 * cur.abs().max(natural_scale).max(1.0);
+
+    let mut left_cost = f64::INFINITY;
+    let mut right_cost = f64::INFINITY;
+    for _ in 0..EXOG_POLISH_MAX_BRACKET_ITERS {
+        left_cost = eval_coord_cost(objective, params, param_idx, cur - step);
+        right_cost = eval_coord_cost(objective, params, param_idx, cur + step);
+        if left_cost < cur_cost || right_cost < cur_cost {
+            break;
+        }
+
+        step *= 0.5;
+        if step <= min_step {
+            return None;
+        }
+    }
+
+    let (dir, first_cost) = if left_cost <= right_cost && left_cost < cur_cost {
+        (-1.0, left_cost)
+    } else if right_cost < cur_cost {
+        (1.0, right_cost)
+    } else {
+        return None;
+    };
+
+    let mut prev_x = cur;
+    let mut best_x = cur + dir * step;
+    let mut best_cost = first_cost;
+    let mut bracket = None;
+
+    for _ in 0..EXOG_POLISH_MAX_BRACKET_ITERS {
+        step *= 2.0;
+        let trial_x = best_x + dir * step;
+        let trial_cost = eval_coord_cost(objective, params, param_idx, trial_x);
+
+        if !trial_cost.is_finite() || trial_cost >= best_cost {
+            bracket = Some((prev_x, trial_x));
+            break;
+        }
+
+        prev_x = best_x;
+        best_x = trial_x;
+        best_cost = trial_cost;
+    }
+
+    if let Some((lo, hi)) = bracket {
+        let mut probe = params.to_vec();
+        let cost_fn = |v: f64| -> f64 {
+            probe[param_idx] = v;
+            objective
+                .eval_loglike(&probe)
+                .map(|ll| -ll)
+                .unwrap_or(f64::INFINITY)
+        };
+        let (x_star, f_star) = brent_minimize(
+            cost_fn,
+            lo,
+            hi,
+            EXOG_POLISH_BRENT_TOL,
+            EXOG_POLISH_BRENT_ITERS,
+        );
+        if f_star.is_finite() && f_star < best_cost {
+            best_x = x_star;
+            best_cost = f_star;
+        }
+    }
+
+    if cur_cost - best_cost > exog_polish_improvement_tol(cur_cost) {
+        Some((best_x, best_cost))
+    } else {
+        None
+    }
+}
+
+/// Coordinate-descent 1D refinement on exog dimensions using Brent's method.
+///
+/// Trust-region with isotropic radius caps step magnitude per dim balanced
+/// only by curvature — for flat-LL-surface dimensions (typically exog
+/// coefficients whose covariate is weakly correlated with endog), this leaves
+/// the optimizer stuck near its trajectory rather than at the true 1D maximum.
+///
+/// This post-fit polish first derives a coefficient scale from the data
+/// (`std(y) / std(x_j)`), then brackets an improving direction adaptively and
+/// runs Brent's method inside that bracket. This avoids embedding a fixed grid
+/// or dataset-specific target range in the optimizer.
+fn refine_exog_brent(
+    objective: &SarimaxObjective,
+    config: &SarimaxConfig,
+    mut params_unconstrained: Vec<f64>,
+    mut best_cost: f64,
+) -> (Vec<f64>, f64) {
+    let n_exog = config.n_exog;
+    if n_exog == 0 {
+        return (params_unconstrained, best_cost);
+    }
+    let kt = config.trend.k_trend();
+    let max_passes = (n_exog + 1).clamp(2, 6);
+
+    for _ in 0..max_passes {
+        let pass_start_cost = best_cost;
+        let mut improved_any = false;
+        for j in 0..n_exog {
+            let idx = kt + j;
+            if let Some((x_star, f_star)) =
+                polish_exog_coordinate(objective, &params_unconstrained, j, idx, best_cost)
+            {
+                params_unconstrained[idx] = x_star;
+                best_cost = f_star;
+                improved_any = true;
+            }
+        }
+        if !improved_any
+            || pass_start_cost - best_cost <= exog_polish_improvement_tol(pass_start_cost)
+        {
+            break;
+        }
+    }
+
+    (params_unconstrained, best_cost)
+}
+
+/// Wrapper: trust-region BFGS as a fit method (single-start), followed by a
+/// 1D coordinate-descent refinement on exog dimensions. Falls back to
 /// Nelder-Mead on failure for robustness.
 fn fit_trust_region_single(
     objective: &SarimaxObjective,
     unconstrained_start: Vec<f64>,
-    _config: &SarimaxConfig,
+    config: &SarimaxConfig,
     maxiter: u64,
 ) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
     match run_trust_region_bfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
-        Ok((p, c, n, conv)) => Ok((p, c, n, conv, "trust-region".to_string())),
+        Ok((p, c, n, conv)) => {
+            // Post-fit polish: tighten exog dims on the flat-LL surface using
+            // Brent's method (standard 1D minimizer, no problem-specific tuning).
+            let (p_polished, c_polished) = refine_exog_brent(objective, config, p, c);
+            Ok((p_polished, c_polished, n, conv, "trust-region".to_string()))
+        }
         Err(_) => {
             let (p, c, n, conv) =
                 run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
@@ -859,6 +1565,58 @@ fn fit_trust_region_single(
             Ok((p, c, n, conv, "nelder-mead (fallback)".to_string()))
         }
     }
+}
+
+fn fit_profile_trust_region(
+    objective: &SarimaxObjective,
+    unconstrained_start: Vec<f64>,
+    config: &SarimaxConfig,
+    maxiter: u64,
+    has_user_start: bool,
+) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+    if config.n_exog == 0 {
+        return fit_trust_region_single(objective, unconstrained_start, config, maxiter);
+    }
+
+    let exog = objective.exog.clone().ok_or_else(|| {
+        SarimaxError::InvalidInput(
+            "profile-trust-region requires exog columns when n_exog > 0".to_string(),
+        )
+    })?;
+    let profiled_objective = ProfiledSarimaxObjective {
+        endog: objective.endog.clone(),
+        config: config.clone(),
+        exog,
+    };
+
+    let mut start = unconstrained_start;
+    let mut warm_iter = 0_u64;
+    if !has_user_start && maxiter > 1 {
+        let warm_budget = ((maxiter * 3) / 4).max(1);
+        if let Ok((warm_p, _warm_c, warm_n, _warm_conv, _)) =
+            fit_trust_region_single(objective, start.clone(), config, warm_budget)
+        {
+            start = warm_p;
+            warm_iter = warm_n;
+        }
+    }
+
+    let profiled_start = remove_exog_block(&start, config);
+    let profile_budget = maxiter.saturating_sub(warm_iter).max(1);
+    let (profiled_p, c, n, conv) =
+        run_profile_trust_region_bfgs(profiled_objective.clone(), profiled_start, profile_budget)
+            .map_err(SarimaxError::OptimizationFailed)?;
+    let eval = profiled_objective
+        .eval_profiled(&profiled_p)
+        .map_err(SarimaxError::OptimizationFailed)?;
+
+    Ok((
+        eval.full_unconstrained,
+        c,
+        warm_iter + n,
+        conv,
+        "profile-trust-region".to_string(),
+    ))
 }
 
 fn run_lbfgs(
@@ -2312,7 +3070,8 @@ fn run_nm_css(
 /// * `endog` — Observed time series
 /// * `config` — Model configuration (order, stationarity enforcement, etc.)
 /// * `start_params` — Optional initial parameter values (constrained space)
-/// * `method` — "lbfgsb" (default, single run), "lbfgsb-multi" (multi-start), "lbfgsb-strict", "lbfgs", or "nelder-mead"
+/// * `method` — "lbfgsb" (default), "lbfgsb-multi", "trust-region",
+///   "profile-trust-region", "lbfgs", or "nelder-mead"
 /// * `maxiter` — Maximum iterations (default: 500)
 /// * `exog` — Optional exogenous variables, column-major: exog[j][t]
 pub fn fit(
@@ -2331,12 +3090,12 @@ pub fn fit(
     const VALID_METHODS: &[&str] = &[
         "lbfgsb", "lbfgsb-multi", "lbfgsb-adaptive", "lbfgsb-hybrid",
         "lbfgsb-strict", "lbfgsb_single",
-        "lbfgs", "bfgs", "trust-region",
+        "lbfgs", "bfgs", "trust-region", "profile-trust-region",
         "nelder-mead", "nm",
     ];
     if !VALID_METHODS.contains(&method) {
         return Err(SarimaxError::OptimizationFailed(format!(
-            "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'lbfgs', or 'nelder-mead'",
+            "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'trust-region', 'profile-trust-region', 'lbfgs', or 'nelder-mead'",
             method
         )));
     }
@@ -2496,9 +3255,18 @@ pub fn fit(
         }
         "bfgs" => fit_bfgs_single(&objective, unconstrained_start, config, maxiter)?,
         "trust-region" => fit_trust_region_single(&objective, unconstrained_start, config, maxiter)?,
+        "profile-trust-region" => {
+            fit_profile_trust_region(
+                &objective,
+                unconstrained_start,
+                config,
+                maxiter,
+                start_params.is_some(),
+            )?
+        }
         _ => {
             return Err(SarimaxError::OptimizationFailed(format!(
-                "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'lbfgs', or 'nelder-mead'",
+                "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'trust-region', 'profile-trust-region', 'lbfgs', or 'nelder-mead'",
                 method
             )));
         }
@@ -2558,6 +3326,149 @@ mod tests {
 
         let cost = obj.cost(&vec![0.5]).unwrap();
         assert!(cost.is_finite(), "cost should be finite: {}", cost);
+    }
+
+    #[test]
+    fn test_exog_coordinate_polish_improves_bad_beta_start() {
+        use crate::types::{SarimaxOrder, Trend};
+
+        let n = 180;
+        let x: Vec<f64> = (0..n)
+            .map(|t| ((t as f64) * 0.17).sin() + 0.5 * ((t as f64) * 0.07).cos())
+            .collect();
+        let mut y = vec![0.0; n];
+        for t in 1..n {
+            let noise = 0.05 * ((t as f64) * 0.31).sin();
+            y[t] = 2.0 * x[t] + 0.4 * y[t - 1] + noise;
+        }
+        let exog = vec![x];
+        let config = SarimaxConfig {
+            order: SarimaxOrder::new(1, 0, 0, 0, 0, 0, 0),
+            n_exog: 1,
+            trend: Trend::None,
+            enforce_stationarity: false,
+            enforce_invertibility: false,
+            concentrate_scale: true,
+            simple_differencing: false,
+            measurement_error: false,
+        };
+        let obj = SarimaxObjective {
+            endog: y,
+            config: config.clone(),
+            exog: Some(exog),
+            cache: RefCell::new(None),
+            ss_cache: RefCell::new(None),
+        };
+        let start = vec![0.0, 0.4];
+        let start_cost = obj.eval_negloglike(&start).unwrap();
+
+        let (polished, polished_cost) = refine_exog_brent(&obj, &config, start, start_cost);
+
+        assert!(
+            polished_cost < start_cost - 1.0,
+            "polish should improve cost: start={} polished={}",
+            start_cost,
+            polished_cost
+        );
+        assert!(
+            polished[0] > 0.5,
+            "exog beta should move toward the positive signal: {}",
+            polished[0]
+        );
+    }
+
+    #[test]
+    fn test_profile_trust_region_with_exog_returns_profiled_beta() {
+        use crate::types::{SarimaxOrder, Trend};
+
+        let n = 220;
+        let x: Vec<f64> = (0..n)
+            .map(|t| ((t as f64) * 0.13).sin() + 0.25 * ((t as f64) * 0.03).cos())
+            .collect();
+        let mut y = vec![0.0; n];
+        for t in 1..n {
+            let noise = 0.03 * ((t as f64) * 0.37).sin();
+            y[t] = 1.7 * x[t] + 0.35 * y[t - 1] + noise;
+        }
+        let exog = vec![x];
+        let config = SarimaxConfig {
+            order: SarimaxOrder::new(1, 0, 0, 0, 0, 0, 0),
+            n_exog: 1,
+            trend: Trend::None,
+            enforce_stationarity: false,
+            enforce_invertibility: false,
+            concentrate_scale: true,
+            simple_differencing: false,
+            measurement_error: false,
+        };
+
+        let result = fit(
+            &y,
+            &config,
+            None,
+            Some("profile-trust-region"),
+            Some(80),
+            Some(&exog),
+        )
+        .unwrap();
+
+        assert!(result.loglike.is_finite());
+        assert_eq!(result.params.len(), 2);
+        assert!(
+            result.params[0] > 0.5,
+            "profiled beta should move toward the positive signal: {}",
+            result.params[0]
+        );
+        assert_eq!(result.method, "profile-trust-region");
+    }
+
+    #[test]
+    fn test_kalman_innovation_linearity_for_exog_intercept() {
+        use crate::types::{SarimaxOrder, Trend};
+
+        let config = SarimaxConfig {
+            order: SarimaxOrder::new(0, 0, 0, 0, 1, 1, 4),
+            n_exog: 1,
+            trend: Trend::None,
+            enforce_stationarity: false,
+            enforce_invertibility: false,
+            concentrate_scale: false,
+            simple_differencing: false,
+            measurement_error: false,
+        };
+
+        let y: Vec<f64> = (0..40)
+            .map(|i| 10.0 + (i as f64 * 0.7).sin() + i as f64 * 0.2)
+            .collect();
+        let x = vec![(0..40)
+            .map(|i| 3.0 + (i as f64 * 0.3).cos() + i as f64 * 0.05)
+            .collect::<Vec<f64>>()];
+
+        let zero = SarimaxParams::from_flat(&[0.0, 0.25, 2.0], &config).unwrap();
+        let full = SarimaxParams::from_flat(&[1.7, 0.25, 2.0], &config).unwrap();
+
+        let ss_y = StateSpace::new(&config, &zero, &y, None).unwrap();
+        let init_y = KalmanInit::from_config_default(&ss_y, &config);
+        let y_filter = kalman_filter(&y, &ss_y, &init_y, false).unwrap();
+
+        let ss_x = StateSpace::new(&config, &zero, &x[0], None).unwrap();
+        let init_x = KalmanInit::from_config_default(&ss_x, &config);
+        let x_filter = kalman_filter(&x[0], &ss_x, &init_x, false).unwrap();
+
+        let ss_full = StateSpace::new(&config, &full, &y, Some(&x)).unwrap();
+        let init_full = KalmanInit::from_config_default(&ss_full, &config);
+        let full_filter = kalman_filter(&y, &ss_full, &init_full, false).unwrap();
+
+        for t in 0..y.len() {
+            let expected = y_filter.innovations[t] - 1.7 * x_filter.innovations[t];
+            assert!(
+                (full_filter.innovations[t] - expected).abs() < 1e-8,
+                "innovation mismatch at t={}: got {}, expected {}",
+                t,
+                full_filter.innovations[t],
+                expected
+            );
+        }
     }
 
     #[test]

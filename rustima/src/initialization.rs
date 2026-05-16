@@ -288,23 +288,31 @@ fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix
                 return None;
             }
             // Validate positive-definiteness via Cholesky decomposition.
-            // A diagonal-only check is insufficient because off-diagonal
-            // entries can make the matrix indefinite even with positive diagonals.
-            match q_i.clone().cholesky() {
-                Some(_) => return Some(q_i),
-                None => {
-                    // Cholesky failed: matrix is not positive-definite.
-                    // Clamp negative eigenvalues by adding a small ridge.
-                    for i in 0..k {
-                        q_i[(i, i)] += 1e-10;
-                    }
-                    // Retry Cholesky after ridge
-                    match q_i.clone().cholesky() {
-                        Some(_) => return Some(q_i),
-                        None => return None,
-                    }
+            //
+            // Finite-order MA state covariances can be numerically close to
+            // singular, especially after seasonal expansion. Treat that as a
+            // conditioning problem, not an initialization failure: symmetrize
+            // and add a scale-aware ridge before falling back to diffuse init.
+            q_i = (&q_i + q_i.transpose()) * 0.5;
+            if q_i.clone().cholesky().is_some() {
+                return Some(q_i);
+            }
+
+            let max_diag = (0..k)
+                .map(|i| q_i[(i, i)].abs())
+                .fold(1.0_f64, f64::max);
+            let mut stabilized = q_i.clone();
+            for attempt in 0..8 {
+                let ridge = max_diag * 1e-12 * 10_f64.powi(attempt);
+                for i in 0..k {
+                    stabilized[(i, i)] += ridge;
+                }
+                if stabilized.clone().cholesky().is_some() {
+                    return Some(stabilized);
                 }
             }
+
+            return None;
         }
     }
     None
