@@ -365,6 +365,29 @@ result = model.fit(method="profile-trust-region", maxiter=200)
 [`rustima/docs/profiled_kalman_gls_plan.md`](rustima/docs/profiled_kalman_gls_plan.md)
 를 참고하세요.
 
+**PTR 내부 Batched Kalman Filter.** PTR 매 평가마다 `y` 및 각 exog
+컬럼 `x_j`에 대해 같은 ψ에서 Kalman filter를 돌리는데, 상태공간
+행렬·예측 covariance·gain·innovation variance가 모든 pass에서 동일합니다.
+rustima의 `kalman_filter_batched`는 O(k²) covariance 재귀를 한 번만 공유 +
+시리즈별로는 O(k) mean 재귀만 돌립니다. exog `r=2`인 경우 평가당
+Kalman 비용이 `(1+r)=3` full pass → **1 full pass + 3 cheap mean update**
+로 줄어서 PTR fit 당 **약 2× 가속**. 구현: `rustima/src/kalman.rs::kalman_filter_batched`,
+`ProfiledSarimaxObjective::profile_beta_and_loglike`에서 호출.
+
+**Stepwise neighborhood 병렬 탐색.** `auto_arima(stepwise=True)`는 현재
+best 주변 8-10개 후보를 단일 Rayon 병렬 `rustima.sarimax_grid_search` 호출로
+평가합니다 (이전: 직렬 1개씩). 12-core 머신에서 내부 trust-region BFGS가
+동시 실행되어 각 Hyndman-Khandakar step이 후보들의 합이 아닌 **가장 느린
+후보 시간** 정도에 끝남.
+
+**Apple Silicon에서 자동 P-core 핀닝 (macOS).** import 시
+`rustima/python/rustima/__init__.py`가 `sysctl hw.perflevel0.physicalcpu`
+로 P-core 수를 감지하여 native extension 로드 전에
+`RAYON_NUM_THREADS=<P-core 수>` 설정. M 시리즈에서 E-core가 매 step의
+critical path가 되는 걸 방지 → compute-heavy SARIMAX fit에서
+**20-35% wall-time 감소**. Linux/Windows 및 사용자가 이미
+`RAYON_NUM_THREADS`를 설정한 macOS에서는 no-op.
+
 ### 배치 병렬 처리
 
 ```python

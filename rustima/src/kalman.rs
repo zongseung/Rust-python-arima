@@ -727,6 +727,243 @@ pub fn kalman_filter(
     kalman_core(endog, ss, init, concentrate_scale, true)
 }
 
+// ---------------------------------------------------------------------------
+// Batched Kalman filter
+// ---------------------------------------------------------------------------
+
+/// Output of a batched Kalman filter pass over several observation series
+/// that share the same state-space matrices T, Z, R, Q (and intercepts).
+///
+/// The predicted covariance P, the innovation variance F_t, and the
+/// (implicit) Kalman gain are identical across series and are therefore
+/// computed only once. Only the per-series state mean recursion and
+/// innovations differ.
+#[derive(Debug, Clone)]
+pub struct BatchedKalmanOutput {
+    /// Innovation sequence v_t for each series: `innovations[s][t]`.
+    pub innovations: Vec<Vec<f64>>,
+    /// Innovation variances F_t (shared across all series, before scaling
+    /// by sigma2). Same semantics as `KalmanFilterOutput::innovation_vars`.
+    pub innovation_vars: Vec<f64>,
+    /// Effective number of observations (n - burn). Identical per series.
+    pub n_obs_effective: usize,
+}
+
+/// Batched Kalman filter for several observation series that share the
+/// same state-space matrices.
+///
+/// This is mathematically equivalent to calling `kalman_filter` once per
+/// series, but the covariance prediction/update (the expensive O(k^2)
+/// per-step work) is performed only once and amortised across all series.
+/// Only the cheap O(k) state-mean recursion is repeated per series.
+///
+/// # Precondition
+///
+/// All observation slices in `observations` must have the same length and
+/// must be compatible with `ss` (i.e. equivalent to what would be passed
+/// individually to `kalman_filter` with this same `ss`). The state-space
+/// matrices `T, Z, R, Q` and intercepts `c_t, d_t` must be identical for
+/// every series — which is exactly the case in profile-likelihood code
+/// where `ss` is built from the same nonlinear parameters with `exog=None`
+/// and zeroed trend coefficients.
+///
+/// # Returns
+///
+/// `BatchedKalmanOutput` with per-series innovations and a single shared
+/// innovation-variance vector. `n_obs_effective` matches the single-series
+/// implementation because the burn-in count is covariance-driven.
+pub fn kalman_filter_batched(
+    observations: &[&[f64]],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    _concentrate_scale: bool,
+) -> Result<BatchedKalmanOutput> {
+    if observations.is_empty() {
+        return Err(SarimaxError::DataError(
+            "kalman_filter_batched: observations must contain at least one series".into(),
+        ));
+    }
+    let n = observations[0].len();
+    for (s, obs) in observations.iter().enumerate() {
+        if obs.len() != n {
+            return Err(SarimaxError::DataError(format!(
+                "kalman_filter_batched: series {} has length {} but series 0 has length {}",
+                s,
+                obs.len(),
+                n
+            )));
+        }
+    }
+
+    let k = ss.k_states;
+    let burn = init.loglikelihood_burn;
+    if n <= burn {
+        return Err(SarimaxError::DataError(format!(
+            "Not enough observations: n={} <= burn={}",
+            n, burn
+        )));
+    }
+    let n_eff = n - burn;
+
+    let n_series = observations.len();
+
+    // Per-series predicted state means a^{(s)}_{t|t-1}.
+    let mut a_states: Vec<DVector<f64>> = (0..n_series)
+        .map(|_| init.initial_state.clone())
+        .collect();
+    // Shared predicted covariance P_{t|t-1}.
+    let mut p = init.initial_state_cov.clone();
+
+    let t_mat = &ss.transition;
+    let z = &ss.design;
+    let r_mat = &ss.selection;
+    let q_mat = &ss.state_cov;
+
+    let rqr = r_mat * q_mat * r_mat.transpose();
+    let t_mat_t = t_mat.transpose();
+    let has_state_intercept = ss.state_intercept.len() == n * k;
+
+    let sparse_z = SparseZ::from_dense(z, k);
+    let sparse_t = SparseT::from_dense(t_mat, k);
+
+    let strategy = if sparse_t.is_sparse() {
+        KalmanStrategy::Sparse
+    } else {
+        KalmanStrategy::Dense
+    };
+
+    // Per-series innovation buffers.
+    let mut innovations: Vec<Vec<f64>> = (0..n_series).map(|_| Vec::with_capacity(n)).collect();
+    let mut innovation_vars: Vec<f64> = Vec::with_capacity(n);
+
+    // Scratch buffers (shared across series at each time step).
+    let mut pz = DVector::<f64>::zeros(k);
+    let mut a_next = DVector::<f64>::zeros(k);
+    let mut temp_kk = DMatrix::<f64>::zeros(k, k);
+
+    // Steady-state cache (identical for every series because it depends
+    // only on T, Z, R, Q, P_0).
+    let mut ss_cache: Option<SteadyStateCache> = init
+        .steady_state
+        .as_ref()
+        .filter(|_| burn == 0)
+        .map(|KalmanSteadyState { k_gain, f_steady, log_f_steady, pz_inf }| {
+            SteadyStateCache {
+                k_gain: k_gain.clone(),
+                f_steady: *f_steady,
+                log_f_steady: *log_f_steady,
+                pz_inf: pz_inf.clone(),
+            }
+        });
+    let mut pz_prev = DVector::<f64>::zeros(k);
+    let mut consec_count = 0_usize;
+
+    for t in 0..n {
+        let d_t = if t < ss.obs_intercept.len() {
+            ss.obs_intercept[t]
+        } else {
+            0.0
+        };
+
+        if let Some(ref cache) = ss_cache {
+            // ---- STEADY-STATE PATH: shared cache, per-series mean update ----
+            debug_assert!(
+                cache.f_steady > 0.0 && cache.f_steady.is_finite(),
+                "steady-state F must be positive and finite, got {}",
+                cache.f_steady
+            );
+            innovation_vars.push(cache.f_steady);
+
+            for s in 0..n_series {
+                let v_t = compute_innovation(observations[s][t], &sparse_z, &a_states[s], d_t);
+                innovations[s].push(v_t);
+
+                // a_next = T * a + c_t
+                strategy.predict_state(
+                    t_mat, &sparse_t, &a_states[s], &mut a_next,
+                    &ss.state_intercept, t, k, has_state_intercept,
+                );
+                // a_next += (v_t / F_inf) * K_inf
+                a_next.axpy(v_t / cache.f_steady, &cache.k_gain, 1.0);
+
+                std::mem::swap(&mut a_states[s], &mut a_next);
+            }
+            // Covariance is frozen; nothing more to do.
+        } else {
+            // ---- NON-CONVERGED PATH: compute shared F_t / pz once ----
+            let f_t = strategy.compute_pz_and_f(&p, z, &sparse_z, &sparse_t, &mut pz);
+            innovation_vars.push(f_t);
+
+            if f_t > 0.0 {
+                let f_inv = 1.0 / f_t;
+
+                // Per-series mean update + predict.
+                for s in 0..n_series {
+                    let v_t = compute_innovation(observations[s][t], &sparse_z, &a_states[s], d_t);
+                    innovations[s].push(v_t);
+
+                    // a = a + (v_t / F_t) * pz
+                    a_states[s].axpy(v_t * f_inv, &pz, 1.0);
+                    // a_next = T * a + c_t
+                    strategy.predict_state(
+                        t_mat, &sparse_t, &a_states[s], &mut a_next,
+                        &ss.state_intercept, t, k, has_state_intercept,
+                    );
+                    std::mem::swap(&mut a_states[s], &mut a_next);
+                }
+
+                // Shared covariance update (Joseph form) and prediction.
+                p.ger(-f_inv, &pz, &pz, 1.0);
+                strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
+
+                // Steady-state convergence check (covariance only).
+                if t >= burn + STEADY_STATE_MIN_STEPS {
+                    pz.gemv(1.0, &p, z, 0.0);
+                    if check_convergence(&pz, &pz_prev, &mut consec_count) {
+                        let f_steady = z.dot(&pz);
+                        if f_steady > 0.0 && f_steady.is_finite() {
+                            let log_f_steady = f_steady.ln();
+                            let pz_inf = pz.clone();
+                            let mut k_gain = DVector::<f64>::zeros(k);
+                            strategy.compute_k_gain(t_mat, &sparse_t, &pz, &mut k_gain);
+                            ss_cache = Some(SteadyStateCache {
+                                k_gain,
+                                f_steady,
+                                log_f_steady,
+                                pz_inf,
+                            });
+                        }
+                    }
+                    pz_prev.copy_from(&pz);
+                }
+            } else {
+                // F_t <= 0: replicate single-series behaviour — skip the
+                // Kalman update and just predict forward. Per-series state
+                // means still need to be recorded so downstream GLS sees
+                // innovations of identical length across t and s.
+                for s in 0..n_series {
+                    let v_t = compute_innovation(observations[s][t], &sparse_z, &a_states[s], d_t);
+                    innovations[s].push(v_t);
+
+                    strategy.predict_state(
+                        t_mat, &sparse_t, &a_states[s], &mut a_next,
+                        &ss.state_intercept, t, k, has_state_intercept,
+                    );
+                    std::mem::swap(&mut a_states[s], &mut a_next);
+                }
+                // Predict shared covariance forward.
+                strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
+            }
+        }
+    }
+
+    Ok(BatchedKalmanOutput {
+        innovations,
+        innovation_vars,
+        n_obs_effective: n_eff,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1249,110 @@ mod tests {
         assert_eq!(fo.filtered_cov.ncols(), ss.k_states);
         assert_eq!(fo.predicted_cov.nrows(), ss.k_states);
         assert_eq!(fo.predicted_cov.ncols(), ss.k_states);
+    }
+
+    // ---- kalman_filter_batched tests ----
+
+    /// Generate small synthetic (y, x_1, x_2) test data.
+    fn make_batched_fixture() -> (Vec<f64>, Vec<Vec<f64>>) {
+        let n = 80usize;
+        let y: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64;
+                10.0 + (t * 0.41).sin() + 0.05 * t + 0.3 * (t * 0.13).cos()
+            })
+            .collect();
+        let x1: Vec<f64> = (0..n)
+            .map(|i| 3.0 + (i as f64 * 0.22).cos() + 0.02 * i as f64)
+            .collect();
+        let x2: Vec<f64> = (0..n)
+            .map(|i| -1.0 + (i as f64 * 0.31).sin() - 0.01 * i as f64)
+            .collect();
+        (y, vec![x1, x2])
+    }
+
+    #[test]
+    fn test_batched_matches_per_series_filter() {
+        // SARIMA(1,0,1): k_states=2 with simple params, exog handled externally.
+        let config = make_config(1, 0, 1);
+        let params = make_params(&[0.5], &[0.3]);
+
+        let (y, exogs) = make_batched_fixture();
+
+        let ss = StateSpace::new(&config, &params, &y, None).unwrap();
+        let init = KalmanInit::from_config_default(&ss, &config);
+
+        // Single-series ground-truth: y and each x_j.
+        let y_single = kalman_filter(&y, &ss, &init, false).unwrap();
+        let x_singles: Vec<KalmanFilterOutput> = exogs
+            .iter()
+            .map(|col| kalman_filter(col, &ss, &init, false).unwrap())
+            .collect();
+
+        // Batched call: [y, x_1, x_2].
+        let mut obs_refs: Vec<&[f64]> = Vec::with_capacity(1 + exogs.len());
+        obs_refs.push(y.as_slice());
+        for col in &exogs {
+            obs_refs.push(col.as_slice());
+        }
+        let batched = kalman_filter_batched(&obs_refs, &ss, &init, false).unwrap();
+
+        // n_obs_effective must match.
+        assert_eq!(batched.n_obs_effective, y_single.n_obs_effective);
+
+        // innovation_vars (shared) must match the single-series F_t.
+        assert_eq!(batched.innovation_vars.len(), y_single.innovation_vars.len());
+        for (t, (b, y)) in batched
+            .innovation_vars
+            .iter()
+            .zip(y_single.innovation_vars.iter())
+            .enumerate()
+        {
+            assert!(
+                (b - y).abs() < 1e-10,
+                "F_t mismatch at t={}: batched={}, single={}",
+                t, b, y
+            );
+        }
+
+        // innovations[0] must match y's single-series innovations.
+        assert_eq!(batched.innovations[0].len(), y_single.innovations.len());
+        for (t, (b, y)) in batched.innovations[0]
+            .iter()
+            .zip(y_single.innovations.iter())
+            .enumerate()
+        {
+            assert!(
+                (b - y).abs() < 1e-10,
+                "y innovation mismatch at t={}: batched={}, single={}",
+                t, b, y
+            );
+        }
+
+        // innovations[s+1] must match x_s single-series innovations.
+        for (j, xs) in x_singles.iter().enumerate() {
+            let b_inn = &batched.innovations[j + 1];
+            assert_eq!(b_inn.len(), xs.innovations.len());
+            for (t, (b, x)) in b_inn.iter().zip(xs.innovations.iter()).enumerate() {
+                assert!(
+                    (b - x).abs() < 1e-10,
+                    "x_{} innovation mismatch at t={}: batched={}, single={}",
+                    j, t, b, x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_batched_length_mismatch_errors() {
+        let config = make_config(1, 0, 0);
+        let params = make_params(&[0.4], &[]);
+        let (y, _exogs) = make_batched_fixture();
+        let ss = StateSpace::new(&config, &params, &y, None).unwrap();
+        let init = KalmanInit::from_config_default(&ss, &config);
+
+        let short: Vec<f64> = vec![0.0; y.len() - 1];
+        let obs_refs: Vec<&[f64]> = vec![y.as_slice(), short.as_slice()];
+        assert!(kalman_filter_batched(&obs_refs, &ss, &init, false).is_err());
     }
 }
