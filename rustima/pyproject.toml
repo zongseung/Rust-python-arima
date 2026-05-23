@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustima"
-version = "0.1.0a1"
+version = "0.1.0"
 requires-python = ">=3.10"
 description = "High-performance SARIMAX (Seasonal ARIMA with eXogenous regressors) engine in Rust with statsmodels-compatible Python API"
 readme = "README.md"
