@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_to_pypi:
+        description: "Publish to PyPI (real, not test.pypi)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -12,66 +18,225 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-wheels:
-    name: Build wheels (${{ matrix.os }}, Python ${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
+  # ----------------------------------------------------------------------------
+  # Linux: manylinux2014 (glibc 2.17+) — required for PyPI acceptance
+  # ----------------------------------------------------------------------------
+  build-linux:
+    name: Linux ${{ matrix.target }} (py${{ matrix.python }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.10", "3.11", "3.12"]
+        target: [x86_64]
+        python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
 
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Build wheel (manylinux2014)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter ${{ matrix.python }}
+          manylinux: "2014"
+          working-directory: .
 
-      - name: Create venv and install deps
+      - name: Install wheel & smoke-test
         run: |
-          uv venv .venv
-          uv pip install numpy pytest
-
-      - name: Build wheel (release)
-        run: |
-          uv pip install maturin
-          CARGO_TARGET_DIR=target_wheel uv run maturin build --release --out dist/
-
-      - name: Install wheel
-        run: uv pip install --force-reinstall dist/rustima-*.whl
-
-      - name: Run smoke tests
-        run: .venv/bin/python -m pytest python_tests/test_wheel_smoke.py -v --tb=short
+          python -m pip install --upgrade pip
+          python -m pip install numpy polars pytest
+          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pytest python_tests/test_smoke.py -v --tb=short
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}-py${{ matrix.python }}
+          name: wheel-linux-${{ matrix.target }}-py${{ matrix.python }}
           path: dist/*.whl
 
-  create-release:
-    name: Create GitHub Release
-    needs: build-wheels
+  # ----------------------------------------------------------------------------
+  # macOS: arm64 (Apple Silicon) + x86_64 (Intel)
+  # ----------------------------------------------------------------------------
+  build-macos:
+    name: macOS ${{ matrix.target }} (py${{ matrix.python }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-13
+            target: x86_64-apple-darwin
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter ${{ matrix.python }}
+          working-directory: .
+
+      - name: Install wheel & smoke-test
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy polars pytest
+          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pytest python_tests/test_smoke.py -v --tb=short
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-${{ matrix.target }}-py${{ matrix.python }}
+          path: dist/*.whl
+
+  # ----------------------------------------------------------------------------
+  # Windows: x86_64
+  # ----------------------------------------------------------------------------
+  build-windows:
+    name: Windows ${{ matrix.target }} (py${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x64]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.target }}
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter ${{ matrix.python }}
+          working-directory: .
+
+      - name: Install wheel & smoke-test
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy polars pytest
+          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pytest python_tests/test_smoke.py -v --tb=short
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-windows-${{ matrix.target }}-py${{ matrix.python }}
+          path: dist/*.whl
+
+  # ----------------------------------------------------------------------------
+  # sdist (source distribution) — required so non-wheel platforms can build
+  # ----------------------------------------------------------------------------
+  build-sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all wheels
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: .
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # ----------------------------------------------------------------------------
+  # GitHub Release with all wheels + sdist
+  # ----------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos, build-windows, build-sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/
-          pattern: wheel-*
+          pattern: "wheel-*"
           merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.whl
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
           generate_release_notes: true
+
+  # ----------------------------------------------------------------------------
+  # PyPI publish via Trusted Publishing (OIDC, no API token required)
+  #
+  # Setup (one-time): on pypi.org → project settings → "Publishing" →
+  # "Add a new pending publisher" with:
+  #   owner = zongseung
+  #   repo  = Rust-python-arima
+  #   workflow = release.yml
+  #   environment = pypi
+  # Then create a GitHub environment named "pypi" with required reviewers
+  # if you want manual approval before publish.
+  # ----------------------------------------------------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-linux, build-macos, build-windows, build-sdist]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_to_pypi)
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rustima
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: "wheel-*"
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true

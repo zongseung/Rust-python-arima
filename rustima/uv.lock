@@ -1454,10 +1454,9 @@ wheels = [
 
 [[package]]
 name = "rustima"
-version = "0.1.0"
+version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
-    { name = "ipykernel" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
@@ -1474,10 +1473,13 @@ dev = [
     { name = "scipy", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "statsmodels" },
 ]
+notebook = [
+    { name = "ipykernel" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "ipykernel", marker = "extra == 'notebook'", specifier = ">=7.2.0" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.7" },
     { name = "maturin", marker = "extra == 'dev'", specifier = ">=1.7" },
     { name = "numpy", specifier = ">=1.24" },
@@ -1487,7 +1489,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "statsmodels", marker = "extra == 'dev'", specifier = ">=0.14" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "notebook"]
 
 [[package]]
 name = "scipy"

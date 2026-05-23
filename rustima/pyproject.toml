@@ -4,15 +4,56 @@ build-backend = "maturin"
 
 [project]
 name = "rustima"
-version = "0.1.0"
+version = "0.1.0a1"
 requires-python = ">=3.10"
-description = "High-performance SARIMAX via Rust + PyO3"
+description = "High-performance SARIMAX (Seasonal ARIMA with eXogenous regressors) engine in Rust with statsmodels-compatible Python API"
+readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
+license-files = ["LICENSE"]
+authors = [
+    {name = "zongseung", email = "new9279@gachon.ac.kr"},
+]
+maintainers = [
+    {name = "zongseung", email = "new9279@gachon.ac.kr"},
+]
+keywords = [
+    "sarimax",
+    "arima",
+    "time-series",
+    "forecasting",
+    "kalman-filter",
+    "rust",
+    "statsmodels",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
 dependencies = [
-    "ipykernel>=7.2.0",
     "numpy>=1.24",
     "polars>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zongseung/Rust-python-arima"
+Repository = "https://github.com/zongseung/Rust-python-arima"
+Issues = "https://github.com/zongseung/Rust-python-arima/issues"
+Documentation = "https://github.com/zongseung/Rust-python-arima#readme"
 
 [project.optional-dependencies]
 dev = [
@@ -23,11 +64,15 @@ dev = [
     "matplotlib>=3.7",
     "maturin>=1.7",
 ]
+notebook = [
+    "ipykernel>=7.2.0",
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "rustima"
 python-source = "python"
+include = ["LICENSE", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["python_tests"]

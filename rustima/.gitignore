@@ -11,3 +11,12 @@ CLAUDE.md
 # 컴파일된 확장 모듈 (빌드 아티팩트) — .py 소스는 트래킹 유지
 python/rustima/*.so
 python/rustima/__pycache__/
+
+# Secrets / credentials (PyPI tokens, etc.) — NEVER commit
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Build distribution
+/dist/
