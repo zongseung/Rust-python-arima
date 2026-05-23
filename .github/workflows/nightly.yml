@@ -8,6 +8,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+defaults:
+  run:
+    working-directory: rustima
+
 jobs:
   tier-b-tests:
     name: Tier B Matrix Tests
@@ -79,5 +83,5 @@ jobs:
         with:
           name: benchmark-results
           path: |
-            bench_results.txt
-            python_bench_results.txt
+            rustima/bench_results.txt
+            rustima/python_bench_results.txt

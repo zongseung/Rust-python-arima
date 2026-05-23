@@ -29,6 +29,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Rust tests
+        working-directory: rustima
         run: cargo test --all-targets
 
   python-test:
@@ -50,15 +51,18 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Create venv and install deps
+        working-directory: rustima
         run: |
           uv venv .venv
           uv pip install numpy pytest statsmodels scipy pandas
 
       - name: Build wheel and install
+        working-directory: rustima
         run: |
           uv pip install maturin
           CARGO_TARGET_DIR=target_wheel uv run maturin build --out /tmp/wheels
           uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
       - name: Run Python tests (excluding nightly)
+        working-directory: rustima
         run: .venv/bin/python -m pytest python_tests/ -m "not nightly" -v --tb=short
