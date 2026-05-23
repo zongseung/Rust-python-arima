@@ -390,6 +390,58 @@ mod tests {
     use crate::test_helpers::{make_config, make_seasonal_config, make_params, make_seasonal_params};
     use crate::types::{SarimaxConfig, SarimaxOrder};
 
+    /// Appendix verification: structural sparsity of the Harvey transition
+    /// matrix across SARIMA specifications. Counts the nonzero entries of T
+    /// built with generic (non-cancelling) parameter values.
+    /// Run with:  cargo test report_transition_sparsity -- --nocapture
+    #[test]
+    fn report_transition_sparsity() {
+        // (p, d, q, P, D, Q, s, label)
+        let specs: &[(usize, usize, usize, usize, usize, usize, usize, &str)] = &[
+            (1, 1, 1, 0, 0, 0, 0, "ARIMA(1,1,1)"),
+            (2, 1, 2, 0, 0, 0, 0, "ARIMA(2,1,2)"),
+            (1, 1, 1, 1, 1, 1, 7, "SARIMA(1,1,1)(1,1,1)_7"),
+            (1, 1, 1, 1, 1, 1, 12, "SARIMA(1,1,1)(1,1,1)_12"),
+            (1, 1, 1, 1, 1, 1, 24, "SARIMA(1,1,1)(1,1,1)_24"),
+            (2, 1, 2, 1, 1, 1, 24, "SARIMA(2,1,2)(1,1,1)_24"),
+            (2, 0, 1, 1, 0, 1, 24, "SARIMA(2,0,1)(1,0,1)_24"),
+            (3, 1, 3, 2, 1, 2, 24, "SARIMA(3,1,3)(2,1,2)_24"),
+        ];
+        let ar_pool = [0.5, 0.3, 0.2];
+        let ma_pool = [0.4, 0.25, 0.15];
+        let sar_pool = [0.45, 0.22];
+        let sma_pool = [0.35, 0.18];
+        let endog = vec![0.0; 300];
+
+        println!();
+        println!(
+            "{:<26} {:>4} {:>7} {:>8} {:>9} {:>7}",
+            "Model", "k", "nnz(T)", "k^2", "density", "nnz(Z)"
+        );
+        println!("{}", "-".repeat(66));
+        for &(p, d, q, pp, dd, qq, s, label) in specs {
+            let config = make_seasonal_config(p, d, q, pp, dd, qq, s);
+            let params = make_seasonal_params(
+                &ar_pool[..p],
+                &ma_pool[..q],
+                &sar_pool[..pp],
+                &sma_pool[..qq],
+            );
+            let ss = StateSpace::new(&config, &params, &endog, None).unwrap();
+            let k = ss.k_states;
+            let nnz_t = ss.transition.iter().filter(|&&x| x != 0.0).count();
+            let nnz_z = ss.design.iter().filter(|&&x| x != 0.0).count();
+            let k2 = k * k;
+            let density = 100.0 * nnz_t as f64 / k2 as f64;
+            assert!(nnz_t > 0, "transition matrix must have nonzero entries");
+            println!(
+                "{:<26} {:>4} {:>7} {:>8} {:>8.2}% {:>7}",
+                label, k, nnz_t, k2, density, nnz_z
+            );
+        }
+        println!();
+    }
+
     #[test]
     fn test_ar1_transition() {
         // AR(1) with phi=0.6527: k_states=1, T=[[phi]]
