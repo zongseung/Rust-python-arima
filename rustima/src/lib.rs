@@ -706,6 +706,75 @@ fn sarimax_forecast<'py>(
     Ok(forecast_to_pydict(py, &result)?.into())
 }
 
+/// Single-pass rolling-origin h-step forecasts with fixed parameters.
+///
+/// One Kalman filter pass over the full series; forecasts are propagated
+/// from the predicted-state snapshot at each origin `start, start+step, ...`.
+/// O(T + N*horizon) total. Returns a dict with: origins, mean, variance,
+/// ci_lower, ci_upper (row-per-origin nested lists).
+#[pyfunction]
+#[pyo3(signature = (y, order, seasonal, params, start, step=1, horizon=1, alpha=0.05,
+                    exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
+#[allow(clippy::too_many_arguments)]
+fn sarimax_rolling_forecast<'py>(
+    py: Python<'py>,
+    y: PyReadonlyArray1<'py, f64>,
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    params: PyReadonlyArray1<'py, f64>,
+    start: usize,
+    step: usize,
+    horizon: usize,
+    alpha: f64,
+    exog: Option<PyReadonlyArray2<'py, f64>>,
+    concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
+) -> PyResult<Py<PyDict>> {
+    validate_alpha(alpha)?;
+    if horizon > 0 {
+        validate_steps(horizon)?;
+    }
+
+    let endog = y.as_slice()?;
+    let params_flat = params.as_slice()?;
+    let (config, exog_cols) = prepare_single_request(
+        endog, order, seasonal, exog.as_ref(),
+        false, false, concentrate_scale, trend, simple_differencing,
+    )?;
+
+    // Own all data before releasing GIL
+    let endog = endog.to_vec();
+    let params_flat = params_flat.to_vec();
+
+    let result = py
+        .detach(move || {
+            let sarimax_params = SarimaxParams::from_flat(&params_flat, &config)?;
+            forecast::rolling_forecast_pipeline(
+                &endog,
+                &config,
+                &sarimax_params,
+                start,
+                step,
+                horizon,
+                alpha,
+                exog_cols.as_deref(),
+            )
+        })
+        .map_err(to_pyerr)?;
+
+    let dict = PyDict::new(py);
+    dict.set_item(
+        "origins",
+        result.origins.iter().map(|&o| o as u64).collect::<Vec<u64>>(),
+    )?;
+    dict.set_item("mean", result.mean)?;
+    dict.set_item("variance", result.variance)?;
+    dict.set_item("ci_lower", result.ci_lower)?;
+    dict.set_item("ci_upper", result.ci_upper)?;
+    Ok(dict.into())
+}
+
 /// Compute residuals and standardized residuals for a SARIMAX model.
 ///
 /// Returns a dict with: residuals, standardized_residuals.
@@ -1173,6 +1242,7 @@ fn rustima(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sarimax_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_fit, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_forecast, m)?)?;
+    m.add_function(wrap_pyfunction!(sarimax_rolling_forecast, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_residuals, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_loglike, m)?)?;
     m.add_function(wrap_pyfunction!(sarimax_batch_fit, m)?)?;

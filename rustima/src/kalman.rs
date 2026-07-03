@@ -40,6 +40,22 @@ pub struct KalmanFilterOutput {
     pub predicted_cov: DMatrix<f64>,
 }
 
+/// Predicted-state snapshot captured mid-filter at a rolling-forecast origin.
+///
+/// At `origin` observations consumed, the snapshot holds (a_{origin|origin-1},
+/// P_{origin|origin-1}) — exactly the state a filter pass over the length-
+/// `origin` prefix would end with, since the Kalman recursion is Markovian
+/// and processes the prefix identically.
+#[derive(Debug, Clone)]
+pub struct StateSnapshot {
+    /// Number of observations consumed before the snapshot.
+    pub origin: usize,
+    /// Predicted state a_{origin|origin-1}.
+    pub predicted_state: DVector<f64>,
+    /// Predicted covariance P_{origin|origin-1}.
+    pub predicted_cov: DMatrix<f64>,
+}
+
 /// Steady-state convergence tolerance for the gain vector pz = P*Z.
 ///
 /// We check pz convergence (k-vector) because F_t = Z'*pz (scalar) can
@@ -393,6 +409,7 @@ fn kalman_core(
     init: &KalmanInit,
     concentrate_scale: bool,
     store_full: bool,
+    mut snapshots: Option<(&[usize], &mut Vec<StateSnapshot>)>,
 ) -> Result<KalmanFilterOutput> {
     let n = endog.len();
     let k = ss.k_states;
@@ -468,6 +485,19 @@ fn kalman_core(
     let mut consec_count = 0_usize;
 
     for t in 0..n {
+        // --- Rolling-origin snapshot: (a_{t|t-1}, P_{t|t-1}) at loop top ---
+        // Invariant: `a`/`p` hold the predicted state before obs t is
+        // processed (in the steady-state phase `p` is frozen at P_inf).
+        if let Some((origins, out)) = snapshots.as_mut() {
+            while out.len() < origins.len() && origins[out.len()] == t {
+                out.push(StateSnapshot {
+                    origin: t,
+                    predicted_state: a.clone(),
+                    predicted_cov: p.clone(),
+                });
+            }
+        }
+
         // --- Observation intercept ---
         let d_t = if t < ss.obs_intercept.len() {
             ss.obs_intercept[t]
@@ -644,6 +674,23 @@ fn kalman_core(
         }
     }
 
+    // Post-loop snapshot: origin == n uses the final predicted state a_{n+1|n}.
+    if let Some((origins, out)) = snapshots.as_mut() {
+        while out.len() < origins.len() && origins[out.len()] == n {
+            out.push(StateSnapshot {
+                origin: n,
+                predicted_state: a.clone(),
+                predicted_cov: p.clone(),
+            });
+        }
+        if out.len() != origins.len() {
+            return Err(SarimaxError::InvalidInput(format!(
+                "snapshot origins must be sorted ascending and <= n={}, got {:?}",
+                n, origins
+            )));
+        }
+    }
+
     // Compute log-likelihood
     if !sum_log_f.is_finite() || !sum_v2_f.is_finite() {
         return Err(SarimaxError::DataError(
@@ -705,7 +752,7 @@ pub fn kalman_loglike(
     init: &KalmanInit,
     concentrate_scale: bool,
 ) -> Result<KalmanOutput> {
-    let fo = kalman_core(endog, ss, init, concentrate_scale, false)?;
+    let fo = kalman_core(endog, ss, init, concentrate_scale, false, None)?;
     Ok(KalmanOutput {
         loglike: fo.loglike,
         scale: fo.scale,
@@ -724,7 +771,28 @@ pub fn kalman_filter(
     init: &KalmanInit,
     concentrate_scale: bool,
 ) -> Result<KalmanFilterOutput> {
-    kalman_core(endog, ss, init, concentrate_scale, true)
+    kalman_core(endog, ss, init, concentrate_scale, true, None)
+}
+
+/// Kalman filter pass that additionally captures predicted-state snapshots
+/// (a_{t|t-1}, P_{t|t-1}) at the given origins.
+///
+/// `origins` must be sorted ascending, each in `[0, n]`. Snapshots enable
+/// single-pass rolling-origin forecasting: forecasting from origin t only
+/// needs the state the filter had after consuming t observations.
+pub fn kalman_filter_with_snapshots(
+    endog: &[f64],
+    ss: &StateSpace,
+    init: &KalmanInit,
+    concentrate_scale: bool,
+    origins: &[usize],
+) -> Result<(KalmanFilterOutput, Vec<StateSnapshot>)> {
+    let mut snaps = Vec::with_capacity(origins.len());
+    let out = kalman_core(
+        endog, ss, init, concentrate_scale, true,
+        Some((origins, &mut snaps)),
+    )?;
+    Ok((out, snaps))
 }
 
 // ---------------------------------------------------------------------------

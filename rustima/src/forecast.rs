@@ -1,10 +1,11 @@
 use crate::css::apply_differencing;
 use crate::error::{Result, SarimaxError};
 use crate::initialization::KalmanInit;
-use crate::kalman::{kalman_filter, KalmanFilterOutput};
+use crate::kalman::{kalman_filter, kalman_filter_with_snapshots, KalmanFilterOutput};
 use crate::params::SarimaxParams;
 use crate::state_space::StateSpace;
 use crate::types::SarimaxConfig;
+use nalgebra::{DMatrix, DVector};
 
 /// H-step ahead forecast result.
 #[derive(Debug, Clone)]
@@ -38,6 +39,42 @@ pub struct ResidualOutput {
 pub fn forecast(
     ss: &StateSpace,
     filter_output: &KalmanFilterOutput,
+    steps: usize,
+    alpha: f64,
+    future_exog: Option<&[Vec<f64>]>,
+    exog_coeffs: &[f64],
+    config: &SarimaxConfig,
+    params: &SarimaxParams,
+    n_obs: usize,
+) -> Result<ForecastResult> {
+    forecast_from_state(
+        ss,
+        &filter_output.predicted_state,
+        &filter_output.predicted_cov,
+        filter_output.scale,
+        steps,
+        alpha,
+        future_exog,
+        exog_coeffs,
+        config,
+        params,
+        n_obs,
+    )
+}
+
+/// Compute h-step ahead forecast from an arbitrary predicted state.
+///
+/// Same propagation as [`forecast`], but takes (a, P, scale) directly so a
+/// mid-filter [`crate::kalman::StateSnapshot`] can serve as the forecast
+/// origin (single-pass rolling forecasts). `n_obs` is the number of
+/// observations consumed at the origin (used for the absolute-time trend
+/// intercept).
+#[allow(clippy::too_many_arguments)]
+pub fn forecast_from_state(
+    ss: &StateSpace,
+    a0: &DVector<f64>,
+    p0: &DMatrix<f64>,
+    scale: f64,
     steps: usize,
     alpha: f64,
     future_exog: Option<&[Vec<f64>]>,
@@ -96,11 +133,10 @@ pub fn forecast(
     let q_mat = &ss.state_cov;
 
     let rqr = r_mat * q_mat * r_mat.transpose();
-    let scale = filter_output.scale;
 
-    // Start from predicted state a_{n+1|n}, P_{n+1|n}
-    let mut a = filter_output.predicted_state.clone();
-    let mut p = filter_output.predicted_cov.clone();
+    // Start from the supplied predicted state (a_{t|t-1}, P_{t|t-1})
+    let mut a = a0.clone();
+    let mut p = p0.clone();
 
     let mut mean = Vec::with_capacity(steps);
     let mut variance = Vec::with_capacity(steps);
@@ -253,6 +289,139 @@ pub fn forecast_pipeline(
         let fo = kalman_filter(endog, &ss, &init, config.concentrate_scale)?;
         forecast(&ss, &fo, steps, alpha, future_exog, &params.exog_coeffs, config, params, endog.len())
     }
+}
+
+/// Rolling-origin forecast output: one row per origin.
+#[derive(Debug, Clone)]
+pub struct RollingForecastOutput {
+    /// Forecast origins (observations consumed before each forecast).
+    pub origins: Vec<usize>,
+    /// Point forecasts, shape `[n_origins][horizon]`.
+    pub mean: Vec<Vec<f64>>,
+    /// Forecast variances.
+    pub variance: Vec<Vec<f64>>,
+    /// CI lower bounds (at the requested alpha).
+    pub ci_lower: Vec<Vec<f64>>,
+    /// CI upper bounds.
+    pub ci_upper: Vec<Vec<f64>>,
+}
+
+/// Single-pass rolling-origin h-step forecasts with fixed parameters.
+///
+/// ONE Kalman filter pass over the full series captures the predicted state
+/// at every origin `start, start+step, ...`; each origin's h-step forecast
+/// is then propagated from its snapshot. Total cost O(T + N·h) — versus
+/// O(N·T) for refiltering per origin (extend-chain) — while producing
+/// numerically identical forecasts, since the filter's prefix processing is
+/// exactly the prefix filter (Markov property).
+///
+/// Origins run while `origin <= n-1`; models with exogenous regressors are
+/// additionally capped at `n - horizon` so the in-sample exog rows
+/// `[origin, origin+horizon)` cover each forecast window.
+///
+/// `simple_differencing=true` is not supported yet (per-origin
+/// undifferencing of the raw tail is future work).
+#[allow(clippy::too_many_arguments)]
+pub fn rolling_forecast_pipeline(
+    endog: &[f64],
+    config: &SarimaxConfig,
+    params: &SarimaxParams,
+    start: usize,
+    step: usize,
+    horizon: usize,
+    alpha: f64,
+    exog: Option<&[Vec<f64>]>,
+) -> Result<RollingForecastOutput> {
+    if config.simple_differencing {
+        return Err(SarimaxError::InvalidInput(
+            "rolling_forecast does not support simple_differencing yet".into(),
+        ));
+    }
+    let n = endog.len();
+    if n == 0 {
+        return Err(SarimaxError::InvalidInput("endog is empty".into()));
+    }
+    if start == 0 || start > n - 1 {
+        return Err(SarimaxError::InvalidInput(format!(
+            "start must be in [1, n-1] = [1, {}], got {}",
+            n - 1,
+            start
+        )));
+    }
+    if step == 0 {
+        return Err(SarimaxError::InvalidInput("step must be >= 1".into()));
+    }
+    if horizon == 0 {
+        return Err(SarimaxError::InvalidInput("horizon must be >= 1".into()));
+    }
+
+    let has_exog = exog.is_some_and(|c| !c.is_empty());
+    let max_origin = if has_exog {
+        // in-sample exog must cover [origin, origin+horizon)
+        n.checked_sub(horizon).ok_or_else(|| {
+            SarimaxError::InvalidInput(format!(
+                "horizon {} exceeds series length {} for exog model",
+                horizon, n
+            ))
+        })?
+    } else {
+        n - 1
+    };
+    if start > max_origin {
+        return Err(SarimaxError::InvalidInput(format!(
+            "start {} exceeds max origin {} (exog models cap origins at n - horizon)",
+            start, max_origin
+        )));
+    }
+
+    let mut origins = Vec::new();
+    let mut o = start;
+    while o <= max_origin {
+        origins.push(o);
+        o += step;
+    }
+
+    // Single filter pass with snapshots at every origin
+    let ss = StateSpace::new(config, params, endog, exog)?;
+    let init = KalmanInit::from_config_default(&ss, config);
+    let (fo, snaps) =
+        kalman_filter_with_snapshots(endog, &ss, &init, config.concentrate_scale, &origins)?;
+
+    let n_o = origins.len();
+    let mut out = RollingForecastOutput {
+        origins,
+        mean: Vec::with_capacity(n_o),
+        variance: Vec::with_capacity(n_o),
+        ci_lower: Vec::with_capacity(n_o),
+        ci_upper: Vec::with_capacity(n_o),
+    };
+
+    for snap in &snaps {
+        let t0 = snap.origin;
+        // Per-origin "future" exog = the actual in-sample rows [t0, t0+horizon)
+        let fex_owned: Option<Vec<Vec<f64>>> = exog.map(|cols| {
+            cols.iter().map(|c| c[t0..t0 + horizon].to_vec()).collect()
+        });
+        let fc = forecast_from_state(
+            &ss,
+            &snap.predicted_state,
+            &snap.predicted_cov,
+            fo.scale,
+            horizon,
+            alpha,
+            fex_owned.as_deref(),
+            &params.exog_coeffs,
+            config,
+            params,
+            t0,
+        )?;
+        out.mean.push(fc.mean);
+        out.variance.push(fc.variance);
+        out.ci_lower.push(fc.ci_lower);
+        out.ci_upper.push(fc.ci_upper);
+    }
+
+    Ok(out)
 }
 
 /// Reconstruct original-scale forecast from a differenced-space forecast.

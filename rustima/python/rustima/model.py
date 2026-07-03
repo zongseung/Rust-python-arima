@@ -636,6 +636,67 @@ class SARIMAXModel:
         self._fit_result = SARIMAXResult(self, result_dict)
         return self._fit_result
 
+    def filter(self, params):
+        """Construct a result at the given parameters WITHOUT fitting.
+
+        Runs a single Kalman-filter pass to evaluate the log-likelihood at
+        ``params`` and returns a :class:`SARIMAXResult` bound to this model.
+        No optimization is performed (statsmodels ``.filter(params)``
+        semantics). This is the building block for walk-forward rolling
+        (:meth:`SARIMAXResult.extend`) and for reconstructing a result from
+        serialized parameters without re-estimation.
+
+        Parameters
+        ----------
+        params : array_like
+            Full parameter vector in statsmodels layout
+            ``[trend | exog | ar | ma | sar | sma | sigma2]``.
+
+        Returns
+        -------
+        SARIMAXResult
+            ``result.method == "filter"``, ``converged == True``.
+        """
+        params = np.ascontiguousarray(np.asarray(params, dtype=np.float64).ravel())
+        expected_names = _generate_param_names(
+            self.order, self.seasonal_order, self.n_exog, trend=self.trend
+        )
+        if len(params) != len(expected_names):
+            raise ValueError(
+                f"params length {len(params)} != expected {len(expected_names)} "
+                f"for this specification: {expected_names}"
+            )
+
+        llf = float(
+            rustima.sarimax_loglike(
+                self.endog,
+                self.order,
+                self.seasonal_order,
+                params,
+                **self._model_kwargs(),
+            )
+        )
+
+        k = len(params)
+        _p, d, _q = self.order
+        _P, D, _Q, s = self.seasonal_order
+        n_eff = self.nobs - ((d + s * D) if self.simple_differencing else 0)
+        sigma2_idx = expected_names.index("sigma2")
+
+        result_dict = {
+            "params": params,
+            "loglike": llf,
+            "scale": float(params[sigma2_idx]),
+            "aic": -2.0 * llf + 2.0 * k,
+            "bic": -2.0 * llf + k * np.log(n_eff),
+            "n_obs": n_eff,
+            "converged": True,
+            "method": "filter",
+            "n_iter": 0,
+            "n_params": k,
+        }
+        return SARIMAXResult(self, result_dict)
+
 
 class SARIMAXResult:
     """Fit result wrapper (statsmodels ResultsWrapper compatible).
@@ -948,6 +1009,134 @@ class SARIMAXResult:
         """Alias for forecast() (statsmodels compatibility)."""
         return self.forecast(steps=steps, alpha=alpha, exog=exog)
 
+    def rolling_forecast(self, start, step=1, horizon=1, alpha=0.05):
+        """Single-pass rolling-origin h-step forecasts (fixed parameters).
+
+        One Kalman-filter pass over the full sample captures the predicted
+        state at every origin ``start, start+step, ...``; each origin's
+        h-step forecast is propagated from its snapshot. Total cost
+        O(T + N·horizon) — versus O(N·T) for an :meth:`extend` chain — while
+        producing numerically identical forecasts (Markov property).
+
+        Origins run while ``origin <= nobs - 1``; models with exog are
+        capped at ``nobs - horizon`` (in-sample exog must cover each
+        forecast window). ``simple_differencing=True`` is not supported yet.
+
+        Parameters
+        ----------
+        start : int
+            First forecast origin (number of observations consumed).
+        step : int
+            Origin spacing (e.g. 24 for daily rolling on hourly data).
+        horizon : int
+            Forecast steps per origin.
+        alpha : float
+            CI significance level.
+
+        Returns
+        -------
+        RollingForecastResult
+            ``origins`` (N,), ``predicted_mean``/``variance``/``ci_lower``/
+            ``ci_upper`` (N, horizon).
+        """
+        result = rustima.sarimax_rolling_forecast(
+            self.model.endog,
+            self.model.order,
+            self.model.seasonal_order,
+            self.params,
+            start=start,
+            step=step,
+            horizon=horizon,
+            alpha=alpha,
+            **self._rs_kwargs(),
+        )
+        return RollingForecastResult(result, alpha=alpha)
+
+    def extend(self, endog, exog=None):
+        """Extend the sample with new observations, keeping parameters fixed.
+
+        Returns a new :class:`SARIMAXResult` whose sample is the original
+        history plus ``endog``, filtered at the SAME parameters — no
+        re-estimation. Subsequent :meth:`forecast` calls start after the new
+        observations, enabling walk-forward rolling::
+
+            res = SARIMAXModel(train, order, seasonal_order).fit()
+            for block in blocks:
+                fc = res.get_forecast(steps=len(block)).predicted_mean
+                res = res.extend(block)
+
+        Implementation note
+        -------------------
+        rustima refilters the FULL extended history with the fixed parameters
+        (statsmodels ``append(refit=False)`` semantics). Because the Kalman
+        filter is Markovian, post-extension forecasts are numerically
+        equivalent to statsmodels' state-carry-over ``extend``. Unlike
+        statsmodels ``extend``, ``llf``/``aic``/``bic`` here cover the full
+        extended sample rather than only the new observations.
+
+        Parameters
+        ----------
+        endog : array_like
+            New observations that come AFTER the current sample.
+        exog : array_like, optional
+            Exogenous values for the new observations, shape
+            ``(len(endog), n_exog)``. Required iff the model has exog.
+
+        Returns
+        -------
+        SARIMAXResult
+        """
+        new = np.asarray(endog, dtype=np.float64).ravel()
+        if new.size == 0:
+            raise ValueError("endog is empty: extend() requires at least one new observation")
+        if not np.isfinite(new).all():
+            raise ValueError("endog contains NaN or Inf values")
+
+        m = self.model
+        if m.exog is not None:
+            if exog is None:
+                raise ValueError(
+                    "model was built with exog; extend() requires exog for the new observations"
+                )
+            ex = np.asarray(exog, dtype=np.float64)
+            if ex.ndim == 1:
+                ex = ex.reshape(-1, 1)
+            if ex.shape != (new.size, m.n_exog):
+                raise ValueError(
+                    f"exog shape {ex.shape} != expected ({new.size}, {m.n_exog})"
+                )
+            full_exog = np.vstack([m.exog, ex])
+        else:
+            if exog is not None:
+                raise ValueError(
+                    "model was built without exog; unexpected exog passed to extend()"
+                )
+            full_exog = None
+
+        new_model = SARIMAXModel(
+            np.concatenate([m.endog, new]),
+            order=m.order,
+            seasonal_order=m.seasonal_order,
+            exog=full_exog,
+            trend=m.trend,
+            enforce_stationarity=m.enforce_stationarity,
+            enforce_invertibility=m.enforce_invertibility,
+            simple_differencing=m.simple_differencing,
+        )
+        return new_model.filter(self.params)
+
+    def append(self, endog, exog=None, refit=False, **fit_kwargs):
+        """Append new observations (statsmodels-compatible convenience).
+
+        ``refit=False`` (default) is an alias for :meth:`extend` — parameters
+        stay fixed. ``refit=True`` re-estimates parameters on the extended
+        sample via :meth:`SARIMAXModel.fit`.
+        """
+        extended = self.extend(endog, exog=exog)
+        if refit:
+            return extended.model.fit(**fit_kwargs)
+        return extended
+
     @property
     def resid(self):
         """Standardized residuals."""
@@ -1246,6 +1435,42 @@ class ForecastResult:
             "variance": self.variance.tolist(),
             "ci_lower": self.ci_lower.tolist(),
             "ci_upper": self.ci_upper.tolist(),
+        })
+
+
+class RollingForecastResult:
+    """Rolling-origin forecast result (one row per origin).
+
+    Attributes
+    ----------
+    origins : np.ndarray, shape (N,)
+        Forecast origins (observations consumed before each forecast).
+    predicted_mean : np.ndarray, shape (N, horizon)
+    variance : np.ndarray, shape (N, horizon)
+    ci_lower : np.ndarray, shape (N, horizon)
+    ci_upper : np.ndarray, shape (N, horizon)
+    """
+
+    def __init__(self, result_dict, alpha=0.05):
+        self.origins = np.asarray(result_dict["origins"], dtype=np.int64)
+        self.predicted_mean = np.asarray(result_dict["mean"], dtype=np.float64)
+        self.variance = np.asarray(result_dict["variance"], dtype=np.float64)
+        self.ci_lower = np.asarray(result_dict["ci_lower"], dtype=np.float64)
+        self.ci_upper = np.asarray(result_dict["ci_upper"], dtype=np.float64)
+        self._alpha = alpha
+
+    def to_dataframe(self):
+        """Long-format Polars DataFrame: origin, step, mean, variance, ci."""
+        import polars as pl
+
+        n_origins, horizon = self.predicted_mean.shape
+        return pl.DataFrame({
+            "origin": np.repeat(self.origins, horizon),
+            "step": np.tile(np.arange(1, horizon + 1), n_origins),
+            "mean": self.predicted_mean.ravel(),
+            "variance": self.variance.ravel(),
+            "ci_lower": self.ci_lower.ravel(),
+            "ci_upper": self.ci_upper.ravel(),
         })
 
 
