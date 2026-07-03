@@ -28,10 +28,12 @@ target_wheel/
 # Data files
 *.csv
 
-# Local docs
+# Local docs / 로컬 작업물 (배포·추적 제외)
 /CLAUDE.md
-/planner/
-/sarimax_rs/docs/
-/sarimax_rs/result_v1/
+/ARCHITECTURE.md
+/harness/
 /ver5/
 .env
+
+# 스크래치 노트북
+*.ipynb

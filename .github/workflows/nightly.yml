@@ -42,7 +42,8 @@ jobs:
           uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 
       - name: Run Tier B nightly tests
-        run: .venv/bin/python -m pytest python_tests/test_matrix_tier_b.py -v --tb=short
+        # Tier B는 test_matrix_tier_a.py 로 통합됨 (@nightly 마커, 커밋 a903551)
+        run: .venv/bin/python -m pytest python_tests/test_matrix_tier_a.py -m nightly -v --tb=short
 
   benchmark:
     name: Performance Benchmark
@@ -76,7 +77,8 @@ jobs:
         run: cargo bench --bench bench_fit -- --output-format bencher | tee bench_results.txt
 
       - name: Run Python benchmark comparison
-        run: .venv/bin/python python_tests/bench_comparison.py | tee python_bench_results.txt
+        # 벤치 스크립트는 benchmarks/ 로 격리됨
+        run: .venv/bin/python benchmarks/bench_comparison.py | tee python_bench_results.txt
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

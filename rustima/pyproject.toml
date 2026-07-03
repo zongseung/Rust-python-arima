@@ -72,7 +72,14 @@ notebook = [
 features = ["pyo3/extension-module"]
 module-name = "rustima"
 python-source = "python"
-include = ["LICENSE", "README.md"]
+include = ["LICENSE", "README.md", "lbfgsb_c/License.txt"]
+# sdist 위생: 벤치마크·논문 자산은 배포에서 제외 (개발용은 저장소에 유지)
+exclude = [
+    "benchmarks/**",
+    "docs/ver5.2/**",
+    "*.ipynb",
+    "*.csv",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["python_tests"]
