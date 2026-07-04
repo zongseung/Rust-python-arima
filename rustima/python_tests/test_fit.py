@@ -114,7 +114,7 @@ def test_fit_custom_start_params(statsmodels_fixtures):
     """Custom start_params should work."""
     case = statsmodels_fixtures["ar1"]
     y = np.array(case["data"])
-    start = np.array([0.5])
+    start = np.array([0.5, 1.0])  # 비집중 기본: [ar.L1, sigma2]
 
     result = rustima.sarimax_fit(
         y, (1, 0, 0), (0, 0, 0, 0), start_params=start
@@ -190,16 +190,23 @@ def test_loglike_arima111_oracle(statsmodels_fixtures):
 
 
 def test_loglike_concentrate_scale_default(statsmodels_fixtures):
-    """concentrate_scale=True is the default."""
+    """Default is NON-concentrated: full params [ar, sigma2] required."""
     case = statsmodels_fixtures["ar1"]
     y, params = np.array(case["data"]), np.array(case["params"])
     ll_default = rustima.sarimax_loglike(
-        y, (1, 0, 0), (0, 0, 0, 0), params,
+        y, (1, 0, 0), (0, 0, 0, 0), params,  # [ar, sigma2]
         enforce_stationarity=False, enforce_invertibility=False,
     )
     ll_explicit = rustima.sarimax_loglike(
         y, (1, 0, 0), (0, 0, 0, 0), params,
-        concentrate_scale=True,
+        concentrate_scale=False,
         enforce_stationarity=False, enforce_invertibility=False,
     )
     assert ll_default == ll_explicit
+    # 집중 경로는 sigma2 를 뺀 파라미터를 받고, MLE sigma2 에서 두 우도가 일치
+    ll_conc = rustima.sarimax_loglike(
+        y, (1, 0, 0), (0, 0, 0, 0), params[:-1],
+        concentrate_scale=True,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    assert np.isfinite(ll_conc)

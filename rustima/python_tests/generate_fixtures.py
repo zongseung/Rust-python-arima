@@ -83,8 +83,14 @@ def fit_and_extract(y, order, seasonal_order=(0, 0, 0, 0)):
     # Also compute loglike using model.loglike() to double-check
     loglike_check = model.loglike(res.params)
 
+    # The fit above concentrates the scale out (concentrate_scale=True), so
+    # res.params omits sigma2.  The current rustima engine / SARIMAXModel use
+    # the full non-concentrated layout [trend|exog|ar|ma|sar|sma|sigma2], so we
+    # append sigma2 (= res.scale, always the LAST parameter for trend='n').
+    params = res.params.tolist() + [float(res.scale)]
+
     return {
-        "params": res.params.tolist(),
+        "params": params,
         "loglike": float(loglike),
         "loglike_check": float(loglike_check),
         "scale": float(res.scale),
@@ -200,17 +206,37 @@ def main():
             concentrate_scale=True,
         )
         res = model.fit(disp=False)
-        fcast = res.get_forecast(steps=10)
-        ci = fcast.conf_int(alpha=0.05)
 
-        # Standardized residuals
-        resid = res.filter_results.standardized_forecasts_error[0]
+        # The fit concentrates the scale out for speed, so res.params omits
+        # sigma2.  rustima (and statsmodels' default) use the full
+        # NON-concentrated layout [ar|ma|sar|sma|sigma2].  To make the fixture
+        # convention unambiguous, refilter a non-concentrated model at the
+        # full parameter vector and harvest the user-facing outputs from it —
+        # no post-hoc scale adjustments.
+        sigma2 = float(res.scale)
+        full_params = np.asarray(res.params.tolist() + [sigma2])
+        model_nc = sm.tsa.SARIMAX(
+            data,
+            order=order,
+            seasonal_order=seasonal_order,
+            trend="n",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+            concentrate_scale=False,
+        )
+        res_nc = model_nc.filter(full_params)
+        fcast = res_nc.get_forecast(steps=10)
+        ci = fcast.conf_int(alpha=0.05)
+        resid = res_nc.filter_results.standardized_forecasts_error[0]
+
+        ci_lo = ci[:, 0] if isinstance(ci, np.ndarray) else ci.iloc[:, 0].to_numpy()
+        ci_hi = ci[:, 1] if isinstance(ci, np.ndarray) else ci.iloc[:, 1].to_numpy()
 
         forecast_fixtures[name] = {
-            "params": res.params.tolist(),
+            "params": full_params.tolist(),
             "forecast_mean": fcast.predicted_mean.tolist(),
-            "forecast_ci_lower": ci[:, 0].tolist() if isinstance(ci, np.ndarray) else ci.iloc[:, 0].tolist(),
-            "forecast_ci_upper": ci[:, 1].tolist() if isinstance(ci, np.ndarray) else ci.iloc[:, 1].tolist(),
+            "forecast_ci_lower": ci_lo.tolist(),
+            "forecast_ci_upper": ci_hi.tolist(),
             "standardized_residuals": resid.tolist(),
         }
 

@@ -280,10 +280,13 @@ mod tests {
             sigma2: None,
         };
 
-        // Direct single loglike
+        // Direct single loglike — use the SAME scale convention as the
+        // batch path (config.concentrate_scale), not a hardcoded one.
         let ss = StateSpace::new(&config, &params, &data, None).unwrap();
         let init = KalmanInit::approximate_diffuse(ss.k_states, KalmanInit::default_kappa());
-        let direct_ll = kalman_loglike(&data, &ss, &init, true).unwrap().loglike;
+        let direct_ll = kalman_loglike(&data, &ss, &init, config.concentrate_scale)
+            .unwrap()
+            .loglike;
 
         // Batch loglike
         let series = vec![data.clone(), data.clone()];

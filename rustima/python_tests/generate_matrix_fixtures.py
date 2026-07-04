@@ -244,8 +244,12 @@ def fit_oracle(y, order, seasonal, exog=None, future_exog=None):
             else:
                 forecast_var = list(forecast_var)
 
+            # Fit concentrates the scale out (concentrate_scale=True), so
+            # res.params omits sigma2.  The current rustima engine uses the full
+            # non-concentrated layout [exog|ar|ma|sar|sma|sigma2], so append
+            # sigma2 (= res.scale) as the trailing parameter.
             return {
-                "params": res.params.tolist(),
+                "params": res.params.tolist() + [float(res.scale)],
                 "loglike": float(res.llf),
                 "aic": float(res.aic),
                 "bic": float(res.bic),

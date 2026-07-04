@@ -58,10 +58,14 @@ def converged_models(models):
 
 
 def expected_k_params(order, seasonal, n_exog=0):
-    """Expected number of estimated params (concentrated scale)."""
+    """Expected number of estimated params.
+
+    Non-concentrated layout (current default): [exog|ar|ma|sar|sma|sigma2],
+    so sigma2 adds +1.
+    """
     p, _d, q = order
     P, _D, Q, _s = seasonal
-    return p + q + P + Q + n_exog
+    return p + q + P + Q + n_exog + 1
 
 
 # ---------------------------------------------------------------------------
