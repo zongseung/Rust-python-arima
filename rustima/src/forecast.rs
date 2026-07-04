@@ -25,7 +25,9 @@ pub struct ForecastResult {
 pub struct ResidualOutput {
     /// Raw innovations v_t.
     pub residuals: Vec<f64>,
-    /// Standardized residuals v_t / sqrt(F_t * scale).
+    /// Standardized residuals: v_t / sqrt(F_t) in non-concentrated mode
+    /// (F_t already includes sigma2), v_t / sqrt(F_t * scale) in
+    /// concentrated mode.
     pub standardized_residuals: Vec<f64>,
 }
 
@@ -33,7 +35,8 @@ pub struct ResidualOutput {
 ///
 /// Uses state-space forward propagation:
 ///   y_hat_h = Z' * a_h
-///   F_h     = Z' * P_h * Z * scale
+///   F_h     = Z' * P_h * Z          (non-concentrated; Q=[[sigma2]] is in P)
+///           = Z' * P_h * Z * scale  (concentrated; Q=[[1]], restore sigma2)
 ///   a_{h+1} = T * a_h + c_{n+h}
 ///   P_{h+1} = T * P_h * T' + R * Q * R'
 pub fn forecast(
@@ -138,6 +141,15 @@ pub fn forecast_from_state(
     let mut a = a0.clone();
     let mut p = p0.clone();
 
+    // Effective output scale for variance restoration.
+    //
+    // Concentrated mode: Q = [[1]] so the filter covariance P is normalized;
+    // the reported variance must be restored as Z'PZ * sigma2_hat.
+    // Non-concentrated mode (default): Q = [[sigma2]] already carries the
+    // innovation variance inside P, so Z'PZ IS the forecast variance —
+    // multiplying by scale again would double-count sigma2.
+    let eff_scale = if config.concentrate_scale { scale } else { 1.0 };
+
     let mut mean = Vec::with_capacity(steps);
     let mut variance = Vec::with_capacity(steps);
     let mut ci_lower = Vec::with_capacity(steps);
@@ -157,9 +169,9 @@ pub fn forecast_from_state(
             None => 0.0,
         };
 
-        // Forecast variance: F = Z' * P * Z * scale
+        // Forecast variance: F = Z' * P * Z  (* sigma2_hat in concentrated mode)
         let p_z = &p * z;
-        let f_h = z.dot(&p_z) * scale;
+        let f_h = z.dot(&p_z) * eff_scale;
         let f_safe = f_h.max(0.0);
 
         let se = f_safe.sqrt();
@@ -205,16 +217,28 @@ pub fn forecast_from_state(
 }
 
 /// Compute residuals and standardized residuals from Kalman filter output.
-pub fn compute_residuals(filter_output: &KalmanFilterOutput) -> ResidualOutput {
-    let scale = filter_output.scale;
+///
+/// Concentrated mode: F_t excludes sigma2, so standardize by sqrt(F_t * scale).
+/// Non-concentrated mode (default): F_t already includes sigma2 (Q=[[sigma2]]),
+/// so standardize by sqrt(F_t) — multiplying by scale again would shrink the
+/// residuals by sqrt(sigma2).
+pub fn compute_residuals(
+    filter_output: &KalmanFilterOutput,
+    concentrate_scale: bool,
+) -> ResidualOutput {
+    let eff_scale = if concentrate_scale {
+        filter_output.scale
+    } else {
+        1.0
+    };
     let n = filter_output.innovations.len();
 
     let mut standardized = Vec::with_capacity(n);
     for i in 0..n {
         let v = filter_output.innovations[i];
         let f = filter_output.innovation_vars[i];
-        if f * scale > 0.0 {
-            standardized.push(v / (f * scale).sqrt());
+        if f * eff_scale > 0.0 {
+            standardized.push(v / (f * eff_scale).sqrt());
         } else {
             standardized.push(0.0);
         }
@@ -563,7 +587,7 @@ pub fn residuals_pipeline(
     exog: Option<&[Vec<f64>]>,
 ) -> Result<ResidualOutput> {
     let fo = crate::pipeline::kalman_filter_full(endog, params, config, exog)?;
-    Ok(compute_residuals(&fo))
+    Ok(compute_residuals(&fo, config.concentrate_scale))
 }
 
 /// Inverse normal CDF using the Beasley-Springer-Moro algorithm.
