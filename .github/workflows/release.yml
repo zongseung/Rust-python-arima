@@ -51,7 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
           python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
-          python -m pytest python_tests/test_smoke.py -v --tb=short
+          python -m pytest python_tests/test_smoke.py -o pythonpath= -v --tb=short
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -95,7 +95,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
           python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
-          python -m pytest python_tests/test_smoke.py -v --tb=short
+          python -m pytest python_tests/test_smoke.py -o pythonpath= -v --tb=short
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -137,7 +137,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
           python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
-          python -m pytest python_tests/test_smoke.py -v --tb=short
+          python -m pytest python_tests/test_smoke.py -o pythonpath= -v --tb=short
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
