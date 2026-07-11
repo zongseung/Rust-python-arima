@@ -5,6 +5,12 @@
 #ifndef lbfgsb_h
 #define lbfgsb_h
 
+/* MSVC's C mode has no C11 _Thread_local keyword — map to its equivalent
+ * so Windows wheel builds compile. gcc/clang paths are unaffected. */
+#if defined(_MSC_VER) && !defined(__clang__)
+#define _Thread_local __declspec(thread)
+#endif
+
 
 
  /* Force 64-bit integers on all platforms (including Windows LLP64

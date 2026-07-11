@@ -50,7 +50,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
-          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
           python -m pytest python_tests/test_smoke.py -v --tb=short
 
       - name: Upload wheel
@@ -94,7 +94,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
-          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
           python -m pytest python_tests/test_smoke.py -v --tb=short
 
       - name: Upload wheel
@@ -136,7 +136,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy polars pytest
-          python -m pip install --force-reinstall --no-index --find-links dist/ rustima
+          python -m pip install --force-reinstall --no-deps --no-index --find-links dist/ rustima
           python -m pytest python_tests/test_smoke.py -v --tb=short
 
       - name: Upload wheel
