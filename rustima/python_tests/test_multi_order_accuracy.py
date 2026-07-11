@@ -305,7 +305,7 @@ class TestAccuracyRegression:
         y = _arima111_data()
         result = rustima.sarimax_fit(y, (1, 1, 1), (0, 0, 0, 0))
         assert result["converged"]
-        assert len(result["params"]) == 2
+        assert len(result["params"]) == 3  # [ar.L1, ma.L1, sigma2]
 
     def test_fit_forecast_roundtrip(self):
         y = _ar1_data(200)

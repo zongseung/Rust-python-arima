@@ -57,12 +57,12 @@ def test_exog_basic_acceptance():
     # Create a 2D exog array: (n_obs, 1)
     exog = np.ones((n, 1), dtype=np.float64)
 
-    # loglike with exog: params = [exog_coeff(1), ar(1)] = 2 params
+    # loglike with exog: params = [exog_coeff(1), ar(1), sigma2] = 3 params
     ll = rustima.sarimax_loglike(
         y,
         (1, 0, 0),
         (0, 0, 0, 0),
-        np.array([0.0, 0.1], dtype=np.float64),  # [exog_beta, ar_phi]
+        np.array([0.0, 0.1, 1.0], dtype=np.float64),  # [exog_beta, ar_phi, sigma2]
         exog=exog,
     )
     assert np.isfinite(ll), f"loglike with exog should be finite, got {ll}"
@@ -75,7 +75,7 @@ def test_exog_basic_acceptance():
         exog=exog,
     )
     assert result["converged"], "fit with exog should converge"
-    assert len(result["params"]) == 2, "should have exog_coeff + ar_coeff"
+    assert len(result["params"]) == 3, "should have exog_coeff + ar_coeff + sigma2"
 
 
 def test_forecast_rejects_missing_future_exog():
@@ -487,7 +487,7 @@ class TestOrderUpperBounds:
         # p=20 is the limit, should be accepted (though fit might fail for other reasons)
         ll = rustima.sarimax_loglike(
             y, (20, 0, 0), (0, 0, 0, 0),
-            np.zeros(20, dtype=np.float64),
+            np.append(np.zeros(20), 1.0),  # [ar(20), sigma2]
             enforce_stationarity=False,
         )
         assert np.isfinite(ll)
@@ -574,7 +574,7 @@ class TestLoglikeContract:
         with pytest.raises((ValueError, RuntimeError)):
             rustima.sarimax_loglike(
                 ar1_data, (1, 0, 0), (0, 0, 0, 0),
-                np.array([0.5, 0.3]),
+                np.array([0.5, 0.3, 0.2]),  # expected 2: [ar.L1, sigma2]
             )
 
     def test_accepts_exog_none(self, ar1_data, ar1_params):
@@ -611,7 +611,7 @@ class TestFitContract:
 
     def test_params_length_matches_order(self, ar1_data):
         result = rustima.sarimax_fit(ar1_data, (2, 0, 0), (0, 0, 0, 0))
-        assert len(result["params"]) == 2
+        assert len(result["params"]) == 3  # [ar.L1, ar.L2, sigma2]
 
     def test_n_obs_matches_data_length(self, ar1_data, ar1_fit_result):
         assert ar1_fit_result["n_obs"] == len(ar1_data)

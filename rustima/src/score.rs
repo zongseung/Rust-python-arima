@@ -1209,15 +1209,25 @@ mod tests {
             .map(|v| v.as_f64().unwrap())
             .collect();
         let phi = 0.6527425084139002;
+        let scale = case["scale"].as_f64().unwrap();
 
         let config = make_config(1, 0, 0);
-        let params_flat = vec![phi];
+        let params_flat = vec![phi, scale]; // ar(1) + sigma2
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "AR(1)");
@@ -1241,13 +1251,23 @@ mod tests {
             .collect();
 
         let config = make_config(1, 0, 1);
-        let params_flat = params_vec[..2].to_vec();
+        // fixture params: [ar, ma, sigma2]
+        let params_flat = params_vec.clone();
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "ARMA(1,1)");
@@ -1271,13 +1291,23 @@ mod tests {
             .collect();
 
         let config = make_config(1, 1, 1);
-        let params_flat = params_vec[..2].to_vec();
+        // fixture params: [ar, ma, sigma2]
+        let params_flat = params_vec.clone();
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "ARIMA(1,1,1)");
@@ -1301,13 +1331,23 @@ mod tests {
             .collect();
 
         let config = make_seasonal_config(1, 0, 0, 1, 0, 0, 4);
+        // fixture params: [ar, sar, sigma2]
         let params_flat = params_vec.clone();
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "SARIMA(1,0,0)(1,0,0,4)");
@@ -1327,14 +1367,23 @@ mod tests {
             .collect();
 
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
-        // params: [ar, ma, sar, sma] -- well within stationary/invertible region
-        let params_flat = vec![0.5, 0.3, 0.2, -0.4];
+        // params: [ar, ma, sar, sma, sigma2] -- well within stationary/invertible region
+        let params_flat = vec![0.5, 0.3, 0.2, -0.4, 1.0];
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         assert_gradient_close(&analytical, &numerical, 1e-3, "SARIMA(1,1,1)(1,1,1,12)");
@@ -1360,13 +1409,23 @@ mod tests {
             .collect();
 
         let config = make_seasonal_config(1, 1, 1, 1, 1, 1, 12);
+        // fixture params: [ar, ma, sar, sma, sigma2]
         let params_flat = params_vec.clone();
 
         let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
         let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
         let init = KalmanInit::from_config_default(&ss, &config);
 
-        let analytical = score(&data, &ss, &init, &config, &sparams, true, None).unwrap();
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
         let numerical = numerical_gradient(&data, &config, &params_flat, None);
 
         // Wider tolerance: near-unit-root AR makes numerical gradient unreliable

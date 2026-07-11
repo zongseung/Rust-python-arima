@@ -20,52 +20,52 @@ class TestTrendFit:
         model = SARIMAXModel(simple_data, order=(1, 0, 0), trend="n")
         result = model.fit()
         assert result.converged
-        assert len(result.params) == 1  # ar.L1 only
+        assert len(result.params) == 2  # ar.L1 + sigma2
 
     def test_trend_constant(self, simple_data):
         model = SARIMAXModel(simple_data, order=(1, 0, 0), trend="c")
         result = model.fit()
         assert result.converged
-        assert len(result.params) == 2  # intercept + ar.L1
+        assert len(result.params) == 3  # intercept + ar.L1 + sigma2
 
     def test_trend_linear(self, trend_data):
         model = SARIMAXModel(trend_data, order=(1, 0, 0), trend="t")
         result = model.fit()
         assert result.converged
-        assert len(result.params) == 2  # drift + ar.L1
+        assert len(result.params) == 3  # drift + ar.L1 + sigma2
 
     def test_trend_both(self, trend_data):
         model = SARIMAXModel(trend_data, order=(1, 0, 0), trend="ct")
         result = model.fit()
         assert result.converged
-        assert len(result.params) == 3  # intercept + drift + ar.L1
+        assert len(result.params) == 4  # intercept + drift + ar.L1 + sigma2
 
 
 class TestTrendParamNames:
     def test_names_none(self, simple_data):
         model = SARIMAXModel(simple_data, order=(1, 0, 0), trend="n")
         result = model.fit()
-        assert result.param_names == ["ar.L1"]
+        assert result.param_names == ["ar.L1", "sigma2"]
 
     def test_names_constant(self, simple_data):
         model = SARIMAXModel(simple_data, order=(1, 0, 0), trend="c")
         result = model.fit()
-        assert result.param_names == ["intercept", "ar.L1"]
+        assert result.param_names == ["intercept", "ar.L1", "sigma2"]
 
     def test_names_linear(self, trend_data):
         model = SARIMAXModel(trend_data, order=(1, 0, 0), trend="t")
         result = model.fit()
-        assert result.param_names == ["drift", "ar.L1"]
+        assert result.param_names == ["drift", "ar.L1", "sigma2"]
 
     def test_names_both(self, trend_data):
         model = SARIMAXModel(trend_data, order=(1, 0, 0), trend="ct")
         result = model.fit()
-        assert result.param_names == ["intercept", "drift", "ar.L1"]
+        assert result.param_names == ["intercept", "drift", "ar.L1", "sigma2"]
 
     def test_names_arma_with_trend(self, trend_data):
         model = SARIMAXModel(trend_data, order=(1, 0, 1), trend="c")
         result = model.fit()
-        assert result.param_names == ["intercept", "ar.L1", "ma.L1"]
+        assert result.param_names == ["intercept", "ar.L1", "ma.L1", "sigma2"]
 
 
 class TestTrendForecast:
@@ -122,4 +122,4 @@ class TestTrendDefault:
         model = SARIMAXModel(simple_data, order=(1, 0, 0))
         assert model.trend == "n"
         result = model.fit()
-        assert len(result.params) == 1
+        assert len(result.params) == 2  # ar.L1 + sigma2

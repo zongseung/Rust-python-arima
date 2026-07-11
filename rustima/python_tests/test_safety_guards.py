@@ -31,6 +31,7 @@ def test_white_noise_000_all_methods(white_noise_data, method):
         order=(0, 0, 0),
         seasonal=(0, 0, 0, 0),
         method=method,
+        concentrate_scale=True,
     )
     assert np.isfinite(result["loglike"]), f"loglike not finite for method={method}"
     assert result["n_obs"] == len(white_noise_data)
@@ -181,6 +182,7 @@ def test_zero_param_invalid_start_params_raises():
             order=(0, 0, 0),
             seasonal=(0, 0, 0, 0),
             start_params=np.array([1.0]),
+            concentrate_scale=True,
         )
 
 
@@ -316,7 +318,7 @@ def test_list_start_params_accepted():
 
     y = np.random.default_rng(42).normal(size=50)
     m = SARIMAXModel(y, order=(1, 0, 0))
-    r = m.fit(start_params=[0.5])
+    r = m.fit(start_params=[0.5, 1.0])  # [ar.L1, sigma2]
     assert r is not None
 
 
@@ -413,7 +415,12 @@ def test_near_cancellation_warning_via_python_warnings():
 
     with warn_mod.catch_warnings(record=True) as w:
         warn_mod.simplefilter("always")
-        result = rustima.sarimax_fit(y, (1, 0, 1), (0, 0, 0, 0), maxiter=1)
+        # Start in a near-cancelling region so the fitted params (maxiter=1)
+        # stay near-cancelling and the warning is emitted deterministically.
+        result = rustima.sarimax_fit(
+            y, (1, 0, 1), (0, 0, 0, 0), maxiter=1,
+            start_params=np.array([0.9, 0.9, 1.0]),
+        )
 
     # Check warning was captured via Python warnings module
     near_cancel_warnings = [x for x in w if "near-cancellation" in str(x.message)]
@@ -635,7 +642,7 @@ def test_forecast_short_series_seasonal_simple_diff_no_panic():
         y,
         (0, 0, 0),
         (0, 1, 0, 12),
-        np.array([], dtype=np.float64),
+        np.array([1.0], dtype=np.float64),  # [sigma2]
         steps=10,
         simple_differencing=True,
     )

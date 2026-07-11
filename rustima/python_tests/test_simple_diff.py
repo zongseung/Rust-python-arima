@@ -159,7 +159,7 @@ def test_sd_loglike_path_same_as_arma_on_diff(simple_data):
     sarimax_loglike with simple_differencing=True on y should equal
     sarimax_loglike with simple_differencing=False on diff(y) (d=1 case).
     """
-    params = np.array([0.3, -0.4])
+    params = np.array([0.3, -0.4, 1.0])  # [ar.L1, ma.L1, sigma2]
     ll_sd = rustima.sarimax_loglike(
         simple_data, (1, 1, 1), (0, 0, 0, 0), params, simple_differencing=True
     )

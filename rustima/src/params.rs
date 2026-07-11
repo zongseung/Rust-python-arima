@@ -270,14 +270,14 @@ mod tests {
     #[test]
     fn test_from_flat_to_flat_roundtrip() {
         let config = make_seasonal_config(2, 0, 1, 1, 0, 1, 12);
-        // flat: ar(2) + ma(1) + sar(1) + sma(1) = 5 params
-        let flat = vec![0.5, -0.3, 0.2, 0.4, -0.1];
+        // flat: ar(2) + ma(1) + sar(1) + sma(1) + sigma2 = 6 params
+        let flat = vec![0.5, -0.3, 0.2, 0.4, -0.1, 1.0];
         let params = SarimaxParams::from_flat(&flat, &config).unwrap();
         assert_eq!(params.ar_coeffs, vec![0.5, -0.3]);
         assert_eq!(params.ma_coeffs, vec![0.2]);
         assert_eq!(params.sar_coeffs, vec![0.4]);
         assert_eq!(params.sma_coeffs, vec![-0.1]);
-        assert!(params.sigma2.is_none());
+        assert_eq!(params.sigma2, Some(1.0));
         assert_eq!(params.to_flat(), flat);
     }
 
@@ -314,7 +314,8 @@ mod tests {
     #[test]
     fn test_from_flat_length_mismatch() {
         let config = make_seasonal_config(1, 0, 0, 0, 0, 0, 12);
-        let flat = vec![0.5, 0.3]; // too many
+        // expected: ar(1) + sigma2 = 2 params
+        let flat = vec![0.5, 0.3, 0.2]; // too many
         assert!(SarimaxParams::from_flat(&flat, &config).is_err());
     }
 

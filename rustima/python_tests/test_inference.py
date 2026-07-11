@@ -322,30 +322,30 @@ class TestRustVsPythonHessian:
 
 class TestParamNames:
     def test_ar1_name(self):
-        assert _generate_param_names((1, 0, 0), (0, 0, 0, 0)) == ["ar.L1"]
+        assert _generate_param_names((1, 0, 0), (0, 0, 0, 0)) == ["ar.L1", "sigma2"]
 
     def test_arima_111_names(self):
-        assert _generate_param_names((1, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ma.L1"]
+        assert _generate_param_names((1, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ma.L1", "sigma2"]
 
     def test_arima_211_names(self):
-        assert _generate_param_names((2, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ar.L2", "ma.L1"]
+        assert _generate_param_names((2, 1, 1), (0, 0, 0, 0)) == ["ar.L1", "ar.L2", "ma.L1", "sigma2"]
 
     def test_seasonal_names(self):
-        assert _generate_param_names((1, 0, 1), (1, 0, 1, 12)) == ["ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12"]
+        assert _generate_param_names((1, 0, 1), (1, 0, 1, 12)) == ["ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12", "sigma2"]
 
     def test_seasonal_p2(self):
-        assert _generate_param_names((0, 0, 0), (2, 0, 0, 12)) == ["ar.S.L12", "ar.S.L24"]
+        assert _generate_param_names((0, 0, 0), (2, 0, 0, 12)) == ["ar.S.L12", "ar.S.L24", "sigma2"]
 
     def test_with_exog(self):
         assert _generate_param_names((1, 0, 1), (1, 0, 1, 12), n_exog=2) == [
-            "x1", "x2", "ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12",
+            "x1", "x2", "ar.L1", "ma.L1", "ar.S.L12", "ma.S.L12", "sigma2",
         ]
 
     def test_non_concentrate_includes_sigma2(self):
         assert _generate_param_names((1, 0, 0), (0, 0, 0, 0), concentrate_scale=False) == ["ar.L1", "sigma2"]
 
     def test_empty_model(self):
-        assert _generate_param_names((0, 1, 0), (0, 0, 0, 0)) == []
+        assert _generate_param_names((0, 1, 0), (0, 0, 0, 0)) == ["sigma2"]
 
 
 # =========================================================================
@@ -364,7 +364,7 @@ def seasonal_data():
 class TestParameterSummary:
     def test_returns_named_rows(self, ar1_data):
         model = SARIMAXModel(ar1_data, order=(1, 0, 0))
-        assert model.fit().param_names == ["ar.L1"]
+        assert model.fit().param_names == ["ar.L1", "sigma2"]
 
     def test_parameter_summary_dict_keys(self, ar1_data):
         ps = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit().parameter_summary(include_inference=False)
@@ -381,7 +381,7 @@ class TestParameterSummary:
 
     def test_seasonal_param_names(self, seasonal_data):
         result = SARIMAXModel(seasonal_data, order=(1, 1, 1), seasonal_order=(1, 0, 0, 12)).fit()
-        assert result.param_names == ["ar.L1", "ma.L1", "ar.S.L12"]
+        assert result.param_names == ["ar.L1", "ma.L1", "ar.S.L12", "sigma2"]
 
     def test_param_names_length_matches_params(self, seasonal_data):
         result = SARIMAXModel(seasonal_data, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12)).fit()
@@ -614,7 +614,7 @@ class TestStatsmodelsParity:
 
     def test_ar1_params_close(self, ar1_data):
         res_rs, res_sm = self._fit_both(ar1_data, order=(1, 0, 0))
-        np.testing.assert_allclose(res_rs.params, res_sm.params[:-1], atol=0.05)
+        np.testing.assert_allclose(res_rs.params, res_sm.params, atol=0.05)
 
     def test_ar1_loglike_close(self, ar1_data):
         res_rs, res_sm = self._fit_both(ar1_data, order=(1, 0, 0))

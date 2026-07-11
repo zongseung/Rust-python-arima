@@ -2899,8 +2899,19 @@ fn polynomial_roots(coeffs: &[f64]) -> Vec<(f64, f64)> {
         companion[(i, i - 1)] = 1.0;
     }
 
-    // Real Schur decomposition → quasi-upper triangular T
-    let schur = nalgebra::Schur::new(companion);
+    // Real Schur decomposition → quasi-upper triangular T.
+    //
+    // MUST be bounded: `Schur::new` iterates the QR algorithm without an
+    // iteration cap and can spin forever on ill-conditioned companion
+    // matrices (observed: the degree-10 companion of a (10,0,10) fit hung
+    // indefinitely while holding the GIL). The roots feed only the
+    // near-cancellation warning/filter, so on non-convergence we degrade
+    // gracefully by returning no roots (min_root_distance → INFINITY →
+    // "no near-cancellation" → the warning is simply skipped).
+    let max_niter = 100 * p.max(10);
+    let Some(schur) = nalgebra::Schur::try_new(companion, 1e-12, max_niter) else {
+        return vec![];
+    };
     let (_, t) = schur.unpack();
 
     // Extract eigenvalues from diagonal blocks of T
@@ -3378,7 +3389,7 @@ mod tests {
     #[test]
     fn test_transform_untransform_roundtrip() {
         let config = make_config_with_enforcement(2, 0, 1, true, true);
-        let original = vec![0.5, -0.3, 0.2]; // ar(2), ma(1)
+        let original = vec![0.5, -0.3, 0.2, 1.5]; // ar(2), ma(1), sigma2
         let unconstrained = untransform_params(&original, &config).unwrap();
         let recovered = transform_params(&unconstrained, &config).unwrap();
         for (a, b) in original.iter().zip(recovered.iter()) {
@@ -3389,9 +3400,11 @@ mod tests {
     #[test]
     fn test_transform_passthrough_no_enforce() {
         let config = make_config_with_enforcement(1, 0, 1, false, false);
-        let original = vec![0.7, -0.3];
+        // ar(1), ma(1), sigma2; only sigma2 is transformed (ln) without enforcement
+        let original = vec![0.7, -0.3, 1.0];
         let unconstrained = untransform_params(&original, &config).unwrap();
-        assert_eq!(original, unconstrained);
+        assert_eq!(original[..2], unconstrained[..2]);
+        assert!((unconstrained[2] - 1.0f64.ln()).abs() < 1e-15);
     }
 
     #[test]
@@ -3749,7 +3762,7 @@ mod tests {
             .collect();
 
         let config = make_config_with_enforcement(1, 0, 0, false, false);
-        let start = vec![0.5];
+        let start = vec![0.5, 1.0]; // ar(1), sigma2
         let result = fit(&data, &config, Some(&start), Some("lbfgs"), Some(500), None).unwrap();
 
         assert!(result.loglike.is_finite());
@@ -4038,17 +4051,20 @@ mod tests {
 
     #[test]
     fn test_passes_cancellation_filter_arma_far() {
-        // ARMA(1,1) with distant roots: should pass
+        // ARMA(1,1) with distant roots: should pass.
+        // Non-concentrated layout: [ar, ma, sigma2].
         let config = make_config_with_enforcement(1, 0, 1, false, false);
-        let params = vec![0.8, 0.2]; // ar=0.8, ma=0.2 → roots far apart
+        let params = vec![0.8, 0.2, 1.0]; // ar=0.8, ma=0.2 → roots far apart
         assert!(passes_cancellation_filter(&params, &config));
     }
 
     #[test]
     fn test_passes_cancellation_filter_arma_near() {
-        // ARMA(1,1) with near-cancellation: should fail α=0.01 check
+        // ARMA(1,1) with near-cancellation: should fail α=0.01 check.
+        // Non-concentrated layout: [ar, ma, sigma2] — previously this vector
+        // omitted sigma2 and "failed" only because transform_params errored.
         let config = make_config_with_enforcement(1, 0, 1, false, false);
-        let params = vec![0.9, 0.895]; // ar=0.9, ma=0.895 → dist=0.005 < 0.01
+        let params = vec![0.9, 0.895, 1.0]; // ar=0.9, ma=0.895 → dist=0.005 < 0.01
         assert!(!passes_cancellation_filter(&params, &config));
     }
 }

@@ -233,7 +233,12 @@ mod tests {
         assert_eq!(config.order.p, 1);
         assert_eq!(config.order.d, 0);
         assert_eq!(config.order.q, 0);
-        assert!(config.concentrate_scale);
+        assert!(!config.concentrate_scale);
         assert!(!config.enforce_stationarity);
+        assert!(!config.enforce_invertibility);
+        assert!(!config.simple_differencing);
+        assert!(!config.measurement_error);
+        assert_eq!(config.n_exog, 0);
+        assert_eq!(config.trend, Trend::None);
     }
 }

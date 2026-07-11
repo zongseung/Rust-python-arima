@@ -51,8 +51,8 @@ class TestExogLoglike:
     def test_loglike_with_single_exog(self):
         """loglike with 1 exog variable returns finite value."""
         y, exog = _generate_arx_data()
-        # params: [exog_beta(1), ar(1)]
-        params = np.array([2.0, 0.5], dtype=np.float64)
+        # params: [exog_beta(1), ar(1), sigma2]
+        params = np.array([2.0, 0.5, 0.25], dtype=np.float64)
         ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params, exog=exog
         )
@@ -61,8 +61,8 @@ class TestExogLoglike:
     def test_loglike_with_multi_exog(self):
         """loglike with multiple exog variables returns finite value."""
         y, X, _ = _generate_multi_exog_data(n_exog=3)
-        # params: [exog(3), ar(1)]
-        params = np.array([1.5, -0.8, 0.3, 0.5], dtype=np.float64)
+        # params: [exog(3), ar(1), sigma2]
+        params = np.array([1.5, -0.8, 0.3, 0.5, 0.25], dtype=np.float64)
         ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params, exog=X
         )
@@ -71,7 +71,7 @@ class TestExogLoglike:
     def test_loglike_without_exog_unchanged(self):
         """loglike without exog is unchanged (backward compatible)."""
         y, _ = _generate_arx_data()
-        params = np.array([0.5], dtype=np.float64)
+        params = np.array([0.5, 1.0], dtype=np.float64)
         ll = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params
         )
@@ -80,13 +80,15 @@ class TestExogLoglike:
     def test_loglike_exog_improves_fit(self):
         """With true exog, loglike should be better than without."""
         y, exog = _generate_arx_data(beta=2.0)
-        # With exog (true model)
-        params_with = np.array([2.0, 0.5], dtype=np.float64)
+        # With exog; sigma2 ~ innovation variance of the SARIMAX
+        # regression-with-AR(1)-errors form (~1.25 for this ARX process)
+        params_with = np.array([2.0, 0.5, 1.25], dtype=np.float64)
         ll_with = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params_with, exog=exog
         )
-        # Without exog (misspecified)
-        params_without = np.array([0.5], dtype=np.float64)
+        # Without exog (misspecified); sigma2 ~ residual variance of the
+        # misspecified model (var(beta*x + eps) = 4 + 0.25)
+        params_without = np.array([0.5, 4.25], dtype=np.float64)
         ll_without = rustima.sarimax_loglike(
             y, (1, 0, 0), (0, 0, 0, 0), params_without
         )
@@ -107,8 +109,8 @@ class TestExogFit:
             y, (1, 0, 0), (0, 0, 0, 0), exog=exog
         )
         assert result["converged"], "fit with exog should converge"
-        # params: [exog(1), ar(1)]
-        assert len(result["params"]) == 2
+        # params: [exog(1), ar(1), sigma2]
+        assert len(result["params"]) == 3
         assert np.isfinite(result["loglike"])
 
     def test_fit_recovers_exog_coeff(self):
@@ -132,8 +134,8 @@ class TestExogFit:
             enforce_stationarity=False, enforce_invertibility=False,
         )
         assert result["converged"]
-        # params: [exog(3), ar(1)] = 4
-        assert len(result["params"]) == 4
+        # params: [exog(3), ar(1), sigma2] = 5
+        assert len(result["params"]) == 5
         assert np.isfinite(result["loglike"])
 
     def test_fit_arma_with_exog(self):
@@ -144,8 +146,8 @@ class TestExogFit:
             enforce_stationarity=False, enforce_invertibility=False,
         )
         assert result["converged"]
-        # params: [exog(1), ar(1), ma(1)] = 3
-        assert len(result["params"]) == 3
+        # params: [exog(1), ar(1), ma(1), sigma2] = 4
+        assert len(result["params"]) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +248,7 @@ class TestExogBatch:
         for i, r in enumerate(results):
             assert "error" not in r, f"series {i} failed: {r.get('error')}"
             assert r["converged"], f"series {i} did not converge"
-            assert len(r["params"]) == 2  # [exog(1), ar(1)]
+            assert len(r["params"]) == 3  # [exog(1), ar(1), sigma2]
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +283,7 @@ class TestExogStatsmodelsComparison:
             y, (1, 0, 0), (0, 0, 0, 0),
             np.array(sm_params, dtype=np.float64),
             exog=exog,
+            concentrate_scale=True,
         )
 
         # Should be close (not exact due to initialization differences;

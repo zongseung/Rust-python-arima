@@ -1002,7 +1002,7 @@ mod tests {
         let config = make_seasonal_config(1, 0, 0, 0, 0, 0, 0);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
-        assert_eq!(params.len(), 1); // ar(1)
+        assert_eq!(params.len(), 2); // ar(1) + sigma2
     }
 
     #[test]
@@ -1010,7 +1010,7 @@ mod tests {
         let config = make_seasonal_config(1, 0, 1, 0, 0, 0, 0);
         let y: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
         let params = compute_start_params(&y, &config, None).unwrap();
-        assert_eq!(params.len(), 2); // ar(1) + ma(1)
+        assert_eq!(params.len(), 3); // ar(1) + ma(1) + sigma2
     }
 
     #[test]
@@ -1020,7 +1020,7 @@ mod tests {
             .map(|i| (i as f64 * 0.1).sin() + (i as f64 * 0.01).cos())
             .collect();
         let params = compute_start_params(&y, &config, None).unwrap();
-        assert_eq!(params.len(), 4); // ar(1) + ma(1) + sar(1) + sma(1)
+        assert_eq!(params.len(), 5); // ar(1) + ma(1) + sar(1) + sma(1) + sigma2
     }
 
     #[test]
@@ -1037,7 +1037,7 @@ mod tests {
         let config = make_seasonal_config(1, 1, 1, 0, 0, 0, 0);
         let y = vec![1.0, 2.0]; // Too short after differencing
         let params = compute_start_params(&y, &config, None).unwrap();
-        assert_eq!(params.len(), 2); // ar(1) + ma(1)
+        assert_eq!(params.len(), 3); // ar(1) + ma(1) + sigma2
         assert!(params.iter().all(|&x| x == 0.0)); // Should be zeros
     }
 
