@@ -63,16 +63,15 @@ jobs:
   # macOS: arm64 (Apple Silicon) + x86_64 (Intel)
   # ----------------------------------------------------------------------------
   build-macos:
+    # arm64 는 macos-latest 네이티브(스모크 포함), x86_64 는 동일 러너에서 크로스컴파일
+    # (macos-13 Intel 러너는 은퇴 — 라벨 지정 시 잡이 영구 큐잉됨.
+    #  이전 matrix 는 include 두 항목이 서로 덮어써 arm64 잡이 아예 생성되지 않던 버그도 있었음)
     name: macOS ${{ matrix.target }} (py${{ matrix.python }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-latest
-            target: aarch64-apple-darwin
-          - runner: macos-13
-            target: x86_64-apple-darwin
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +89,8 @@ jobs:
           working-directory: rustima
 
       - name: Install wheel & smoke-test
+        # 크로스컴파일된 x86_64 휠은 arm64 러너에서 실행 불가 → 네이티브 타깃만 스모크
+        if: matrix.target == 'aarch64-apple-darwin'
         working-directory: rustima
         run: |
           python -m pip install --upgrade pip
