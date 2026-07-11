@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use sarimax_rs::optimizer;
-use sarimax_rs::types::{SarimaxConfig, SarimaxOrder, Trend};
+use rustima::optimizer;
+use rustima::types::{SarimaxConfig, SarimaxOrder, Trend};
 
 /// Deterministic LCG data generator (fixed seed → reproducible data).
 fn generate_ar1_data(n: usize, phi: f64, seed: u64) -> Vec<f64> {

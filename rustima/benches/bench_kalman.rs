@@ -1,9 +1,9 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use sarimax_rs::initialization::KalmanInit;
-use sarimax_rs::kalman::kalman_loglike;
-use sarimax_rs::params::SarimaxParams;
-use sarimax_rs::state_space::StateSpace;
-use sarimax_rs::types::{SarimaxConfig, SarimaxOrder, Trend};
+use rustima::initialization::KalmanInit;
+use rustima::kalman::kalman_loglike;
+use rustima::params::SarimaxParams;
+use rustima::state_space::StateSpace;
+use rustima::types::{SarimaxConfig, SarimaxOrder, Trend};
 
 /// Deterministic LCG data generator (fixed seed → reproducible data).
 fn generate_ar1_data(n: usize, phi: f64, seed: u64) -> Vec<f64> {

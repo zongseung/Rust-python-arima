@@ -26,7 +26,9 @@ statrs = "0.18"
 rayon = "1.10"
 
 # Python bindings
-pyo3 = { version = "0.28", features = ["auto-initialize"] }
+# auto-initialize 제거(2026-07-11): 크레이트 내 Python::with_gil 사용처 0 — 임베딩 불필요.
+# 켜두면 manylinux(정적 python) 휠 빌드가 실패해 PyPI 릴리스를 막는다.
+pyo3 = { version = "0.28" }
 numpy = "0.28"
 
 # Error handling
