@@ -27,7 +27,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64]
+        # aarch64 추가(2026-07-11): ARM 서버·Apple Silicon Docker 가 pip 설치 시
+        # sdist 폴백(러스트 툴체인 요구)으로 떨어지지 않도록. 교차빌드라 스모크는 x86_64 만.
+        target: [x86_64, aarch64]
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +48,7 @@ jobs:
           working-directory: rustima
 
       - name: Install wheel & smoke-test
+        if: matrix.target == 'x86_64'
         working-directory: rustima
         run: |
           python -m pip install --upgrade pip
