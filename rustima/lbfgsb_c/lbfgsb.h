@@ -5,10 +5,20 @@
 #ifndef lbfgsb_h
 #define lbfgsb_h
 
-/* MSVC's C mode has no C11 _Thread_local keyword — map to its equivalent
- * so Windows wheel builds compile. gcc/clang paths are unaffected. */
+/* Portable thread-local shim. The C11 _Thread_local keyword is missing on:
+ *  - MSVC C mode                          -> __declspec(thread)
+ *  - gcc < 4.9 (manylinux2014 aarch64
+ *    cross toolchain is gcc 4.8; it even
+ *    accepts -std=c11 without the keyword) -> GNU __thread
+ *  - any pre-C11 mode                      -> GNU __thread
+ * Modern clang/gcc with C11 keep the native keyword. */
 #if defined(_MSC_VER) && !defined(__clang__)
 #define _Thread_local __declspec(thread)
+#elif defined(__GNUC__) && !defined(__clang__) && \
+    (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 9))
+#define _Thread_local __thread
+#elif !defined(__STDC_VERSION__) || (__STDC_VERSION__ < 201112L)
+#define _Thread_local __thread
 #endif
 
 
