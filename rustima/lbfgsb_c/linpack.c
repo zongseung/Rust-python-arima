@@ -18,9 +18,9 @@ int dpofa(double *a, integer *lda, integer *n, integer *
     double sqrt(double);
 
     /* Local variables */
-    _Thread_local static integer j, k;
-    _Thread_local static double s, t;
-    _Thread_local static integer jm1;
+    static _Thread_local integer j, k;
+    static _Thread_local double s, t;
+    static _Thread_local integer jm1;
 
 /*
     dpofa factors a double precision symmetric positive definite 
@@ -115,8 +115,8 @@ int dtrsl(double *t, integer *ldt, integer *n,
     integer t_dim1, t_offset, i__1, i__2;
 
     /* Local variables */
-    _Thread_local static integer j, jj, case__;
-    _Thread_local static double temp;
+    static _Thread_local integer j, jj, case__;
+    static _Thread_local double temp;
     /*
     extern double ddot(integer *, double *, integer *, double *, 
 	    integer *);

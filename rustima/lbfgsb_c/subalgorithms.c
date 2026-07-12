@@ -12,7 +12,7 @@ static integer c__11 = 11;
     integer i__1;
 
     /* Local variables */
-    _Thread_local static integer i__, nbdd;
+    static _Thread_local integer i__, nbdd;
 
 
 /*     ************ */
@@ -127,8 +127,8 @@ static integer c__11 = 11;
     double sqrt(double);
 
     /* Local variables */
-    _Thread_local static integer i__, k, i2;
-    _Thread_local static double sum;
+    static _Thread_local integer i__, k, i2;
+    static _Thread_local double sum;
 
 /*     ************ */
 
@@ -275,28 +275,28 @@ static integer c__11 = 11;
 
 
     /* Local variables */
-    _Thread_local static integer i__, j;
-    _Thread_local static double f1, f2, dt, tj, tl, tu, tj0;
-    _Thread_local static integer ibp;
-    _Thread_local static double dtm;
+    static _Thread_local integer i__, j;
+    static _Thread_local double f1, f2, dt, tj, tl, tu, tj0;
+    static _Thread_local integer ibp;
+    static _Thread_local double dtm;
     extern /* Subroutine */ int bmv(integer *, double *, double *,
 	    integer *, double *, double *, integer *);
-    _Thread_local static double wmc, wmp, wmw;
-    _Thread_local static integer col2;
-    _Thread_local static double dibp;
-    _Thread_local static integer iter;
-    _Thread_local static double zibp, tsum, dibp2;
-    _Thread_local static logical bnded;
-    _Thread_local static double neggi;
-    _Thread_local static integer nfree;
-    _Thread_local static double bkmin;
-    _Thread_local static integer nleft;
-    _Thread_local static double f2_org__;
-    _Thread_local static integer nbreak, ibkmin;
+    static _Thread_local double wmc, wmp, wmw;
+    static _Thread_local integer col2;
+    static _Thread_local double dibp;
+    static _Thread_local integer iter;
+    static _Thread_local double zibp, tsum, dibp2;
+    static _Thread_local logical bnded;
+    static _Thread_local double neggi;
+    static _Thread_local integer nfree;
+    static _Thread_local double bkmin;
+    static _Thread_local integer nleft;
+    static _Thread_local double f2_org__;
+    static _Thread_local integer nbreak, ibkmin;
     extern /* Subroutine */ int hpsolb(integer *, double *, integer *,
 	    integer *);
-    _Thread_local static integer pointr;
-    _Thread_local static logical xlower, xupper;
+    static _Thread_local integer pointr;
+    static _Thread_local logical xlower, xupper;
 
 /*     ************ */
 
@@ -828,11 +828,11 @@ L999:
 	    wt_dim1, wt_offset, i__1, i__2;
 
     /* Local variables */
-    _Thread_local static integer i__, j, k;
-    _Thread_local static double a1, a2;
+    static _Thread_local integer i__, j, k;
+    static _Thread_local double a1, a2;
     extern /* Subroutine */ int bmv(integer *, double *, double *,
 	    integer *, double *, double *, integer *);
-    _Thread_local static integer pointr;
+    static _Thread_local integer pointr;
 
 /*     ************ */
 
@@ -928,10 +928,10 @@ L999:
 	    wy_dim1, wy_offset, sy_dim1, sy_offset, i__1, i__2, i__3;
 
     /* Local variables */
-    _Thread_local static integer i__, k, k1, m2, is, js, iy, jy, is1, js1, col2, dend, pend;
-    _Thread_local static integer upcl;
-    _Thread_local static double temp1, temp2, temp3, temp4;
-    _Thread_local static integer ipntr, jpntr, dbegin, pbegin;
+    static _Thread_local integer i__, k, k1, m2, is, js, iy, jy, is1, js1, col2, dend, pend;
+    static _Thread_local integer upcl;
+    static _Thread_local double temp1, temp2, temp3, temp4;
+    static _Thread_local integer ipntr, jpntr, dbegin, pbegin;
 
 /*     ************ */
 
@@ -1310,8 +1310,8 @@ L999:
 	    i__2, i__3;
 
     /* Local variables */
-    _Thread_local static integer i__, j, k, k1;
-    _Thread_local static double ddum;
+    static _Thread_local integer i__, j, k, k1;
+    static _Thread_local double ddum;
 
 /*     ************ */
 
@@ -1399,7 +1399,7 @@ L999:
     integer i__1;
 
     /* Local variables */
-    _Thread_local static integer i__, k, iact;
+    static _Thread_local integer i__, k, iact;
 
 
 /*     ************ */
@@ -1517,9 +1517,9 @@ L999:
     integer i__1;
 
     /* Local variables */
-    _Thread_local static integer i__, j, k;
-    _Thread_local static double out, ddum;
-    _Thread_local static integer indxin, indxou;
+    static _Thread_local integer i__, j, k;
+    static _Thread_local double out, ddum;
+    static _Thread_local integer indxin, indxou;
 
 /*     ************ */
 
@@ -1639,8 +1639,8 @@ L30:
 	    ss_dim1, ss_offset, i__1, i__2;
 
     /* Local variables */
-    _Thread_local static integer j;
-    _Thread_local static integer pointr;
+    static _Thread_local integer j;
+    static _Thread_local integer pointr;
 
 /*     ************ */
 
@@ -1746,8 +1746,8 @@ L30:
     double d__1, d__2;
 
     /* Local variables */
-    _Thread_local static integer i__;
-    _Thread_local static double gi;
+    static _Thread_local integer i__;
+    static _Thread_local double gi;
 
 /*     ************ */
 
@@ -1827,13 +1827,13 @@ L30:
     double d__1, d__2;
 
     /* Local variables */
-    _Thread_local static integer i__, j, k, m2;
-    _Thread_local static double dk;
-    _Thread_local static integer js, jy;
-    _Thread_local static double xk;
-    _Thread_local static integer ibd, col2;
-    _Thread_local static double dd_p__, temp1, temp2, alpha;
-    _Thread_local static integer pointr;
+    static _Thread_local integer i__, j, k, m2;
+    static _Thread_local double dk;
+    static _Thread_local integer js, jy;
+    static _Thread_local double xk;
+    static _Thread_local integer ibd, col2;
+    static _Thread_local double dd_p__, temp1, temp2, alpha;
+    static _Thread_local integer pointr;
 
 /*     ********************************************************************** */
 

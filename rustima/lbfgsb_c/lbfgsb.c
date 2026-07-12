@@ -60,7 +60,7 @@ static integer c__1 = 1;
 
 
     /* Local variables */
-    _Thread_local static integer ld, lr, lt, lz, lwa, lwn, lss, lxp, lws, lwt, lsy, lwy,
+    static _Thread_local integer ld, lr, lt, lz, lwa, lwn, lss, lxp, lws, lwt, lsy, lwy,
 	    lsnd;
 
 /* -jlm-jn */
@@ -343,45 +343,45 @@ static double c_b7 = 0.;
     fileType o__1=NULL;
 
     /* Local variables */
-    _Thread_local static integer i__, k;
-    _Thread_local static double gd, dr, rr, dtd;
-    _Thread_local static integer col;
-    _Thread_local static double tol;
-    _Thread_local static logical wrk;
-    _Thread_local static double stp, cpu1, cpu2;
-    _Thread_local static integer head;
-    _Thread_local static double fold;
-    _Thread_local static integer nact;
-    _Thread_local static double ddum;
-    _Thread_local static integer info, nseg;
-    _Thread_local static double time;
-    _Thread_local static integer nfgv, ifun, iter;
-    _Thread_local static integer wordTemp;
-    _Thread_local static integer *word;
+    static _Thread_local integer i__, k;
+    static _Thread_local double gd, dr, rr, dtd;
+    static _Thread_local integer col;
+    static _Thread_local double tol;
+    static _Thread_local logical wrk;
+    static _Thread_local double stp, cpu1, cpu2;
+    static _Thread_local integer head;
+    static _Thread_local double fold;
+    static _Thread_local integer nact;
+    static _Thread_local double ddum;
+    static _Thread_local integer info, nseg;
+    static _Thread_local double time;
+    static _Thread_local integer nfgv, ifun, iter;
+    static _Thread_local integer wordTemp;
+    static _Thread_local integer *word;
     word = &wordTemp;
-    _Thread_local static double time1, time2;
-    _Thread_local static integer iback;
-    _Thread_local static double gdold;
-    _Thread_local static integer nfree;
-    _Thread_local static logical boxed;
-    _Thread_local static integer itail;
-    _Thread_local static double theta;
-    _Thread_local static double dnorm;
-    _Thread_local static integer nskip, iword;
-    _Thread_local static double xstep, stpmx;
-    _Thread_local static integer ileave;
-    _Thread_local static double cachyt;
-    _Thread_local static integer itfile;
-    _Thread_local static double epsmch;
-    _Thread_local static logical updatd;
-    _Thread_local static double sbtime;
-    _Thread_local static logical prjctd;
-    _Thread_local static integer iupdat;
-    _Thread_local static double sbgnrm;
-    _Thread_local static logical cnstnd;
-    _Thread_local static integer nenter;
-    _Thread_local static double lnscht;
-    _Thread_local static integer nintol;
+    static _Thread_local double time1, time2;
+    static _Thread_local integer iback;
+    static _Thread_local double gdold;
+    static _Thread_local integer nfree;
+    static _Thread_local logical boxed;
+    static _Thread_local integer itail;
+    static _Thread_local double theta;
+    static _Thread_local double dnorm;
+    static _Thread_local integer nskip, iword;
+    static _Thread_local double xstep, stpmx;
+    static _Thread_local integer ileave;
+    static _Thread_local double cachyt;
+    static _Thread_local integer itfile;
+    static _Thread_local double epsmch;
+    static _Thread_local logical updatd;
+    static _Thread_local double sbtime;
+    static _Thread_local logical prjctd;
+    static _Thread_local integer iupdat;
+    static _Thread_local double sbgnrm;
+    static _Thread_local logical cnstnd;
+    static _Thread_local integer nenter;
+    static _Thread_local double lnscht;
+    static _Thread_local integer nintol;
 
 /* -jlm-jn */
 /*     ************ */

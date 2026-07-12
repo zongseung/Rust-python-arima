@@ -52,7 +52,7 @@
     integer i__1;
 
     /* Local variables */
-    _Thread_local static integer i, m, ix, iy, mp1;
+    static _Thread_local integer i, m, ix, iy, mp1;
 
 
 /*     constant times a vector plus a vector.   
@@ -139,7 +139,7 @@ L40:
     integer i__1;
 
     /* Local variables */
-    _Thread_local static integer i, m, ix, iy, mp1;
+    static _Thread_local integer i, m, ix, iy, mp1;
 
 
     /*     copies a vector, x, to a vector, y.   
@@ -226,9 +226,9 @@ double ddotRef(integer *n, double *dx, integer *incx, double *dy,
     double ret_val;
 
     /* Local variables */
-    _Thread_local static integer i, m;
-    _Thread_local static double dtemp;
-    _Thread_local static integer ix, iy, mp1;
+    static _Thread_local integer i, m;
+    static _Thread_local double dtemp;
+    static _Thread_local integer ix, iy, mp1;
 
 
     /*     forms the dot product of two vectors.   
@@ -314,7 +314,7 @@ L60:
     integer i__1, i__2;
 
     /* Local variables */
-    _Thread_local static integer i, m, nincx, mp1;
+    static _Thread_local integer i, m, nincx, mp1;
 
 
     /*     scales a vector by a constant.   

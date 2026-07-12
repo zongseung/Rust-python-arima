@@ -43,18 +43,18 @@ static integer c__1 = 1;
 
 
     /* Table of constant values */
-    _Thread_local static double c_b14 = FTOL;
-    _Thread_local static double c_b15 = GTOL;
-    _Thread_local static double c_b16 = XTOL;
-    _Thread_local static double c_b17 = STEPMIN;
+    static _Thread_local double c_b14 = FTOL;
+    static _Thread_local double c_b15 = GTOL;
+    static _Thread_local double c_b16 = XTOL;
+    static _Thread_local double c_b17 = STEPMIN;
     /* System generated locals */
     integer i__1;
     double d__1;
 
 
     /* Local variables */
-    _Thread_local static integer i__;
-    _Thread_local static double a1, a2;
+    static _Thread_local integer i__;
+    static _Thread_local double a1, a2;
 
     /* Parameter adjustments */
     --z__;
@@ -170,10 +170,10 @@ int dcsrch(double *f, double *g, double *stp,
 
 
     /* Local variables */
-    _Thread_local static double fm, gm, fx, fy, gx, gy, fxm, fym, gxm, gym, stx, sty;
-    _Thread_local static integer stage;
-    _Thread_local static double finit, ginit, width, ftest, gtest, stmin, stmax, width1;
-    _Thread_local static logical brackt;
+    static _Thread_local double fm, gm, fx, fy, gx, gy, fxm, fym, gxm, gym, stx, sty;
+    static _Thread_local integer stage;
+    static _Thread_local double finit, ginit, width, ftest, gtest, stmin, stmax, width1;
+    static _Thread_local logical brackt;
 
     /*
      ********** 
@@ -496,7 +496,7 @@ L1000:
     double sqrt(double);
 
     /* Local variables */
-    _Thread_local static double p, q, r__, s, sgnd, stpc, stpf, stpq, gamma, theta;
+    static _Thread_local double p, q, r__, s, sgnd, stpc, stpf, stpq, gamma, theta;
 
     /*
      ********** 
