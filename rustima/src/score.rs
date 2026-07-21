@@ -614,6 +614,11 @@ pub fn score(
     }
 
     // ---- Assemble score ----
+    // Concentrated (scale-free filter, Q=1): ll = -n/2(ln2π+1+ln σ̂²) - ½Σln F,
+    // whose score divides the innovation terms by σ̂² = (1/n)Σv²/F.
+    // Non-concentrated (Q=σ² inside the filter): ll = c - ½Σln F - ½Σv²/F and
+    // F_t already carries the scale, so dividing by σ² again would
+    // double-scale the innovation terms — the divisor must be 1.
     let sigma2_hat = if concentrate_scale {
         let s = sum_v2_f / n_eff as f64;
         if s <= 0.0 {
@@ -623,7 +628,7 @@ pub fn score(
         }
         s
     } else {
-        ss.state_cov[(0, 0)]
+        1.0
     };
 
     // score_i = -(1/sigma^2)*Sum(v/F)*dv + (1/(2*sigma^2))*Sum(v^2/F^2)*dF - (1/2)*Sum(1/F)*dF
@@ -952,6 +957,9 @@ pub fn score_obs(
     }
 
     // ---- Assemble per-observation Harvey scores ----
+    // Same convention as score(): with a non-concentrated filter Q=σ², F_t
+    // already carries the scale, so the per-obs divisor must be 1 (dividing
+    // by σ² again would double-scale the innovation terms).
     let sigma2 = if concentrate_scale {
         let s = sum_v2_f / n_eff as f64;
         if s <= 0.0 {
@@ -961,7 +969,7 @@ pub fn score_obs(
         }
         s
     } else {
-        ss.state_cov[(0, 0)]
+        1.0
     };
 
     // Harvey (1989) per-obs score:

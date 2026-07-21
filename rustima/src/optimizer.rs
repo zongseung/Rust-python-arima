@@ -2560,10 +2560,20 @@ fn fit_lbfgsb_single(
     match run_lbfgsb(objective, unconstrained_start.clone(), bounds, maxiter) {
         Ok((p, c, n, conv)) => Ok((p, c, n, conv, "lbfgsb".to_string())),
         Err(_) => {
-            let (p, c, n, conv) =
-                run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
-                    .map_err(SarimaxError::OptimizationFailed)?;
-            Ok((p, c, n, conv, "nelder-mead (fallback)".to_string()))
+            // Single-start L-BFGS-B failed (typically ABNORMAL_TERMINATION_IN_LNSRCH
+            // when the CSS start sits on an AR/MA near-cancellation ridge). Escalate
+            // to multi-start, which perturbs the start and keeps the best basin —
+            // plain Nelder-Mead from the same start would only polish the bad basin.
+            let n_restarts = compute_n_restarts(unconstrained_start.len(), config);
+            match fit_lbfgsb_multi(objective, &unconstrained_start, config, maxiter, n_restarts) {
+                Ok((p, c, n, conv, m)) => Ok((p, c, n, conv, format!("{} (fallback)", m))),
+                Err(_) => {
+                    let (p, c, n, conv) =
+                        run_nelder_mead(objective.clone(), unconstrained_start, maxiter)
+                            .map_err(SarimaxError::OptimizationFailed)?;
+                    Ok((p, c, n, conv, "nelder-mead (fallback)".to_string()))
+                }
+            }
         }
     }
 }

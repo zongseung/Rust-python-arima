@@ -26,15 +26,18 @@ from rustima import SARIMAXModel
 # --- Baseline captured BEFORE the batched-KF change ---
 # n=200, SARIMAX(2,0,0)(1,1,0)[24] with 2 exog columns, seed=42.
 # Build: maturin develop --release on commit 070e716 (pre-batched).
-BASELINE_LL = -172.02511857340443
-BASELINE_AIC = 356.05023714680885
+# Re-pinned 2026-07-22 after the score.rs non-concentrated assembly fix
+# (the corrected analytical gradient shifts the PTR trajectory by ~1e-6 in
+# params; LL agrees with the previous baseline to 6e-10).
+BASELINE_LL = -172.0251185728417
+BASELINE_AIC = 356.0502371456834
 BASELINE_PARAMS = [
-    2.326649586061251,    # exog_1
-    -1.2162988303317972,  # exog_2
-    0.6486839648145728,   # ar.L1
-    0.11754695800965,     # ar.L2
-    -0.5415458513524884,  # sar.L24
-    0.3926143947811343,   # sigma2
+    2.3266487585983002,   # exog_1
+    -1.2162985700466142,  # exog_2
+    0.6486844721998695,   # ar.L1
+    0.11754669279215059,  # ar.L2
+    -0.5415458637816885,  # sar.L24
+    0.39261397211711346,  # sigma2
 ]
 
 
