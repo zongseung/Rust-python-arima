@@ -14,15 +14,15 @@ import os as _os
 if "RAYON_NUM_THREADS" not in _os.environ:
     import sys as _sys
     if _sys.platform == "darwin":
+        import subprocess as _sp
         try:
-            import subprocess as _sp
             _n = _sp.check_output(
                 ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
                 stderr=_sp.DEVNULL, timeout=2,
             ).decode().strip()
             if _n.isdigit() and int(_n) > 0:
                 _os.environ["RAYON_NUM_THREADS"] = _n
-        except Exception:
+        except (OSError, _sp.SubprocessError, UnicodeDecodeError):
             pass
 
 # Native extension module — maturin places the .so here automatically.

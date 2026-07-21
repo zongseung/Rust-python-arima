@@ -404,6 +404,37 @@ fn prepare_single_request(
     Ok((config, exog_cols))
 }
 
+/// Common validation and config-building for batch (multi-series) PyO3 functions.
+///
+/// Validates each series (finite), parses and validates the per-series exog
+/// list, checks order bounds, and builds `SarimaxConfig`.
+/// Returns `(series, exog_vecs, config)`.
+#[allow(clippy::too_many_arguments)]
+fn prepare_batch_request(
+    series_list: &[PyReadonlyArray1<'_, f64>],
+    order: (usize, usize, usize),
+    seasonal: (usize, usize, usize, usize),
+    exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+    concentrate_scale: bool,
+    trend: Option<&str>,
+    simple_differencing: bool,
+) -> PyResult<(Vec<Vec<f64>>, Option<Vec<Vec<Vec<f64>>>>, SarimaxConfig)> {
+    let series = validate_batch_finite(series_list)?;
+    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
+    let (exog_vecs, n_exog) = validate_batch_exog(exog_list, series_list.len(), &series_lengths)?;
+    let (p, d, q) = order;
+    let (pp, dd, qq, s) = seasonal;
+    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
+    let config = build_config(
+        order, seasonal, n_exog,
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, parse_trend(trend)?, simple_differencing,
+    );
+    Ok((series, exog_vecs, config))
+}
+
 /// Convert a FitResult to a PyDict with standard keys.
 ///
 /// Warnings from the Rust fit path are emitted via Python's `warnings.warn()`
@@ -834,23 +865,11 @@ fn sarimax_batch_loglike<'py>(
     trend: Option<&str>,
     simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
-    let series = validate_batch_finite(&series_list)?;
-    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
-
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order,
-        seasonal,
-        n_exog,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-        parse_trend(trend)?,
-        simple_differencing,
-    );
+    let (series, exog_vecs, config) = prepare_batch_request(
+        &series_list, order, seasonal, &exog_list,
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, trend, simple_differencing,
+    )?;
 
     let params_flat = params.as_slice()?.to_vec();
     let sarimax_params = SarimaxParams::from_flat(&params_flat, &config).map_err(to_pyerr)?;
@@ -900,23 +919,11 @@ fn sarimax_batch_fit<'py>(
     trend: Option<&str>,
     simple_differencing: bool,
 ) -> PyResult<Py<PyList>> {
-    let series = validate_batch_finite(&series_list)?;
-    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
-
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order,
-        seasonal,
-        n_exog,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-        parse_trend(trend)?,
-        simple_differencing,
-    );
+    let (series, exog_vecs, config) = prepare_batch_request(
+        &series_list, order, seasonal, &exog_list,
+        enforce_stationarity, enforce_invertibility,
+        concentrate_scale, trend, simple_differencing,
+    )?;
 
     // Release GIL for Rayon parallel computation
     let method_owned = method.map(|s| s.to_string());
@@ -1084,20 +1091,16 @@ fn sarimax_batch_forecast<'py>(
     validate_steps(steps)?;
     validate_alpha(alpha)?;
 
-    let series = validate_batch_finite(&series_list)?;
-    let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
-    let (exog_vecs, n_exog) = validate_batch_exog(&exog_list, series_list.len(), &series_lengths)?;
+    let (series, exog_vecs, config) = prepare_batch_request(
+        &series_list, order, seasonal, &exog_list,
+        false, false, concentrate_scale, trend, simple_differencing,
+    )?;
     let future_exog_vecs = parse_and_validate_batch_forecast_exog(
         &exog_forecast_list,
         series_list.len(),
-        n_exog,
+        config.n_exog,
         steps,
     )?;
-
-    let (p, d, q) = order;
-    let (pp, dd, qq, s) = seasonal;
-    validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(order, seasonal, n_exog, false, false, concentrate_scale, parse_trend(trend)?, simple_differencing);
 
     let params_vecs: Vec<Vec<f64>> = params_list
         .iter()

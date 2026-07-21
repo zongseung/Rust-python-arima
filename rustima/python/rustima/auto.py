@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 
-from .model import SARIMAXModel
+from .model import SARIMAXModel, _hqic
 
 
 def _ndiffs(y, max_d=2, test="adf"):
@@ -79,6 +79,24 @@ def _ic(result, criterion="aic"):
     elif criterion == "hqic":
         return result.hqic
     raise ValueError(f"Unknown criterion: {criterion}")
+
+
+def _ic_from_raw(raw, criterion):
+    """Information criterion from a raw Rust fit dict.
+
+    HQIC is not present in the raw dict, so it is computed from
+    loglike/n_params/n_obs. Non-finite values collapse to +inf so failed
+    fits always lose comparisons.
+    """
+    if criterion == "hqic":
+        ic_val = _hqic(
+            raw.get("loglike", -math.inf),
+            raw.get("n_params", 0),
+            raw.get("n_obs", 2),
+        )
+    else:
+        ic_val = raw.get(criterion, math.inf)
+    return ic_val if math.isfinite(ic_val) else math.inf
 
 
 def _safe_ic(value):
@@ -472,19 +490,7 @@ def _stepwise(endog, d, D, s, max_p, max_q, max_P, max_Q,
                 _trace_print(p, d, q, P, D, Q, s, criterion, ic_val)
             return False
 
-        ic_val = raw.get("aic", math.inf)
-        if criterion == "bic":
-            ic_val = raw.get("bic", math.inf)
-        elif criterion == "hqic":
-            ll = raw.get("loglike", -math.inf)
-            k_p = raw.get("n_params", 0)
-            n_o = raw.get("n_obs", 2)
-            ic_val = (
-                -2.0 * ll + 2.0 * k_p * math.log(math.log(n_o))
-                if n_o > 1 else math.inf
-            )
-        if not math.isfinite(ic_val):
-            ic_val = math.inf
+        ic_val = _ic_from_raw(raw, criterion)
 
         history.append(_make_history_entry(
             order, seasonal, criterion, ic_val, converged,
@@ -627,20 +633,7 @@ def _grid_search(endog, d, D, s, max_p, max_q, max_P, max_Q,
         converged = raw.get("converged", False)
         has_error = "error" in raw
 
-        if not has_error:
-            ic_val = raw.get("aic", math.inf)
-            if criterion == "bic":
-                ic_val = raw.get("bic", math.inf)
-            elif criterion == "hqic":
-                # HQIC not in raw dict, compute from loglike
-                ll = raw.get("loglike", -math.inf)
-                k = raw.get("n_params", 0)
-                n = raw.get("n_obs", 2)
-                ic_val = -2.0 * ll + 2.0 * k * math.log(math.log(n)) if n > 1 else math.inf
-            if not math.isfinite(ic_val):
-                ic_val = math.inf
-        else:
-            ic_val = math.inf
+        ic_val = _ic_from_raw(raw, criterion) if not has_error else math.inf
 
         err_kw = {}
         if has_error:

@@ -19,7 +19,7 @@ use crate::css;
 use crate::error::{Result, SarimaxError};
 use crate::pipeline;
 use crate::initialization::KalmanInit;
-use crate::kalman::{kalman_filter, kalman_filter_batched, kalman_loglike};
+use crate::kalman::{kalman_filter_batched, kalman_loglike};
 use crate::params::{self, SarimaxParams};
 use crate::score;
 use crate::start_params::compute_start_params;
@@ -775,6 +775,13 @@ impl CostFunction for CssObjective {
 
 /// Run argmin BFGS (full-Hessian) with MoreThuente line search.
 ///
+/// Outcome of a single optimizer run: `(params, cost, n_iter, converged)`.
+type RunOutcome = std::result::Result<(Vec<f64>, f64, u64, bool), String>;
+
+/// A `RunOutcome` tagged with the method string that produced it:
+/// `(params, cost, n_iter, converged, method)`.
+type MethodOutcome = std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError>;
+
 /// Compared to L-BFGS: keeps full n×n Hessian approximation (no limited memory)
 /// → first-iteration step is curvature-aware as the BFGS update accumulates,
 /// reducing the chance of large overshoots in high-magnitude dimensions like
@@ -783,7 +790,7 @@ fn run_bfgs(
     objective: SarimaxObjective,
     init_params: Vec<f64>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let n = init_params.len();
     let linesearch = MoreThuenteLineSearch::new();
     let solver = BFGS::new(linesearch)
@@ -873,6 +880,34 @@ fn run_bfgs(
 //   - Standard radius update rule (ρ < 0.25: shrink; ρ > 0.75 & ‖p‖=Δ: expand)
 //   - Diagonal preconditioning for H⁻¹₀ so the initial radius is meaningful
 
+/// Central finite-difference gradient with relative step h = eps * (1 + |x_i|).
+///
+/// `f` must return the objective value to differentiate (already sign-adjusted
+/// by the caller). Errors from `f` propagate.
+fn central_diff_grad<F>(
+    x: &[f64],
+    eps: f64,
+    mut f: F,
+) -> std::result::Result<Vec<f64>, String>
+where
+    F: FnMut(&[f64]) -> std::result::Result<f64, String>,
+{
+    let n = x.len();
+    let mut grad = vec![0.0; n];
+    let mut xw = x.to_vec();
+    for i in 0..n {
+        let h = eps * (1.0 + x[i].abs());
+        let orig = xw[i];
+        xw[i] = orig + h;
+        let fp = f(&xw)?;
+        xw[i] = orig - h;
+        let fm = f(&xw)?;
+        xw[i] = orig;
+        grad[i] = (fp - fm) / (2.0 * h);
+    }
+    Ok(grad)
+}
+
 /// Central finite-difference gradient of -LL in unconstrained space.
 /// Used by trust-region BFGS — analytical gradient (via score()) returns
 /// near-zero values for unbounded exog dimensions on this codebase, so we
@@ -883,19 +918,7 @@ fn finite_diff_grad_negll(
     x: &[f64],
     eps: f64,
 ) -> std::result::Result<Vec<f64>, String> {
-    let n = x.len();
-    let mut grad = vec![0.0; n];
-    for i in 0..n {
-        let h = eps * (1.0 + x[i].abs());
-        let mut xp = x.to_vec();
-        let mut xm = x.to_vec();
-        xp[i] += h;
-        xm[i] -= h;
-        let lp = objective.eval_loglike(&xp)?;
-        let lm = objective.eval_loglike(&xm)?;
-        grad[i] = -(lp - lm) / (2.0 * h);
-    }
-    Ok(grad)
+    central_diff_grad(x, eps, |xi| objective.eval_loglike(xi).map(|ll| -ll))
 }
 
 /// Newton-style trust-region step: p = -H⁻¹·g, capped by trust radius.
@@ -947,7 +970,7 @@ fn run_trust_region_bfgs(
     objective: SarimaxObjective,
     init_params: Vec<f64>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let n = init_params.len();
     let tol_grad = 1e-5_f64;
     let tol_radius = 1e-8_f64;
@@ -1126,19 +1149,7 @@ fn finite_diff_grad_profile_negll(
     x: &[f64],
     eps: f64,
 ) -> std::result::Result<Vec<f64>, String> {
-    let n = x.len();
-    let mut grad = vec![0.0; n];
-    for i in 0..n {
-        let h = eps * (1.0 + x[i].abs());
-        let mut xp = x.to_vec();
-        let mut xm = x.to_vec();
-        xp[i] += h;
-        xm[i] -= h;
-        let fp = objective.eval_negloglike(&xp)?;
-        let fm = objective.eval_negloglike(&xm)?;
-        grad[i] = (fp - fm) / (2.0 * h);
-    }
-    Ok(grad)
+    central_diff_grad(x, eps, |xi| objective.eval_negloglike(xi))
 }
 
 /// Trust-region BFGS on the profiled exog objective.
@@ -1150,7 +1161,7 @@ fn run_profile_trust_region_bfgs(
     objective: ProfiledSarimaxObjective,
     init_params: Vec<f64>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let n = init_params.len();
     let tol_grad = 1e-5_f64;
     let tol_radius = 1e-8_f64;
@@ -1603,7 +1614,7 @@ fn fit_trust_region_single(
     unconstrained_start: Vec<f64>,
     config: &SarimaxConfig,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     match run_trust_region_bfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
         Ok((p, c, n, conv)) => {
             // Post-fit polish: tighten exog dims on the flat-LL surface using
@@ -1626,7 +1637,7 @@ fn fit_profile_trust_region(
     config: &SarimaxConfig,
     maxiter: u64,
     has_user_start: bool,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     if config.n_exog == 0 {
         return fit_trust_region_single(objective, unconstrained_start, config, maxiter);
     }
@@ -1713,7 +1724,7 @@ fn run_lbfgs(
     objective: SarimaxObjective,
     init_params: Vec<f64>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let linesearch = MoreThuenteLineSearch::new();
     let solver = LBFGS::new(linesearch, 10) // memory=10 (scipy default)
         .with_tolerance_grad(1e-5) // match scipy pgtol default
@@ -1752,7 +1763,7 @@ fn run_nelder_mead(
     objective: SarimaxObjective,
     init_params: Vec<f64>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let n = init_params.len();
 
     // Build simplex: n+1 vertices
@@ -1864,7 +1875,7 @@ fn run_lbfgsb(
     init_params: Vec<f64>,
     bounds_vec: Vec<(Option<f64>, Option<f64>)>,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool), String> {
+) -> RunOutcome {
     let n = init_params.len();
     let obj = objective.clone();
     let eval_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2126,9 +2137,9 @@ fn fit_multistart<F>(
     n_restarts: usize,
     method_label: &str,
     runner: F,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError>
+) -> MethodOutcome
 where
-    F: Fn(Vec<f64>, u64) -> std::result::Result<(Vec<f64>, f64, u64, bool), String>,
+    F: Fn(Vec<f64>, u64) -> RunOutcome,
 {
     let n_params_total = unconstrained_start.len();
     let mut remaining = maxiter;
@@ -2217,7 +2228,7 @@ fn fit_lbfgsb_multi(
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     let bounds = compute_bounds(config);
     let n_params_total = unconstrained_start.len();
     let mut remaining = maxiter;
@@ -2334,7 +2345,7 @@ fn fit_lbfgs_argmin(
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     let obj = objective.clone();
     fit_multistart(
         objective,
@@ -2353,7 +2364,7 @@ fn fit_bfgs_single(
     unconstrained_start: Vec<f64>,
     _config: &SarimaxConfig,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     match run_bfgs(objective.clone(), unconstrained_start.clone(), maxiter) {
         Ok((p, c, n, conv)) => Ok((p, c, n, conv, "bfgs".to_string())),
         Err(_) => {
@@ -2544,7 +2555,7 @@ fn fit_lbfgsb_single(
     unconstrained_start: Vec<f64>,
     config: &SarimaxConfig,
     maxiter: u64,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     let bounds = compute_bounds(config);
     match run_lbfgsb(objective, unconstrained_start.clone(), bounds, maxiter) {
         Ok((p, c, n, conv)) => Ok((p, c, n, conv, "lbfgsb".to_string())),
@@ -2594,7 +2605,7 @@ fn fit_lbfgsb_adaptive_restart(
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     let bounds = compute_bounds(config);
     let n_dim = unconstrained_start.len();
     let k = n_restarts.max(3);
@@ -2736,7 +2747,7 @@ fn fit_lbfgsb_hybrid(
     config: &SarimaxConfig,
     maxiter: u64,
     n_restarts: usize,
-) -> std::result::Result<(Vec<f64>, f64, u64, bool, String), SarimaxError> {
+) -> MethodOutcome {
     // Stage 1: standard multi-start
     let (multi_p, multi_c, multi_iter, multi_conv, _orig_name) =
         fit_lbfgsb_multi(objective, unconstrained_start, config, maxiter, n_restarts)?;
@@ -3196,8 +3207,9 @@ pub fn fit(
     ];
     if !VALID_METHODS.contains(&method) {
         return Err(SarimaxError::OptimizationFailed(format!(
-            "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'trust-region', 'profile-trust-region', 'lbfgs', or 'nelder-mead'",
-            method
+            "unknown method: '{}'. Valid methods: {}",
+            method,
+            VALID_METHODS.join(", ")
         )));
     }
 
@@ -3365,10 +3377,14 @@ pub fn fit(
                 start_params.is_some(),
             )?
         }
+        // Unreachable in practice: the VALID_METHODS whitelist above rejects
+        // unknown methods before dispatch. Kept as an error (not a panic) so a
+        // future whitelist/match drift degrades gracefully.
         _ => {
             return Err(SarimaxError::OptimizationFailed(format!(
-                "unknown method: '{}'. Use 'lbfgsb', 'lbfgsb-multi', 'lbfgsb-adaptive', 'lbfgsb-strict', 'trust-region', 'profile-trust-region', 'lbfgs', or 'nelder-mead'",
-                method
+                "unknown method: '{}'. Valid methods: {}",
+                method,
+                VALID_METHODS.join(", ")
             )));
         }
     };
@@ -3384,6 +3400,7 @@ pub fn fit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kalman::kalman_filter;
     use crate::test_helpers::{load_fixtures, make_config_with_enforcement};
 
     #[test]

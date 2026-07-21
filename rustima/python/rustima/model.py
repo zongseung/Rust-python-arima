@@ -10,6 +10,13 @@ from . import rustima
 # Parameter naming helpers
 # ---------------------------------------------------------------------------
 
+def _hqic(llf, n_params, n_obs):
+    """Hannan-Quinn information criterion; NaN when n_obs <= 1."""
+    if n_obs <= 1:
+        return float("nan")
+    return -2.0 * llf + 2.0 * n_params * math.log(math.log(n_obs))
+
+
 def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=False, trend="n"):
     """Generate statsmodels-style parameter names from model specification.
 
@@ -32,9 +39,9 @@ def _generate_param_names(order, seasonal_order, n_exog=0, concentrate_scale=Fal
     names = []
 
     # Trend
-    if trend in ("c", "ct", "tc"):
+    if trend in ("c", "ct"):
         names.append("intercept")
-    if trend in ("t", "ct", "tc"):
+    if trend in ("t", "ct"):
         names.append("drift")
 
     # Exogenous
@@ -1251,9 +1258,7 @@ class SARIMAXResult:
     @property
     def hqic(self):
         """Hannan-Quinn information criterion."""
-        k = self._n_params
-        n = self.nobs
-        return -2.0 * self.llf + 2.0 * k * math.log(math.log(n)) if n > 1 else np.nan
+        return _hqic(self.llf, self._n_params, self.nobs)
 
     def summary(self, alpha=0.05, include_inference=None, inference=None):
         """Return a statsmodels-style summary string.

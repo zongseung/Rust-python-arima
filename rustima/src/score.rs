@@ -30,6 +30,10 @@ use crate::types::{SarimaxConfig, Trend};
 // System matrix derivatives
 // ---------------------------------------------------------------------------
 
+/// Entries with absolute value below this are pruned from the derivative
+/// sparsity patterns (structural zeros from polynomial cancellation).
+const DERIV_SPARSITY_EPS: f64 = 1e-15;
+
 /// Compute dR*Q*R' + R*Q*dR' for a single-column noise matrix R.
 ///
 /// dRQR[i,j] = σ² * (dR[i] * R[j] + R[i] * dR[j])
@@ -151,7 +155,7 @@ fn precompute_derivatives(
             let idx = i + 1;
             if idx < d_reduced.len() {
                 let val = -d_reduced[idx];
-                if val.abs() > 1e-15 {
+                if val.abs() > DERIV_SPARSITY_EPS {
                     entries.push((sd + i, sd, val));
                 }
             }
@@ -167,7 +171,7 @@ fn precompute_derivatives(
         let d_reduced = polymul(&d_ma, &sma_poly);
         let mut dr_col = DVector::<f64>::zeros(k);
         for i in 0..ko {
-            if i < d_reduced.len() && d_reduced[i].abs() > 1e-15 {
+            if i < d_reduced.len() && d_reduced[i].abs() > DERIV_SPARSITY_EPS {
                 dr_col[sd + i] = d_reduced[i];
             }
         }
@@ -186,7 +190,7 @@ fn precompute_derivatives(
             let idx = i + 1;
             if idx < d_reduced.len() {
                 let val = -d_reduced[idx];
-                if val.abs() > 1e-15 {
+                if val.abs() > DERIV_SPARSITY_EPS {
                     entries.push((sd + i, sd, val));
                 }
             }
@@ -203,7 +207,7 @@ fn precompute_derivatives(
         let d_reduced = polymul(&ma_poly, &d_sma);
         let mut dr_col = DVector::<f64>::zeros(k);
         for i in 0..ko {
-            if i < d_reduced.len() && d_reduced[i].abs() > 1e-15 {
+            if i < d_reduced.len() && d_reduced[i].abs() > DERIV_SPARSITY_EPS {
                 dr_col[sd + i] = d_reduced[i];
             }
         }
@@ -318,8 +322,6 @@ pub fn score(
     let mut ss_converged = false;
     let mut ss_consec = 0_usize;
     let mut f_inv_steady = 0.0;
-    // Cached steady-state Kalman gain: K_inf = T * pz_inf / F_inf
-    let mut k_gain = DVector::<f64>::zeros(k);
 
     for t in 0..n {
         // ---- Step 1: Innovation (from predicted state) ----
@@ -598,8 +600,6 @@ pub fn score(
                 ss_converged = true;
                 let f_steady = sparse_z.z_dot_pz(&pz);
                 f_inv_steady = 1.0 / f_steady;
-                // Cache K_inf = T * pz / F
-                k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
                 // dpz_buf and df_buf are already at their steady-state values
                 // from the last non-steady iteration
             }
@@ -719,7 +719,6 @@ pub fn score_obs(
     let mut ss_converged = false;
     let mut ss_consec = 0_usize;
     let mut f_inv_steady = 0.0;
-    let mut k_gain = DVector::<f64>::zeros(k);
 
     for t in 0..n {
         let d_t = if t < ss.obs_intercept.len() {
@@ -942,7 +941,6 @@ pub fn score_obs(
                 ss_converged = true;
                 let f_steady = sparse_z.z_dot_pz(&pz);
                 f_inv_steady = 1.0 / f_steady;
-                k_gain.gemv(1.0 / f_steady, t_mat, &pz, 0.0);
             }
             pz_prev.copy_from(&pz);
         } else if t >= burn {
