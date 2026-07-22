@@ -240,6 +240,73 @@ def test_sd_forecast_ci_ordering(simple_data):
 
 
 # ---------------------------------------------------------------------------
+# get_prediction scale consistency (guards the "endog - residuals" path)
+# ---------------------------------------------------------------------------
+# A prior code review flagged that in-sample get_prediction() with
+# simple_differencing=True computes `endog[n_drop:] - residuals`, mixing the
+# original-scale endog with innovations of the *differenced* series, and asked
+# whether the result is on the wrong scale. It is not: the one-step-ahead
+# innovation is scale-invariant (v_t of the differenced series equals the
+# one-step prediction error of the original series), so `endog - residuals`
+# yields the correct original-scale prediction. These tests lock that in.
+
+def test_sd_get_prediction_tracks_original_scale(simple_data):
+    """In-sample predictions must live on the ORIGINAL series scale, tracking
+    the level of endog — not the near-zero differenced scale. A scale-mixing
+    bug would blow the error up to the magnitude of the series."""
+    from rustima import SARIMAXModel
+
+    m = SARIMAXModel(simple_data, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0),
+                     trend="n", simple_differencing=True)
+    pred = np.asarray(m.fit().get_prediction().predicted_mean, dtype=float)
+    mask = ~np.isnan(pred)
+    y = np.asarray(simple_data, dtype=float)
+
+    # One-step predictions of a (near) random walk track the level closely.
+    corr = np.corrcoef(pred[mask], y[mask])[0, 1]
+    mae = np.mean(np.abs(pred[mask] - y[mask]))
+    series_range = y.max() - y.min()
+    assert corr > 0.85, f"in-sample pred does not track original scale: corr={corr:.3f}"
+    assert mae < 0.25 * series_range, (
+        f"in-sample pred MAE={mae:.3f} too large vs series range {series_range:.3f} "
+        "(symptom of original/differenced scale mixing)"
+    )
+
+
+def test_sd_in_sample_matches_ss_at_tail_same_params():
+    """With identical params, the sd=True reconstruction `endog - residuals`
+    must converge to the sd=False reconstruction once the Kalman
+    initialization transient dies out (non-seasonal d=1). Proves the sd=True
+    get_prediction path is scale-equivalent to the well-tested sd=False path.
+
+    Uses fixed params (not a fit) so the check is fully deterministic and
+    independent of the optimizer."""
+    rng = np.random.default_rng(0)
+    y = np.cumsum(rng.standard_normal(120)) + 0.5 * np.arange(120)
+    order, seas = (1, 1, 1), (0, 0, 0, 0)
+    params = np.array([0.5, -0.5, 1.0])  # ar1, ma1, sigma2
+
+    def reconstruct(sd):
+        out = rustima.sarimax_residuals(y, order, seas, params, None, False, "n", sd)
+        resid = np.asarray(out["residuals"], dtype=float)
+        n_drop = len(y) - len(resid)
+        # map to original index: pred[k] corresponds to original index k + n_drop
+        return y[n_drop:] - resid, n_drop
+
+    pf, ndf = reconstruct(False)
+    pt, ndt = reconstruct(True)
+    # align by original index and compare the last 20 (transient fully decayed)
+    lo, n = max(ndf, ndt), len(y)
+    a = np.array([pf[k - ndf] for k in range(lo, n)])
+    b = np.array([pt[k - ndt] for k in range(lo, n)])
+    max_tail_diff = np.max(np.abs(a[-20:] - b[-20:]))
+    assert max_tail_diff < 1e-6, (
+        f"sd=True in-sample reconstruction diverges from sd=False at the tail "
+        f"(max diff {max_tail_diff:.2e}) — scale/undiff inconsistency"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Default remains simple_differencing=False
 # ---------------------------------------------------------------------------
 
