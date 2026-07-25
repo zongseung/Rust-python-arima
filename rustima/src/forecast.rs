@@ -29,6 +29,9 @@ pub struct ResidualOutput {
     /// (F_t already includes sigma2), v_t / sqrt(F_t * scale) in
     /// concentrated mode.
     pub standardized_residuals: Vec<f64>,
+    /// One-step-ahead prediction variances F_t (times scale when
+    /// concentrated) — the variance of the in-sample predicted mean.
+    pub prediction_variances: Vec<f64>,
 }
 
 /// Compute h-step ahead forecast from the final Kalman filter state.
@@ -227,11 +230,14 @@ pub fn compute_residuals(
     let n = filter_output.innovations.len();
 
     let mut standardized = Vec::with_capacity(n);
+    let mut pred_vars = Vec::with_capacity(n);
     for i in 0..n {
         let v = filter_output.innovations[i];
         let f = filter_output.innovation_vars[i];
-        if f * eff_scale > 0.0 {
-            standardized.push(v / (f * eff_scale).sqrt());
+        let fv = f * eff_scale;
+        pred_vars.push(fv);
+        if fv > 0.0 {
+            standardized.push(v / fv.sqrt());
         } else {
             standardized.push(0.0);
         }
@@ -240,6 +246,7 @@ pub fn compute_residuals(
     ResidualOutput {
         residuals: filter_output.innovations.clone(),
         standardized_residuals: standardized,
+        prediction_variances: pred_vars,
     }
 }
 

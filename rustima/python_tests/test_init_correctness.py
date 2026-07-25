@@ -89,3 +89,24 @@ def test_residuals_respect_enforcement_flags():
         y, (1, 0, 0), (0, 0, 0, 0), np.asarray(res.params, float))
     np.testing.assert_allclose(np.asarray(res.resid),
                                np.asarray(r_model["standardized_residuals"]))
+
+
+def test_get_prediction_conf_int_matches_statsmodels():
+    """S14: PredictionResult.conf_int() must exist (statsmodels-compat) and
+    match statsmodels' in-sample one-step CI; alpha must apply to the whole
+    range, not only the out-of-sample tail."""
+    y = _ar1(200, 0.7, seed=9)
+    res = rustima.SARIMAXModel(y, order=(1, 0, 0)).fit()
+    pred = res.get_prediction(start=0, end=len(y))
+    ci = pred.conf_int()
+    assert ci.shape == (len(y), 2)
+
+    sm_res = sm.tsa.SARIMAX(y, order=(1, 0, 0)).fit(disp=0)
+    sm_pred = sm_res.get_prediction(start=0, end=len(y) - 1)
+    sm_ci = np.asarray(sm_pred.conf_int())
+    # skip the first few obs where init transients differ most
+    np.testing.assert_allclose(ci[5:], sm_ci[5:], rtol=0.05, atol=0.15)
+
+    # narrower alpha -> wider CI
+    wide = pred.conf_int(alpha=0.01)
+    assert np.all((wide[5:, 1] - wide[5:, 0]) > (ci[5:, 1] - ci[5:, 0]))

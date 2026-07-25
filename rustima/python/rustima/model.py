@@ -1084,6 +1084,7 @@ class SARIMAXResult:
         # In-sample: one-step-ahead predictions = endog - residuals (innovations)
         resid_out = rustima.sarimax_residuals(*self._rs_args, **self._rs_kwargs())
         residuals = np.array(resid_out["residuals"])
+        in_sample_se = np.sqrt(np.array(resid_out["prediction_variances"]))
 
         # When simple_differencing=True, Rust returns residuals of length
         # n_eff = n - d - s*D (dropped observations).  Pad the front with
@@ -1095,6 +1096,7 @@ class SARIMAXResult:
                 np.full(n_drop, np.nan),
                 endog_eff - residuals,
             ])
+            in_sample_se = np.concatenate([np.full(n_drop, np.nan), in_sample_se])
         else:
             in_sample_pred = self.model.endog - residuals
 
@@ -1102,10 +1104,12 @@ class SARIMAXResult:
         if end > n_endog:
             fc = self.forecast(steps=end - n_endog, alpha=alpha, exog=exog)
             all_pred = np.concatenate([in_sample_pred, fc.predicted_mean])
+            all_se = np.concatenate([in_sample_se, np.sqrt(fc.variance)])
         else:
             all_pred = in_sample_pred
+            all_se = in_sample_se
 
-        return PredictionResult(all_pred[start:end])
+        return PredictionResult(all_pred[start:end], all_se[start:end], alpha=alpha)
 
     @property
     def hqic(self):
@@ -1338,10 +1342,34 @@ class PredictionResult:
     ----------
     predicted_mean : np.ndarray
         One-step-ahead predicted values for the requested range.
+    se_mean : np.ndarray
+        Standard errors of the predictions (sqrt of the one-step innovation
+        variance in-sample, forecast variance out-of-sample).
     """
 
-    def __init__(self, predicted_mean):
+    def __init__(self, predicted_mean, se_mean=None, alpha=0.05):
         self.predicted_mean = np.asarray(predicted_mean, dtype=np.float64)
+        if se_mean is None:
+            se_mean = np.full(len(self.predicted_mean), np.nan)
+        self.se_mean = np.asarray(se_mean, dtype=np.float64)
+        self._alpha = alpha
+
+    def conf_int(self, alpha=None):
+        """Confidence interval as an (n, 2) array (statsmodels-compatible).
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Significance level; defaults to the alpha given to
+            ``get_prediction``.
+        """
+        if alpha is None:
+            alpha = self._alpha
+        z = _norm_ppf(1.0 - alpha / 2.0)
+        return np.column_stack([
+            self.predicted_mean - z * self.se_mean,
+            self.predicted_mean + z * self.se_mean,
+        ])
 
     def to_dataframe(self):
         """Return predictions as a Polars DataFrame.

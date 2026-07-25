@@ -144,7 +144,7 @@ def test_residuals_returns_dict(statsmodels_fixtures):
         y, (1, 0, 0), (0, 0, 0, 0), params
     )
 
-    expected_keys = {"residuals", "standardized_residuals"}
+    expected_keys = {"residuals", "standardized_residuals", "prediction_variances"}
     assert set(result.keys()) == expected_keys
     assert len(result["residuals"]) == len(y)
     assert len(result["standardized_residuals"]) == len(y)

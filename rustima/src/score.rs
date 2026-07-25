@@ -24,7 +24,7 @@ use crate::polynomial::{
     make_ar_poly, make_ma_poly, make_seasonal_ar_poly, make_seasonal_ma_poly, polymul,
 };
 use crate::state_space::StateSpace;
-use crate::types::{SarimaxConfig, Trend};
+use crate::types::SarimaxConfig;
 
 // ---------------------------------------------------------------------------
 // System matrix derivatives

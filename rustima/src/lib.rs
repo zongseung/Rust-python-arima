@@ -484,6 +484,7 @@ fn residuals_to_pydict<'py>(py: Python<'py>, result: &crate::forecast::ResidualO
     let dict = PyDict::new(py);
     dict.set_item("residuals", &result.residuals)?;
     dict.set_item("standardized_residuals", &result.standardized_residuals)?;
+    dict.set_item("prediction_variances", &result.prediction_variances)?;
     Ok(dict)
 }
 
@@ -823,7 +824,7 @@ fn sarimax_rolling_forecast<'py>(
 
 /// Compute residuals and standardized residuals for a SARIMAX model.
 ///
-/// Returns a dict with: residuals, standardized_residuals.
+/// Returns a dict with: residuals, standardized_residuals, prediction_variances.
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false,
                     enforce_stationarity=true, enforce_invertibility=true))]
