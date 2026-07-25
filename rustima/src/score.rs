@@ -15,7 +15,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
-use crate::initialization::KalmanInit;
+use crate::initialization::{solve_lyapunov_general, KalmanInit};
 use crate::kalman::{
     check_convergence, SparseT, SparseZ, STEADY_STATE_MIN_STEPS,
 };
@@ -351,6 +351,49 @@ fn tlkf_pass<S: TlkfSink>(
     // Tangent linear state
     let mut da: Vec<DVector<f64>> = vec![DVector::zeros(k); np];
     let mut dp: Vec<DMatrix<f64>> = vec![DMatrix::zeros(k, k); np];
+
+    // dP_0/dtheta: zero for diffuse initializations (P_0 = kappa*I), but the
+    // Lyapunov P_0 of the stationary ARMA block depends on the AR/MA/sigma2
+    // parameters. Differentiating P = T P T' + RQR' gives another discrete
+    // Lyapunov equation, dP = T dP T' + (dT P T' + T P dT' + dRQR), solved
+    // with the same doubling core (rhs is symmetric but may be indefinite).
+    if let Some((sb, ko)) = init.stationary_block {
+        let t_arma = t_mat.view((sb, sb), (ko, ko)).into_owned();
+        let p_arma = init.initial_state_cov.view((sb, sb), (ko, ko)).into_owned();
+        let t_arma_t = t_arma.transpose();
+        for i in 0..np {
+            let mut rhs = DMatrix::<f64>::zeros(ko, ko);
+            let mut nonzero = false;
+            if !derivs.dt[i].is_empty() {
+                let mut dt_block = DMatrix::<f64>::zeros(ko, ko);
+                for &(row, col, val) in &derivs.dt[i] {
+                    if row >= sb && row < sb + ko && col >= sb && col < sb + ko {
+                        dt_block[(row - sb, col - sb)] = val;
+                        nonzero = true;
+                    }
+                }
+                if nonzero {
+                    let m = &dt_block * &p_arma * &t_arma_t;
+                    rhs += &m + m.transpose();
+                }
+            }
+            if let Some(ref drqr_i) = derivs.drqr[i] {
+                rhs += drqr_i.view((sb, sb), (ko, ko)).into_owned();
+                nonzero = true;
+            }
+            if !nonzero {
+                continue;
+            }
+            // On solver failure leave dp[i] = 0 (previous behavior).
+            if let Some(dp0) = solve_lyapunov_general(&t_arma, &rhs) {
+                for r in 0..ko {
+                    for c in 0..ko {
+                        dp[i][(sb + r, sb + c)] = dp0[(r, c)];
+                    }
+                }
+            }
+        }
+    }
 
     // Work buffers
     let mut pz = DVector::<f64>::zeros(k);

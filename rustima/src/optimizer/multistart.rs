@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use crate::error::SarimaxError;
 use crate::types::SarimaxConfig;
 
-use super::passes_cancellation_filter;
+use super::{on_cancellation_ridge, passes_cancellation_filter};
 use super::transforms::untransform_params;
 use super::objective::SarimaxObjective;
 use super::runners::{
@@ -426,7 +426,35 @@ pub(super) fn fit_lbfgsb_single(
 ) -> MethodOutcome {
     let bounds = compute_bounds(config);
     match run_lbfgsb(objective, unconstrained_start.clone(), bounds, maxiter) {
-        Ok((p, c, n, conv)) => Ok((p, c, n, conv, "lbfgsb".to_string())),
+        Ok((p, c, n, conv)) => {
+            // A "converged" point on an AR/MA near-cancellation ridge is not
+            // trustworthy — the surface is near non-identified there, and a
+            // single start can strand nats below the optimum while reporting
+            // success (DIAGNOSIS_V9, ARIMA(2,1,2) ridge). Vet it against
+            // multi-start and keep the better basin.
+            if on_cancellation_ridge(&p, config) {
+                // Adopt the multi-start point only on a material gain: on a
+                // true ridge every basin is equivalent to within hundredths
+                // of a nat, and swapping for noise-level differences churns
+                // the reported iteration count/method for nothing.
+                const MIN_ESCALATION_GAIN: f64 = 0.1;
+                let n_restarts = compute_n_restarts(unconstrained_start.len(), config);
+                if let Ok((p2, c2, n2, conv2, m)) =
+                    fit_lbfgsb_multi(objective, &unconstrained_start, config, maxiter, n_restarts)
+                {
+                    if c2 < c - MIN_ESCALATION_GAIN {
+                        return Ok((
+                            p2,
+                            c2,
+                            n.max(n2),
+                            conv2,
+                            format!("{} (cancellation escalation)", m),
+                        ));
+                    }
+                }
+            }
+            Ok((p, c, n, conv, "lbfgsb".to_string()))
+        }
         Err(_) => {
             // Single-start L-BFGS-B failed (typically ABNORMAL_TERMINATION_IN_LNSRCH
             // when the CSS start sits on an AR/MA near-cancellation ridge). Escalate

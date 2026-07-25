@@ -378,7 +378,12 @@ fn polynomial_roots(coeffs: &[f64]) -> Vec<(f64, f64)> {
 ///   α = 0.05 — warn about final parameter estimates
 fn min_root_distance(ar_coeffs: &[f64], ma_coeffs: &[f64]) -> f64 {
     let ar_roots = polynomial_roots(ar_coeffs);
-    let ma_roots = polynomial_roots(ma_coeffs);
+    // AR is 1 - φ₁z - … so the companion takes +φ, but MA is 1 + θ₁z + …
+    // (arima2: `1/polyroot(c(1, ma_pars))`), so its companion needs -θ.
+    // Passing +θ compares against the roots of the sign-flipped polynomial
+    // and misses genuine cancellation entirely (DIAGNOSIS_V9 follow-up N3).
+    let neg_ma: Vec<f64> = ma_coeffs.iter().map(|v| -v).collect();
+    let ma_roots = polynomial_roots(&neg_ma);
 
     let mut min_dist = f64::INFINITY;
     for &(ar_re, ar_im) in &ar_roots {
@@ -409,6 +414,24 @@ fn validate_no_near_cancellation(
 ///
 /// Returns true if the params pass (no near-cancellation), false if they
 /// should be rejected. Used to filter random restart starting points (α=0.01).
+/// Escalation trigger for single-run L-BFGS-B: the converged point sits on
+/// an AR/MA near-cancellation ridge (threshold 0.05 — same as the user
+/// warning). The surface is near non-identified there, so a single start
+/// routinely strands a few nats below the optimum; the result must be
+/// vetted against multi-start before it is trusted.
+pub(super) fn on_cancellation_ridge(unconstrained: &[f64], config: &SarimaxConfig) -> bool {
+    if config.order.p == 0 || config.order.q == 0 {
+        return false;
+    }
+    let Ok(constrained) = transform_params(unconstrained, config) else {
+        return false;
+    };
+    let Ok(sparams) = SarimaxParams::from_flat(&constrained, config) else {
+        return false;
+    };
+    !validate_no_near_cancellation(&sparams, config, 0.05)
+}
+
 fn passes_cancellation_filter(unconstrained: &[f64], config: &SarimaxConfig) -> bool {
     // Skip check for AR-only or MA-only models
     if config.order.p == 0 || config.order.q == 0 {

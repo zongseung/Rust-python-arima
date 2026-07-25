@@ -29,15 +29,18 @@ from rustima import SARIMAXModel
 # Re-pinned 2026-07-22 after the score.rs non-concentrated assembly fix
 # (the corrected analytical gradient shifts the PTR trajectory by ~1e-6 in
 # params; LL agrees with the previous baseline to 6e-10).
-BASELINE_LL = -172.0251185728417
-BASELINE_AIC = 356.0502371456834
+# Re-pinned 2026-07-25 after the dP0/dtheta term was added to the analytical
+# score for Lyapunov-initialized states (DIAGNOSIS_V9 N1/S2): trajectory
+# shifts ~3e-6 in params; LL agrees with the previous baseline to 2e-9.
+BASELINE_LL = -172.0251185747113
+BASELINE_AIC = 356.0502371494226
 BASELINE_PARAMS = [
-    2.3266487585983002,   # exog_1
-    -1.2162985700466142,  # exog_2
-    0.6486844721998695,   # ar.L1
-    0.11754669279215059,  # ar.L2
-    -0.5415458637816885,  # sar.L24
-    0.39261397211711346,  # sigma2
+    2.326655068093769,    # exog_1
+    -1.2163012223396148,  # exog_2
+    0.648679843823461,    # ar.L1
+    0.11754908719204218,  # ar.L2
+    -0.5415467443681473,  # sar.L24
+    0.39261445568488074,  # sigma2
 ]
 
 

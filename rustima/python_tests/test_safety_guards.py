@@ -417,9 +417,11 @@ def test_near_cancellation_warning_via_python_warnings():
         warn_mod.simplefilter("always")
         # Start in a near-cancelling region so the fitted params (maxiter=1)
         # stay near-cancelling and the warning is emitted deterministically.
+        # Cancellation is theta = -phi: (1 - 0.9z) vs (1 - 0.9z) — the AR and
+        # MA factors share a root when ma = -ar, not when ma = ar.
         result = rustima.sarimax_fit(
             y, (1, 0, 1), (0, 0, 0, 0), maxiter=1,
-            start_params=np.array([0.9, 0.9, 1.0]),
+            start_params=np.array([0.9, -0.9, 1.0]),
         )
 
     # Check warning was captured via Python warnings module

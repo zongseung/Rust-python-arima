@@ -602,15 +602,16 @@ fn test_polynomial_roots_ar2_complex() {
 
 #[test]
 fn test_min_root_distance_far() {
-    // AR root at 0.9 (real), MA root at 0.1 (real) → distance = 0.8
-    let dist = min_root_distance(&[0.9], &[0.1]);
+    // AR inverted root at 0.9; MA θ=-0.1 → inverted root -θ = 0.1 → distance 0.8
+    let dist = min_root_distance(&[0.9], &[-0.1]);
     assert!((dist - 0.8).abs() < 1e-10, "expected 0.8, got {}", dist);
 }
 
 #[test]
 fn test_min_root_distance_near_cancellation() {
-    // AR root ≈ MA root: φ=0.9, θ=0.89 → inverted roots 0.9 vs 0.89 → dist=0.01
-    let dist = min_root_distance(&[0.9], &[0.89]);
+    // Cancellation is θ = -φ: (1-φz) vs (1+θz). φ=0.9, θ=-0.89 →
+    // inverted roots 0.9 vs 0.89 → dist=0.01
+    let dist = min_root_distance(&[0.9], &[-0.89]);
     assert!(dist < 0.02, "expected near-cancellation (dist < 0.02), got {}", dist);
     assert!(dist > 0.005, "dist should be ~0.01, got {}", dist);
 }
@@ -649,11 +650,11 @@ fn test_validate_no_near_cancellation_arma_far() {
 
 #[test]
 fn test_validate_no_near_cancellation_arma_near() {
-    // ARMA(1,1) with near-cancellation: φ≈θ → should fail α=0.05 check
+    // ARMA(1,1) with near-cancellation: θ ≈ -φ → should fail α=0.05 check
     let config = make_config_with_enforcement(1, 0, 1, false, false);
     let sp = SarimaxParams {
         ar_coeffs: vec![0.9],
-        ma_coeffs: vec![0.89],
+        ma_coeffs: vec![-0.89],
         sar_coeffs: vec![],
         sma_coeffs: vec![],
         sigma2: None,
@@ -682,10 +683,10 @@ fn test_passes_cancellation_filter_arma_far() {
 
 #[test]
 fn test_passes_cancellation_filter_arma_near() {
-    // ARMA(1,1) with near-cancellation: should fail α=0.01 check.
+    // ARMA(1,1) with near-cancellation (θ ≈ -φ): should fail α=0.01 check.
     // Non-concentrated layout: [ar, ma, sigma2] — previously this vector
     // omitted sigma2 and "failed" only because transform_params errored.
     let config = make_config_with_enforcement(1, 0, 1, false, false);
-    let params = vec![0.9, 0.895, 1.0]; // ar=0.9, ma=0.895 → dist=0.005 < 0.01
+    let params = vec![0.9, -0.895, 1.0]; // ar=0.9, ma=-0.895 → dist=0.005 < 0.01
     assert!(!passes_cancellation_filter(&params, &config));
 }

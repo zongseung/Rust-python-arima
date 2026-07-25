@@ -30,6 +30,12 @@ pub struct KalmanInit {
     pub loglikelihood_burn: usize,
     /// Pre-computed steady-state (Some only for DARE init with sd=0).
     pub steady_state: Option<KalmanSteadyState>,
+    /// (offset, size) of the ARMA block whose P_0 came from the Lyapunov
+    /// solve. Set only by `mixed()` on success; tells the score pass that
+    /// P_0 depends on the AR/MA/sigma2 parameters so dP_0/dtheta must be
+    /// solved from the differentiated Lyapunov equation (it is zero for
+    /// diffuse initializations).
+    pub stationary_block: Option<(usize, usize)>,
 }
 
 impl KalmanInit {
@@ -45,6 +51,7 @@ impl KalmanInit {
             initial_state_cov: DMatrix::identity(k_states, k_states) * kappa,
             loglikelihood_burn: k_states,
             steady_state: None,
+            stationary_block: None,
         }
     }
 
@@ -93,6 +100,7 @@ impl KalmanInit {
                     initial_state_cov: p0,
                     loglikelihood_burn: sd,
                     steady_state: None,
+                    stationary_block: Some((sd, ko)),
                 }
             }
             None => {
@@ -197,6 +205,7 @@ impl KalmanInit {
                 initial_state_cov: p0,
                 loglikelihood_burn: sd,
                 steady_state,
+                stationary_block: None,
             }
         } else {
             // DARE failed or quality gate rejected — fall back to mixed (Lyapunov)
@@ -206,22 +215,16 @@ impl KalmanInit {
 
     /// Choose initialization based on config.
     ///
-    /// - `enforce_stationarity=true`:
-    ///   - sd=0 (pure stationary ARMA): DARE for tighter P_0 + pre-computed
-    ///     steady-state Kalman quantities for immediate ss_cache activation.
-    ///   - sd>0 (models with differencing): Lyapunov (`mixed()`) for
-    ///     statsmodels compatibility.
+    /// - `enforce_stationarity=true`: Lyapunov (`mixed()`). The unconditional
+    ///   (Lyapunov) covariance is the exact t=0 prior for the stationary ARMA
+    ///   block. The DARE fixed point is the steady-state *filtering*
+    ///   covariance — using it as P_0 biases the likelihood of every model
+    ///   without differencing (closed form for AR(1): dll grows like
+    ///   -0.5*log(1-phi^2)), so it must not be used here (DIAGNOSIS_V9 N1).
     /// - `enforce_stationarity=false`: approximate diffuse for all states
     pub fn from_config(ss: &StateSpace, config: &SarimaxConfig, kappa: f64) -> Self {
         if config.enforce_stationarity {
-            let sd = config.effective_sd();
-            if sd == 0 {
-                // Pure stationary: DARE gives tighter P_0 + steady-state shortcut
-                Self::dare(ss, config, kappa)
-            } else {
-                // Differencing present: Lyapunov matches statsmodels behavior
-                Self::mixed(ss, config, kappa)
-            }
+            Self::mixed(ss, config, kappa)
         } else {
             Self::approximate_diffuse(ss.k_states, kappa)
         }
@@ -248,6 +251,53 @@ impl KalmanInit {
 /// Converges in O(log(k)) iterations, each O(k³), total O(k³ log k).
 /// Much faster than the Kronecker approach O(k⁶) for large k.
 fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix<f64>> {
+    let k = t.nrows();
+    let mut q_i = lyapunov_doubling(t, q)?;
+    if k == 0 {
+        return Some(q_i);
+    }
+
+    // Validate positive-definiteness via Cholesky decomposition.
+    //
+    // Finite-order MA state covariances can be numerically close to
+    // singular, especially after seasonal expansion. Treat that as a
+    // conditioning problem, not an initialization failure: symmetrize
+    // and add a scale-aware ridge before falling back to diffuse init.
+    q_i = (&q_i + q_i.transpose()) * 0.5;
+    if q_i.clone().cholesky().is_some() {
+        return Some(q_i);
+    }
+
+    let max_diag = (0..k)
+        .map(|i| q_i[(i, i)].abs())
+        .fold(1.0_f64, f64::max);
+    let mut stabilized = q_i.clone();
+    for attempt in 0..8 {
+        let ridge = max_diag * 1e-12 * 10_f64.powi(attempt);
+        for i in 0..k {
+            stabilized[(i, i)] += ridge;
+        }
+        if stabilized.clone().cholesky().is_some() {
+            return Some(stabilized);
+        }
+    }
+
+    None
+}
+
+/// Solve P = T * P * T' + Q for symmetric (possibly indefinite) Q.
+///
+/// Same doubling core as `solve_discrete_lyapunov` but without the
+/// positive-definiteness gate: derivative right-hand sides
+/// (dT*P*T' + T*P*dT' + dRQR) are legitimately indefinite. Used by the
+/// score pass to solve the differentiated Lyapunov equation for dP_0.
+pub(crate) fn solve_lyapunov_general(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix<f64>> {
+    let p = lyapunov_doubling(t, q)?;
+    Some((&p + p.transpose()) * 0.5)
+}
+
+/// Doubling (Smith) iteration core shared by the PD-gated and general solvers.
+fn lyapunov_doubling(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix<f64>> {
     let k = t.nrows();
     if k == 0 {
         return Some(DMatrix::zeros(0, 0));
@@ -283,36 +333,10 @@ fn solve_discrete_lyapunov(t: &DMatrix<f64>, q: &DMatrix<f64>) -> Option<DMatrix
         a_i.copy_from(&temp_aa);
 
         if diff_sq.sqrt() < 1e-14 * norm {
-            // Validate result: check finiteness
             if q_i.iter().any(|v| !v.is_finite()) {
                 return None;
             }
-            // Validate positive-definiteness via Cholesky decomposition.
-            //
-            // Finite-order MA state covariances can be numerically close to
-            // singular, especially after seasonal expansion. Treat that as a
-            // conditioning problem, not an initialization failure: symmetrize
-            // and add a scale-aware ridge before falling back to diffuse init.
-            q_i = (&q_i + q_i.transpose()) * 0.5;
-            if q_i.clone().cholesky().is_some() {
-                return Some(q_i);
-            }
-
-            let max_diag = (0..k)
-                .map(|i| q_i[(i, i)].abs())
-                .fold(1.0_f64, f64::max);
-            let mut stabilized = q_i.clone();
-            for attempt in 0..8 {
-                let ridge = max_diag * 1e-12 * 10_f64.powi(attempt);
-                for i in 0..k {
-                    stabilized[(i, i)] += ridge;
-                }
-                if stabilized.clone().cholesky().is_some() {
-                    return Some(stabilized);
-                }
-            }
-
-            return None;
+            return Some(q_i);
         }
     }
     None

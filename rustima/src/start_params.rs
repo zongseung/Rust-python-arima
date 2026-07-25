@@ -7,7 +7,7 @@
 //! 4. Falling back to zeros on failure
 
 use crate::error::{Result, SarimaxError};
-use crate::types::SarimaxConfig;
+use crate::types::{SarimaxConfig, Trend};
 use nalgebra::{DMatrix, DVector};
 
 /// Apply regular differencing d times.
@@ -512,12 +512,47 @@ pub fn compute_start_params(
         return Ok(vec![0.0; n_params]);
     }
 
-    // Trend coefficients: use sample mean of differenced series as intercept
+    // Trend coefficients: OLS of the differenced endog on the trend basis,
+    // then RESIDUALIZE so the CSS/Burg stage estimates the ARMA on detrended
+    // data. Following statsmodels, the basis is evaluated on the ORIGINAL
+    // time index and TRIMMED to the differenced length (not differenced —
+    // a differenced basis cannot express the deterministic component left in
+    // the differenced series). Without the residualization a deterministic
+    // trend reads as near-integration, the AR start saturates outside the
+    // stationary box, and L-BFGS-B stalls on the transform's boundary
+    // plateau while reporting convergence (DIAGNOSIS_V9 N2).
     let kt = config.trend.k_trend();
     let mut params = vec![0.0; kt];
     if kt > 0 && !diffed.is_empty() {
-        let mean = diffed.iter().sum::<f64>() / diffed.len() as f64;
-        params[0] = mean;
+        let n_full = endog.len();
+        let nd = diffed.len();
+        let t0 = n_full - nd; // rows dropped by differencing
+        let mut basis: Vec<Vec<f64>> = Vec::with_capacity(kt);
+        match config.trend {
+            Trend::Constant => basis.push(vec![1.0; nd]),
+            Trend::Linear => basis.push((t0..n_full).map(|t| t as f64).collect()),
+            Trend::Both => {
+                basis.push(vec![1.0; nd]);
+                basis.push((t0..n_full).map(|t| t as f64).collect());
+            }
+            Trend::None => {}
+        }
+        match ols_pinv(&basis, &diffed) {
+            Some(betas) => {
+                params[..kt].copy_from_slice(&betas[..kt]);
+                for t in 0..nd {
+                    let mut fitted = 0.0;
+                    for (j, col) in basis.iter().enumerate() {
+                        fitted += betas[j] * col[t];
+                    }
+                    diffed[t] -= fitted;
+                }
+            }
+            None => {
+                // Degenerate design: fall back to the old mean-as-intercept start.
+                params[0] = diffed.iter().sum::<f64>() / nd as f64;
+            }
+        }
     }
 
     // Exog coefficients via multivariate OLS on **differenced** exog,
@@ -592,12 +627,27 @@ pub fn compute_start_params(
         (vec![0.0; pp], vec![0.0; qq])
     };
 
-    // Clamp coefficients to keep them in a sensible range for the transform (Monahan/Jones
-    // will further constrain stationarity/invertibility if requested).
-    let clamp = |v: Vec<f64>| v.into_iter().map(|x| x.clamp(-0.99, 0.99)).collect::<Vec<_>>();
+    // A CSS/HR estimate outside the stationarity/invertibility box is not
+    // "almost right": clamping it to ±0.99 parks the start on the
+    // near-boundary plateau where the Monahan transform's Jacobian vanishes,
+    // so L-BFGS-B stalls there with a large gradient while reporting
+    // convergence (DIAGNOSIS_V9 N2). Follow statsmodels instead ("Using
+    // zeros as starting parameters"): drop the offending block to zeros.
+    let sanitize = |v: Vec<f64>| {
+        if v.iter().any(|x| x.abs() > 0.99) {
+            vec![0.0; v.len()]
+        } else {
+            v
+        }
+    };
     let css_result: Option<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> =
         if !ar_vec.is_empty() || !ma_vec.is_empty() || !sar_vec.is_empty() || !sma_vec.is_empty() {
-            Some((clamp(ar_vec), clamp(ma_vec), clamp(sar_vec), clamp(sma_vec)))
+            Some((
+                sanitize(ar_vec),
+                sanitize(ma_vec),
+                sanitize(sar_vec),
+                sanitize(sma_vec),
+            ))
         } else {
             None
         };
