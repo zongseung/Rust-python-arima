@@ -85,12 +85,21 @@ def test_ptr_loglike_matches_pre_batched_baseline():
     # AIC is derived from LL and k; preserving LL preserves AIC.
     assert res.aic == pytest.approx(BASELINE_AIC, abs=1e-8)
 
-    # Parameter vector preserved to within numerical noise.
+    # Parameter vector preserved.
+    #
+    # Tolerance is 1e-4 relative, NOT bit-equality: the baseline was captured
+    # on macOS/ARM and the optimum here sits on a flat ridge, so a different
+    # BLAS/libm/FMA contraction (Linux CI) moves the ARGMIN by ~5e-6 while the
+    # log-likelihood at that argmin still matches to 1e-8 (asserted above).
+    # Reproducing the optimum's VALUE is the property this test exists to
+    # guard; reproducing its location bit-for-bit is a machine-specific
+    # accident. 1e-4 is still ~3 orders tighter than the parameters' standard
+    # errors, so a real trajectory change would fail here.
     np.testing.assert_allclose(
         np.asarray(res.params, dtype=np.float64),
         np.asarray(BASELINE_PARAMS, dtype=np.float64),
-        rtol=0.0,
-        atol=1e-8,
+        rtol=1e-4,
+        atol=1e-6,
     )
 
 
