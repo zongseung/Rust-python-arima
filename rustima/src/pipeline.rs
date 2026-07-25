@@ -61,7 +61,6 @@ mod tests {
             enforce_stationarity: false,
             enforce_invertibility: false,
             concentrate_scale: false,
-            measurement_error: false,
             trend: Trend::None,
             simple_differencing: true,
         }

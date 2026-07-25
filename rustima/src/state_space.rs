@@ -49,12 +49,6 @@ impl StateSpace {
             )));
         }
 
-        if config.measurement_error {
-            return Err(SarimaxError::StateSpaceError(
-                "measurement_error is not yet supported".into(),
-            ));
-        }
-
         // simple_differencing: diff states are removed from the state vector.
         // The data will be pre-differenced externally; the SS only models the ARMA part.
         let k_states = if config.simple_differencing { order.k_order() } else { order.k_states() };
@@ -372,13 +366,7 @@ impl StateSpace {
         let inject_idx = k_states_diff; // where trend enters the state
 
         for t in 0..n {
-            let val = match config.trend {
-                Trend::Constant => params.trend_coeffs[0],
-                Trend::Linear => params.trend_coeffs[0] * (t as f64),
-                Trend::Both => params.trend_coeffs[0] + params.trend_coeffs[1] * (t as f64),
-                Trend::None => 0.0,
-            };
-            c[t * k_states + inject_idx] = val;
+            c[t * k_states + inject_idx] = config.trend.intercept(&params.trend_coeffs, t);
         }
         c
     }

@@ -109,29 +109,8 @@ fn precompute_derivatives(
     for ti in 0..kt {
         let mut c_deriv = vec![0.0; n * k];
         let inject_idx = sd;
-        match config.trend {
-            Trend::Constant => {
-                for t in 0..n {
-                    c_deriv[t * k + inject_idx] = 1.0;
-                }
-            }
-            Trend::Linear => {
-                for t in 0..n {
-                    c_deriv[t * k + inject_idx] = t as f64;
-                }
-            }
-            Trend::Both => {
-                if ti == 0 {
-                    for t in 0..n {
-                        c_deriv[t * k + inject_idx] = 1.0;
-                    }
-                } else {
-                    for t in 0..n {
-                        c_deriv[t * k + inject_idx] = t as f64;
-                    }
-                }
-            }
-            Trend::None => {}
+        for t in 0..n {
+            c_deriv[t * k + inject_idx] = config.trend.basis(ti, t);
         }
         dc[param_idx] = c_deriv;
         param_idx += 1;
@@ -1314,7 +1293,6 @@ mod tests {
             enforce_invertibility: false,
             concentrate_scale: true,
             simple_differencing: false,
-            measurement_error: false,
         };
         let params_flat = vec![0.5, 0.65];
 
@@ -1348,7 +1326,6 @@ mod tests {
             enforce_invertibility: false,
             concentrate_scale: true,
             simple_differencing: false,
-            measurement_error: false,
         };
         let params_flat = vec![0.1, 0.65];
 

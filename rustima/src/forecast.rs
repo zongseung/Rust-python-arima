@@ -185,14 +185,7 @@ pub fn forecast_from_state(
         // Add trend state intercept for this forecast step
         if config.trend != crate::types::Trend::None && !params.trend_coeffs.is_empty() {
             let t_abs = n_obs + h; // absolute time index
-            let val = match config.trend {
-                crate::types::Trend::Constant => params.trend_coeffs[0],
-                crate::types::Trend::Linear => params.trend_coeffs[0] * (t_abs as f64),
-                crate::types::Trend::Both => {
-                    params.trend_coeffs[0] + params.trend_coeffs[1] * (t_abs as f64)
-                }
-                crate::types::Trend::None => 0.0,
-            };
+            let val = config.trend.intercept(&params.trend_coeffs, t_abs);
             let idx = ss.k_states_diff;
             if idx < a.len() {
                 a[idx] += val;

@@ -65,11 +65,6 @@ pub fn is_converged(task: i64) -> bool {
 }
 
 #[inline]
-pub fn is_warning(task: i64) -> bool {
-    (WARNING..=WARNING_END).contains(&task)
-}
-
-#[inline]
 pub fn is_error(task: i64) -> bool {
     (ERROR..=ERROR_END).contains(&task)
 }

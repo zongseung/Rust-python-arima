@@ -75,7 +75,6 @@ fn test_exog_coordinate_polish_improves_bad_beta_start() {
         enforce_invertibility: false,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
     let obj = SarimaxObjective {
         endog: y,
@@ -124,7 +123,6 @@ fn test_profile_trust_region_with_exog_returns_profiled_beta() {
         enforce_invertibility: false,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     let result = fit(
@@ -159,7 +157,6 @@ fn test_kalman_innovation_linearity_for_exog_intercept() {
         enforce_invertibility: false,
         concentrate_scale: false,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     let y: Vec<f64> = (0..40)

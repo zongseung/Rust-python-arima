@@ -1167,7 +1167,6 @@ mod tests {
             enforce_invertibility: false,
             concentrate_scale: true,
             simple_differencing: false,
-            measurement_error: false,
         };
 
         let mut i = 0;

@@ -332,6 +332,41 @@ fn validate_batch_exog(
     parse_and_validate_batch_exog(exog_list, series_len, series_lengths)
 }
 
+/// Model flags shared by every PyO3 entry point. A struct rather than
+/// adjacent positional bools — transposing two bools compiles silently,
+/// and the `false, false` literal smuggling this enabled caused the
+/// fit-vs-residuals init mismatch (DIAGNOSIS_V9 S3/S13). Field-init
+/// shorthand at call sites makes transposition impossible.
+struct ModelFlags {
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
+    concentrate_scale: bool,
+    simple_differencing: bool,
+}
+
+/// Validate endog + exog for a single-series call: finiteness, exog shape,
+/// and row-count agreement. Returns `(exog_cols, n_exog)`.
+///
+/// Shared by `prepare_single_request` and `sarimax_grid_search` so a new
+/// boundary check lands on every entry point at once (DIAGNOSIS_V9 S12).
+fn validate_single_inputs(
+    endog: &[f64],
+    exog: Option<&PyReadonlyArray2<f64>>,
+) -> PyResult<(Option<Vec<Vec<f64>>>, usize)> {
+    validate_endog_finite(endog)?;
+    let (exog_cols, n_exog, exog_nrows) = parse_exog(exog);
+    validate_exog(&exog_cols)?;
+    // Early exog row-count validation at PyO3 boundary (shape-based, works for 0-col exog too)
+    if exog_cols.is_some() && exog_nrows != endog.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "exog has {} rows but endog has {} observations; they must match",
+            exog_nrows,
+            endog.len()
+        )));
+    }
+    Ok((exog_cols, n_exog))
+}
+
 /// Build SarimaxConfig from Python-facing tuples and flags.
 ///
 /// Assumes `validate_order()` has already been called to verify bounds
@@ -340,11 +375,8 @@ fn build_config(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     n_exog: usize,
-    enforce_stationarity: bool,
-    enforce_invertibility: bool,
-    concentrate_scale: bool,
+    flags: &ModelFlags,
     trend: Trend,
-    simple_differencing: bool,
 ) -> SarimaxConfig {
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
@@ -353,11 +385,10 @@ fn build_config(
         order: SarimaxOrder::new(p, d, q, pp, dd, qq, s),
         n_exog,
         trend,
-        enforce_stationarity,
-        enforce_invertibility,
-        concentrate_scale,
-        simple_differencing,
-        measurement_error: false,
+        enforce_stationarity: flags.enforce_stationarity,
+        enforce_invertibility: flags.enforce_invertibility,
+        concentrate_scale: flags.concentrate_scale,
+        simple_differencing: flags.simple_differencing,
     }
 }
 
@@ -376,31 +407,14 @@ fn prepare_single_request(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     exog: Option<&PyReadonlyArray2<f64>>,
-    enforce_stationarity: bool,
-    enforce_invertibility: bool,
-    concentrate_scale: bool,
+    flags: &ModelFlags,
     trend: Option<&str>,
-    simple_differencing: bool,
 ) -> PyResult<(SarimaxConfig, Option<Vec<Vec<f64>>>)> {
-    validate_endog_finite(endog)?;
-    let (exog_cols, n_exog, exog_nrows) = parse_exog(exog);
-    validate_exog(&exog_cols)?;
-    // Early exog row-count validation at PyO3 boundary (shape-based, works for 0-col exog too)
-    if exog_cols.is_some() && exog_nrows != endog.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "exog has {} rows but endog has {} observations; they must match",
-            exog_nrows,
-            endog.len()
-        )));
-    }
+    let (exog_cols, n_exog) = validate_single_inputs(endog, exog)?;
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
     validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order, seasonal, n_exog,
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, parse_trend(trend)?, simple_differencing,
-    );
+    let config = build_config(order, seasonal, n_exog, flags, parse_trend(trend)?);
     Ok((config, exog_cols))
 }
 
@@ -415,11 +429,8 @@ fn prepare_batch_request(
     order: (usize, usize, usize),
     seasonal: (usize, usize, usize, usize),
     exog_list: &Option<Vec<PyReadonlyArray2<'_, f64>>>,
-    enforce_stationarity: bool,
-    enforce_invertibility: bool,
-    concentrate_scale: bool,
+    flags: &ModelFlags,
     trend: Option<&str>,
-    simple_differencing: bool,
 ) -> PyResult<(Vec<Vec<f64>>, Option<Vec<Vec<Vec<f64>>>>, SarimaxConfig)> {
     let series = validate_batch_finite(series_list)?;
     let series_lengths: Vec<usize> = series.iter().map(|s| s.len()).collect();
@@ -427,11 +438,7 @@ fn prepare_batch_request(
     let (p, d, q) = order;
     let (pp, dd, qq, s) = seasonal;
     validate_order(p, d, q, pp, dd, qq, s, n_exog)?;
-    let config = build_config(
-        order, seasonal, n_exog,
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, parse_trend(trend)?, simple_differencing,
-    );
+    let config = build_config(order, seasonal, n_exog, flags, parse_trend(trend)?);
     Ok((series, exog_vecs, config))
 }
 
@@ -574,8 +581,8 @@ fn sarimax_loglike<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Own all data before releasing GIL
@@ -616,8 +623,8 @@ fn sarimax_fit<'py>(
     let endog = y.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     let sp_owned: Option<Vec<f64>> = start_params
@@ -678,7 +685,8 @@ fn sarimax_forecast<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     let future_exog_cols = future_exog.as_ref().map(|e| numpy2d_to_cols(e));
@@ -777,7 +785,8 @@ fn sarimax_rolling_forecast<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Own all data before releasing GIL
@@ -835,7 +844,8 @@ fn sarimax_residuals<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Own all data before releasing GIL
@@ -876,8 +886,8 @@ fn sarimax_batch_loglike<'py>(
 ) -> PyResult<Py<PyList>> {
     let (series, exog_vecs, config) = prepare_batch_request(
         &series_list, order, seasonal, &exog_list,
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     let params_flat = params.as_slice()?.to_vec();
@@ -930,8 +940,8 @@ fn sarimax_batch_fit<'py>(
 ) -> PyResult<Py<PyList>> {
     let (series, exog_vecs, config) = prepare_batch_request(
         &series_list, order, seasonal, &exog_list,
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Release GIL for Rayon parallel computation
@@ -999,16 +1009,7 @@ fn sarimax_grid_search<'py>(
     }
 
     let endog = y.as_slice()?;
-    validate_endog_finite(endog)?;
-    let (exog_cols, n_exog, exog_nrows) = parse_exog(exog.as_ref());
-    validate_exog(&exog_cols)?;
-    if exog_cols.is_some() && exog_nrows != endog.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "exog has {} rows but endog has {} observations; they must match",
-            exog_nrows,
-            endog.len()
-        )));
-    }
+    let (exog_cols, n_exog) = validate_single_inputs(endog, exog.as_ref())?;
 
     let trend_val = parse_trend(trend)?;
 
@@ -1022,11 +1023,8 @@ fn sarimax_grid_search<'py>(
             *order,
             *seasonal,
             n_exog,
-            enforce_stationarity,
-            enforce_invertibility,
-            concentrate_scale,
+            &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
             trend_val,
-            simple_differencing,
         ));
     }
 
@@ -1105,7 +1103,8 @@ fn sarimax_batch_forecast<'py>(
 
     let (series, exog_vecs, config) = prepare_batch_request(
         &series_list, order, seasonal, &exog_list,
-        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
     let future_exog_vecs = parse_and_validate_batch_forecast_exog(
         &exog_forecast_list,
@@ -1180,8 +1179,8 @@ fn sarimax_inference<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility,
-        concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Reject wrong-length params up front like every other entry point —
@@ -1234,7 +1233,8 @@ fn sarimax_diagnostics<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
+        &ModelFlags { enforce_stationarity, enforce_invertibility, concentrate_scale, simple_differencing },
+        trend,
     )?;
 
     // Own all data before releasing GIL

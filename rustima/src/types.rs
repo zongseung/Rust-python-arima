@@ -67,6 +67,27 @@ impl Trend {
         }
     }
 
+    /// Value of the ti-th trend basis column at 0-based time t:
+    /// 'c' → [1], 't' → [t], 'ct' → [1, t].
+    ///
+    /// Single source for the basis convention — state_space (intercept),
+    /// score (d(intercept)/d(coeff)) and forecast (future intercept) must
+    /// all agree on it or the gradient silently diverges from the loglike.
+    pub fn basis(&self, ti: usize, t: usize) -> f64 {
+        match (self, ti) {
+            (Trend::Constant, 0) | (Trend::Both, 0) => 1.0,
+            (Trend::Linear, 0) | (Trend::Both, 1) => t as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// Deterministic trend contribution at time t: coeffs · basis(t).
+    pub fn intercept(&self, coeffs: &[f64], t: usize) -> f64 {
+        (0..self.k_trend())
+            .map(|ti| coeffs.get(ti).copied().unwrap_or(0.0) * self.basis(ti, t))
+            .sum()
+    }
+
     pub fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "n" => Ok(Trend::None),
@@ -91,7 +112,6 @@ pub struct SarimaxConfig {
     pub enforce_invertibility: bool,
     pub concentrate_scale: bool,
     pub simple_differencing: bool,
-    pub measurement_error: bool,
 }
 
 impl SarimaxConfig {
@@ -115,7 +135,6 @@ impl Default for SarimaxConfig {
             enforce_invertibility: false,
             concentrate_scale: false,
             simple_differencing: false,
-            measurement_error: false,
         }
     }
 }
@@ -237,7 +256,6 @@ mod tests {
         assert!(!config.enforce_stationarity);
         assert!(!config.enforce_invertibility);
         assert!(!config.simple_differencing);
-        assert!(!config.measurement_error);
         assert_eq!(config.n_exog, 0);
         assert_eq!(config.trend, Trend::None);
     }
