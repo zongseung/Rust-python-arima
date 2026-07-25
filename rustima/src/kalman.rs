@@ -1,7 +1,7 @@
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{Result, SarimaxError};
-use crate::initialization::{KalmanInit, KalmanSteadyState};
+use crate::initialization::KalmanInit;
 use crate::state_space::StateSpace;
 
 /// Output of the Kalman filter loglikelihood computation.
@@ -466,21 +466,9 @@ fn kalman_core(
     let mut a_next = DVector::<f64>::zeros(k);
     let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
-    // Steady-state detection.
-    // If the initializer pre-computed steady-state quantities (DARE with sd=0),
-    // activate the cache immediately — P_0 = P_∞ so no transient phase exists.
-    let mut ss_cache: Option<SteadyStateCache> = init
-        .steady_state
-        .as_ref()
-        .filter(|_| burn == 0)
-        .map(|KalmanSteadyState { k_gain, f_steady, log_f_steady, pz_inf }| {
-            SteadyStateCache {
-                k_gain: k_gain.clone(),
-                f_steady: *f_steady,
-                log_f_steady: *log_f_steady,
-                pz_inf: pz_inf.clone(),
-            }
-        });
+    // Steady-state detection: the cache is populated during the filter
+    // once the covariance recursion converges (see check_convergence).
+    let mut ss_cache: Option<SteadyStateCache> = None;
     let mut pz_prev = DVector::<f64>::zeros(k);
     let mut consec_count = 0_usize;
 
@@ -893,19 +881,9 @@ pub fn kalman_filter_batched(
     let mut temp_kk = DMatrix::<f64>::zeros(k, k);
 
     // Steady-state cache (identical for every series because it depends
-    // only on T, Z, R, Q, P_0).
-    let mut ss_cache: Option<SteadyStateCache> = init
-        .steady_state
-        .as_ref()
-        .filter(|_| burn == 0)
-        .map(|KalmanSteadyState { k_gain, f_steady, log_f_steady, pz_inf }| {
-            SteadyStateCache {
-                k_gain: k_gain.clone(),
-                f_steady: *f_steady,
-                log_f_steady: *log_f_steady,
-                pz_inf: pz_inf.clone(),
-            }
-        });
+    // only on T, Z, R, Q, P_0). Populated during the filter once the
+    // covariance recursion converges (see check_convergence).
+    let mut ss_cache: Option<SteadyStateCache> = None;
     let mut pz_prev = DVector::<f64>::zeros(k);
     let mut consec_count = 0_usize;
 
