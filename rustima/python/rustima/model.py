@@ -128,75 +128,6 @@ def _inference_nan_dict(k, status, message, prefix=""):
     }
 
 
-def _compute_numerical_hessian(loglike_fn, params):
-    """Compute the Hessian of loglike_fn at params via central differences.
-
-    Parameters
-    ----------
-    loglike_fn : callable
-        f(params) -> float (log-likelihood).
-    params : np.ndarray
-        Parameter vector at MLE.
-
-    Returns
-    -------
-    np.ndarray of shape (k, k)
-        Hessian matrix, or None if evaluation failed.
-    """
-    k = len(params)
-    x = np.array(params, dtype=np.float64)
-
-    # Step sizes: h_i = max(1e-5, 1e-4 * max(1, |x_i|))
-    h = np.maximum(1e-5, 1e-4 * np.maximum(1.0, np.abs(x)))
-
-    f0 = loglike_fn(x)
-    if not np.isfinite(f0):
-        return None
-
-    H = np.zeros((k, k))
-
-    # Diagonal: H_ii = (f(x+h_i) - 2f(x) + f(x-h_i)) / h_i^2
-    fp = np.empty(k)
-    fm = np.empty(k)
-    for i in range(k):
-        xp = x.copy()
-        xp[i] += h[i]
-        xm = x.copy()
-        xm[i] -= h[i]
-        fp[i] = loglike_fn(xp)
-        fm[i] = loglike_fn(xm)
-        H[i, i] = (fp[i] - 2.0 * f0 + fm[i]) / (h[i] ** 2)
-
-    # Off-diagonal: H_ij = (f(x+hi+hj) - f(x+hi-hj) - f(x-hi+hj) + f(x-hi-hj)) / (4 hi hj)
-    for i in range(k):
-        for j in range(i + 1, k):
-            xpp = x.copy()
-            xpp[i] += h[i]
-            xpp[j] += h[j]
-            xpm = x.copy()
-            xpm[i] += h[i]
-            xpm[j] -= h[j]
-            xmp = x.copy()
-            xmp[i] -= h[i]
-            xmp[j] += h[j]
-            xmm = x.copy()
-            xmm[i] -= h[i]
-            xmm[j] -= h[j]
-
-            fpp = loglike_fn(xpp)
-            fpm = loglike_fn(xpm)
-            fmp = loglike_fn(xmp)
-            fmm = loglike_fn(xmm)
-
-            H[i, j] = (fpp - fpm - fmp + fmm) / (4.0 * h[i] * h[j])
-            H[j, i] = H[i, j]
-
-    if not np.all(np.isfinite(H)):
-        return None
-
-    return H
-
-
 _VALID_INFERENCE_MODES = ("none", "hessian", "statsmodels", "both", "rust_hessian", "opg")
 
 
@@ -342,72 +273,6 @@ def _compute_statsmodels_inference(endog, order, seasonal_order, alpha=0.05,
     except Exception as e:
         # Unexpected errors (FFI panic, OOM, etc.) propagate for debugging
         raise
-
-
-def _compute_inference(loglike_fn, params, alpha=0.05):
-    """Compute inference statistics from numerical Hessian.
-
-    Returns
-    -------
-    dict with keys: std_err, z, p_value, ci_lower, ci_upper,
-                    inference_status, inference_message
-    """
-    k = len(params)
-
-    H = _compute_numerical_hessian(loglike_fn, params)
-
-    if H is None:
-        return _inference_nan_dict(k, "failed", "Hessian computation produced non-finite values")
-
-    # Observed information matrix: I = -H
-    info = -H
-
-    # Covariance: inv(I), fallback to pinv
-    try:
-        cov = np.linalg.inv(info)
-    except np.linalg.LinAlgError:
-        try:
-            cov = np.linalg.pinv(info)
-        except np.linalg.LinAlgError:
-            return _inference_nan_dict(k, "failed", "Information matrix inversion failed")
-
-    diag = np.diag(cov)
-
-    # Check for negative variances (non-PD covariance)
-    if np.any(diag < 0):
-        # Try pinv as fallback
-        cov = np.linalg.pinv(info)
-        diag = np.diag(cov)
-
-    std_err = np.where(diag >= 0, np.sqrt(diag), np.nan)
-    z_stat = np.where(std_err > 0, params / std_err, np.nan)
-    p_value = np.array([
-        2.0 * (1.0 - _norm_cdf(abs(zi))) if np.isfinite(zi) else np.nan
-        for zi in z_stat
-    ])
-
-    z_crit = _norm_ppf(1.0 - alpha / 2.0)
-    ci_lower = params - z_crit * std_err
-    ci_upper = params + z_crit * std_err
-
-    # Determine status
-    if np.all(np.isfinite(std_err)):
-        status = "ok"
-        message = None
-    else:
-        status = "partial"
-        n_bad = np.sum(~np.isfinite(std_err))
-        message = f"{n_bad} of {k} parameters have non-finite standard errors"
-
-    return dict(
-        std_err=std_err,
-        z=z_stat,
-        p_value=p_value,
-        ci_lower=ci_lower,
-        ci_upper=ci_upper,
-        inference_status=status,
-        inference_message=message,
-    )
 
 
 def _compute_rust_inference(endog, order, seasonal_order, params, method, alpha=0.05,
@@ -771,28 +636,14 @@ class SARIMAXResult:
             )
         return names
 
-    def _loglike_fn(self, params):
-        """Evaluate log-likelihood at given params (for Hessian computation)."""
-        try:
-            kwargs = self.model._model_kwargs()
-            return rustima.sarimax_loglike(
-                self.model.endog,
-                self.model.order,
-                self.model.seasonal_order,
-                np.array(params, dtype=np.float64),
-                **kwargs,
-            )
-        except (ValueError, RuntimeError, ArithmeticError, OverflowError, TypeError):
-            return np.nan
-
     def _rs_kwargs(self, **extra):
         """Build common kwargs dict for rustima function calls.
 
         Delegates to SARIMAXModel._model_kwargs so residuals/forecast/
         diagnostics run under the SAME enforcement flags (and therefore the
-        same Kalman initialization) as the fit and the numerical-Hessian
-        _loglike_fn. Previously the enforcement flags were dropped here,
-        silently switching these paths to approximate-diffuse init.
+        same Kalman initialization) as the fit. Previously the enforcement
+        flags were dropped here, silently switching these paths to
+        approximate-diffuse init.
         """
         return self.model._model_kwargs(**extra)
 
@@ -804,15 +655,6 @@ class SARIMAXResult:
     # ------------------------------------------------------------------
     # Cached inference helpers (used by parameter_summary)
     # ------------------------------------------------------------------
-
-    def _get_hessian_inference(self, alpha, params_sig):
-        """Return cached numerical Hessian inference dict."""
-        cache_key = ("hessian", alpha, params_sig)
-        if cache_key not in self._inference_cache:
-            self._inference_cache[cache_key] = _compute_inference(
-                self._loglike_fn, self.params, alpha=alpha,
-            )
-        return self._inference_cache[cache_key]
 
     def _get_rust_inference(self, mode, alpha, params_sig):
         """Return cached Rust-based (hessian/OPG) inference dict."""
@@ -854,7 +696,7 @@ class SARIMAXResult:
 
     def _build_both_result(self, result, alpha, params_sig):
         """Build combined hessian + statsmodels result for 'both' mode."""
-        hess = self._get_hessian_inference(alpha, params_sig)
+        hess = self._get_rust_inference("rust_hessian", alpha, params_sig)
         sm = self._get_sm_inference(alpha, params_sig)
 
         # Legacy keys from hessian (default view)
@@ -929,7 +771,8 @@ class SARIMAXResult:
             Inference mode. One of:
 
             - ``"none"``  — coefficients only (fastest).
-            - ``"hessian"``  — numerical Hessian-based std err / z / CI.
+            - ``"hessian"``  — observed-information Hessian std err / z / CI
+              (computed in Rust; single producer for inference).
             - ``"statsmodels"``  — fit statsmodels SARIMAX internally and
               borrow its inference statistics.
             - ``"both"``  — compute both hessian and statsmodels, include
@@ -969,7 +812,7 @@ class SARIMAXResult:
             return result
 
         if mode == "hessian":
-            result.update(self._get_hessian_inference(alpha, params_sig))
+            result.update(self._get_rust_inference("rust_hessian", alpha, params_sig))
             return result
 
         if mode in ("rust_hessian", "opg"):

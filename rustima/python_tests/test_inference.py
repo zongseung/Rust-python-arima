@@ -18,7 +18,6 @@ from conftest import generate_ar1, generate_random_walk
 from rustima.model import (
     SARIMAXModel,
     _generate_param_names,
-    _compute_numerical_hessian,
     _resolve_inference_mode,
 )
 
@@ -279,13 +278,8 @@ class TestHessianVsOpg:
 # ---------------------------------------------------------------------------
 
 class TestRustVsPythonHessian:
-    """Rust Hessian vs Python numerical Hessian.
-
-    Note: The Rust Hessian operates in unconstrained parameter space with
-    chain rule (J'HJ), while the Python version perturbs constrained params
-    directly. These are different parameterizations and may give different
-    numerical results, especially for constrained parameters (AR/MA).
-    """
+    """inference="hessian" and its deprecated alias "rust_hessian" — both
+    route to the single Rust producer since the S10 dedup."""
 
     def test_both_produce_finite_se(self, ar1_data):
         """Both methods should produce finite, positive standard errors."""
@@ -441,27 +435,6 @@ class TestInferenceStats:
         assert ps["inference_status"] in ("ok", "partial", "failed")
         s = result.summary(include_inference=True)
         assert isinstance(s, str) and "ar.L1" in s
-
-
-# =========================================================================
-# Numerical Hessian helper (merged from test_parameter_summary.py)
-# =========================================================================
-
-class TestNumericalHessian:
-    def test_quadratic_hessian(self):
-        H = _compute_numerical_hessian(lambda x: -x[0]**2, np.array([1.0]))
-        assert H is not None
-        np.testing.assert_allclose(H[0, 0], -2.0, atol=1e-4)
-
-    def test_multivariate_quadratic(self):
-        def f(x):
-            return -(x[0]**2 + 2*x[1]**2 + x[0]*x[1])
-        H = _compute_numerical_hessian(f, np.array([1.0, 1.0]))
-        assert H is not None
-        np.testing.assert_allclose(H, [[-2, -1], [-1, -4]], atol=1e-3)
-
-    def test_non_finite_returns_none(self):
-        assert _compute_numerical_hessian(lambda x: np.nan, np.array([1.0])) is None
 
 
 # =========================================================================
@@ -656,3 +629,28 @@ class TestRiskFixEnforcementFlags:
                              enforce_stationarity=False, enforce_invertibility=False)
         ps = model.fit().parameter_summary(inference="statsmodels")
         assert ps["inference_status"] in ("ok", "failed")
+
+
+class TestTightStatsmodelsParity:
+    """Tight like-for-like parity for the single Rust inference producer.
+
+    Guards DIAGNOSIS_V9 N4: the unconstrained->constrained chain rule used
+    the Jacobian instead of its inverse, inflating AR SEs by 1/J^2 (6.6x at
+    phi=0.68) — invisible to the loose 0.3-3.0 band and to positive/finite
+    checks. Compare each method against its true statsmodels counterpart.
+    """
+
+    def test_hessian_matches_sm_approx(self, ar1_data):
+        res = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps = res.parameter_summary(inference="hessian")
+        from statsmodels.tsa.statespace.sarimax import SARIMAX as sm_SARIMAX
+        sm_res = sm_SARIMAX(ar1_data, order=(1, 0, 0)).fit(disp=False)
+        sm_se = np.sqrt(np.diag(sm_res.cov_params_approx))
+        np.testing.assert_allclose(ps["std_err"], sm_se, rtol=0.02)
+
+    def test_opg_matches_sm_default_bse(self, ar1_data):
+        res = SARIMAXModel(ar1_data, order=(1, 0, 0)).fit()
+        ps = res.parameter_summary(inference="opg")
+        from statsmodels.tsa.statespace.sarimax import SARIMAX as sm_SARIMAX
+        sm_res = sm_SARIMAX(ar1_data, order=(1, 0, 0)).fit(disp=False)
+        np.testing.assert_allclose(ps["std_err"], np.asarray(sm_res.bse), rtol=0.02)

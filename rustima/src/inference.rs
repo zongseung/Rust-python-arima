@@ -204,9 +204,21 @@ pub fn numerical_hessian(
         }
     }
 
-    // Chain rule: H_constrained = J' · H_unconstrained · J
+    // Chain rule: with con = g(unc) and J[j,i] = d con_j / d unc_i,
+    // differentiating ll(g(unc)) gives H_unc = J' · H_con · J (+ a
+    // gradient term that vanishes at the MLE). The constrained-space
+    // Hessian is therefore recovered with the INVERSE Jacobian:
+    // H_con = J^-T · H_unc · J^-1. Multiplying by J on both sides instead
+    // applied the transform twice and inflated AR/MA standard errors by
+    // 1/J^2 (6.6x for AR(1) at phi=0.68 — DIAGNOSIS_V9 follow-up N4).
     let jac = compute_transform_jacobian(&unconstrained, config)?;
-    let hess_con = jac.transpose() * &hess_unc * &jac;
+    let jinv = jac.clone().try_inverse().ok_or_else(|| {
+        SarimaxError::DataError(
+            "transform Jacobian is singular; cannot map the Hessian to constrained space"
+                .to_string(),
+        )
+    })?;
+    let hess_con = jinv.transpose() * &hess_unc * &jinv;
 
     Ok(hess_con)
 }
