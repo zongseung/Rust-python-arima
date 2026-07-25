@@ -1088,6 +1088,50 @@ mod tests {
         assert_gradient_close(&analytical, &numerical, 1e-3, "AR(1)");
     }
 
+    /// The dP_0/dtheta term is only reachable when the initializer sets
+    /// `stationary_block`, i.e. enforce_stationarity=true with d=D=0.
+    /// Every other score test uses `make_config` (enforcement off), which
+    /// takes the diffuse path and leaves dP_0 = 0 — so this branch had no
+    /// coverage when it was added. Compare against a numerical gradient.
+    #[test]
+    fn test_score_ar1_enforced_covers_dp0() {
+        let fixtures = load_fixtures();
+        let case = &fixtures["ar1"];
+        let data: Vec<f64> = case["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let phi = 0.6527425084139002;
+        let scale = case["scale"].as_f64().unwrap();
+
+        let config = crate::test_helpers::make_config_enforced(1, 0, 0);
+        let params_flat = vec![phi, scale];
+
+        let sparams = SarimaxParams::from_flat(&params_flat, &config).unwrap();
+        let ss = StateSpace::new(&config, &sparams, &data, None).unwrap();
+        let init = KalmanInit::from_config_default(&ss, &config);
+        assert!(
+            init.stationary_block.is_some(),
+            "test must exercise the Lyapunov init so dP_0 is non-zero"
+        );
+
+        let analytical = score(
+            &data,
+            &ss,
+            &init,
+            &config,
+            &sparams,
+            config.concentrate_scale,
+            None,
+        )
+        .unwrap();
+        let numerical = numerical_gradient(&data, &config, &params_flat, None);
+
+        assert_gradient_close(&analytical, &numerical, 1e-3, "AR(1) enforced");
+    }
+
     #[test]
     fn test_score_arma11() {
         let fixtures = load_fixtures();

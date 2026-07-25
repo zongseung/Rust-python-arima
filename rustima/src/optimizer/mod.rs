@@ -414,24 +414,6 @@ fn validate_no_near_cancellation(
 ///
 /// Returns true if the params pass (no near-cancellation), false if they
 /// should be rejected. Used to filter random restart starting points (α=0.01).
-/// Escalation trigger for single-run L-BFGS-B: the converged point sits on
-/// an AR/MA near-cancellation ridge (threshold 0.05 — same as the user
-/// warning). The surface is near non-identified there, so a single start
-/// routinely strands a few nats below the optimum; the result must be
-/// vetted against multi-start before it is trusted.
-pub(super) fn on_cancellation_ridge(unconstrained: &[f64], config: &SarimaxConfig) -> bool {
-    if config.order.p == 0 || config.order.q == 0 {
-        return false;
-    }
-    let Ok(constrained) = transform_params(unconstrained, config) else {
-        return false;
-    };
-    let Ok(sparams) = SarimaxParams::from_flat(&constrained, config) else {
-        return false;
-    };
-    !validate_no_near_cancellation(&sparams, config, 0.05)
-}
-
 fn passes_cancellation_filter(unconstrained: &[f64], config: &SarimaxConfig) -> bool {
     // Skip check for AR-only or MA-only models
     if config.order.p == 0 || config.order.q == 0 {
