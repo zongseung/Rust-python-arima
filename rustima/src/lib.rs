@@ -653,7 +653,8 @@ fn sarimax_fit<'py>(
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, steps=10, alpha=0.05,
                     exog=None, future_exog=None, concentrate_scale=false,
-                    trend=None, simple_differencing=false))]
+                    trend=None, simple_differencing=false,
+                    enforce_stationarity=true, enforce_invertibility=true))]
 fn sarimax_forecast<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -667,6 +668,8 @@ fn sarimax_forecast<'py>(
     concentrate_scale: bool,
     trend: Option<&str>,
     simple_differencing: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<Py<PyDict>> {
     validate_alpha(alpha)?;
     validate_steps(steps)?;
@@ -675,7 +678,7 @@ fn sarimax_forecast<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        false, false, concentrate_scale, trend, simple_differencing,
+        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
     )?;
 
     let future_exog_cols = future_exog.as_ref().map(|e| numpy2d_to_cols(e));
@@ -745,7 +748,8 @@ fn sarimax_forecast<'py>(
 /// ci_lower, ci_upper (row-per-origin nested lists).
 #[pyfunction]
 #[pyo3(signature = (y, order, seasonal, params, start, step=1, horizon=1, alpha=0.05,
-                    exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
+                    exog=None, concentrate_scale=false, trend=None, simple_differencing=false,
+                    enforce_stationarity=true, enforce_invertibility=true))]
 #[allow(clippy::too_many_arguments)]
 fn sarimax_rolling_forecast<'py>(
     py: Python<'py>,
@@ -761,6 +765,8 @@ fn sarimax_rolling_forecast<'py>(
     concentrate_scale: bool,
     trend: Option<&str>,
     simple_differencing: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<Py<PyDict>> {
     validate_alpha(alpha)?;
     if horizon > 0 {
@@ -771,7 +777,7 @@ fn sarimax_rolling_forecast<'py>(
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        false, false, concentrate_scale, trend, simple_differencing,
+        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
     )?;
 
     // Own all data before releasing GIL
@@ -810,7 +816,8 @@ fn sarimax_rolling_forecast<'py>(
 ///
 /// Returns a dict with: residuals, standardized_residuals.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false,
+                    enforce_stationarity=true, enforce_invertibility=true))]
 fn sarimax_residuals<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -821,12 +828,14 @@ fn sarimax_residuals<'py>(
     concentrate_scale: bool,
     trend: Option<&str>,
     simple_differencing: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        false, false, concentrate_scale, trend, simple_differencing,
+        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
     )?;
 
     // Own all data before releasing GIL
@@ -1066,7 +1075,8 @@ fn sarimax_grid_search<'py>(
 #[pyo3(signature = (series_list, order, seasonal, params_list,
                     steps=10, alpha=0.05, concentrate_scale=false,
                     exog_list=None, exog_forecast_list=None, trend=None,
-                    simple_differencing=false))]
+                    simple_differencing=false,
+                    enforce_stationarity=true, enforce_invertibility=true))]
 fn sarimax_batch_forecast<'py>(
     py: Python<'py>,
     series_list: Vec<PyReadonlyArray1<'py, f64>>,
@@ -1080,6 +1090,8 @@ fn sarimax_batch_forecast<'py>(
     exog_forecast_list: Option<Vec<PyReadonlyArray2<'py, f64>>>,
     trend: Option<&str>,
     simple_differencing: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<Py<PyList>> {
     if series_list.len() != params_list.len() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -1093,7 +1105,7 @@ fn sarimax_batch_forecast<'py>(
 
     let (series, exog_vecs, config) = prepare_batch_request(
         &series_list, order, seasonal, &exog_list,
-        false, false, concentrate_scale, trend, simple_differencing,
+        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
     )?;
     let future_exog_vecs = parse_and_validate_batch_forecast_exog(
         &exog_forecast_list,
@@ -1198,7 +1210,8 @@ fn sarimax_inference<'py>(
 /// Returns a dict with: ljung_box_stat, ljung_box_pvalue, ljung_box_df,
 /// jarque_bera_stat, jarque_bera_pvalue, het_stat, het_pvalue.
 #[pyfunction]
-#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false))]
+#[pyo3(signature = (y, order, seasonal, params, exog=None, concentrate_scale=false, trend=None, simple_differencing=false,
+                    enforce_stationarity=true, enforce_invertibility=true))]
 fn sarimax_diagnostics<'py>(
     py: Python<'py>,
     y: PyReadonlyArray1<'py, f64>,
@@ -1209,12 +1222,14 @@ fn sarimax_diagnostics<'py>(
     concentrate_scale: bool,
     trend: Option<&str>,
     simple_differencing: bool,
+    enforce_stationarity: bool,
+    enforce_invertibility: bool,
 ) -> PyResult<Py<PyDict>> {
     let endog = y.as_slice()?;
     let params_flat = params.as_slice()?;
     let (config, exog_cols) = prepare_single_request(
         endog, order, seasonal, exog.as_ref(),
-        false, false, concentrate_scale, trend, simple_differencing,
+        enforce_stationarity, enforce_invertibility, concentrate_scale, trend, simple_differencing,
     )?;
 
     // Own all data before releasing GIL

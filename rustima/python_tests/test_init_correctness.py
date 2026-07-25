@@ -63,3 +63,29 @@ def test_trend_ct_fit_has_no_self_gap(seed):
     ll_at_sm = float(rustima.sarimax_loglike(y, order, seas, p_sm, trend="ct"))
     self_gap = ll_at_sm - ll_own  # >0 => rustima missed its own optimum
     assert self_gap < 3.0, f"seed={seed}: self-gap {self_gap:+.2f} nats"
+
+
+def test_residuals_respect_enforcement_flags():
+    """S3/S11: residuals/diagnostics must run under the model's enforcement
+    flags (same Kalman init as the fit), not a hardcoded diffuse init."""
+    y = _ar1(150, 0.7, seed=5)
+    params = np.array([0.7, 1.0])
+    r_enforced = rustima.sarimax_residuals(y, (1, 0, 0), (0, 0, 0, 0), params)
+    r_diffuse = rustima.sarimax_residuals(
+        y, (1, 0, 0), (0, 0, 0, 0), params,
+        enforce_stationarity=False, enforce_invertibility=False,
+    )
+    std_enforced = np.asarray(r_enforced["standardized_residuals"])
+    std_diffuse = np.asarray(r_diffuse["standardized_residuals"])
+    # The two inits differ (stationary P0 vs kappa*I), which must now be
+    # visible through the flag...
+    assert not np.allclose(std_enforced, std_diffuse)
+
+    # ...and the result object must follow the model's (default true) flags.
+    # res.resid returns STANDARDIZED residuals.
+    model = rustima.SARIMAXModel(y, order=(1, 0, 0))
+    res = model.fit()
+    r_model = rustima.sarimax_residuals(
+        y, (1, 0, 0), (0, 0, 0, 0), np.asarray(res.params, float))
+    np.testing.assert_allclose(np.asarray(res.resid),
+                               np.asarray(r_model["standardized_residuals"]))

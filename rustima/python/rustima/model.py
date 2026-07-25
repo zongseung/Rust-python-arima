@@ -777,15 +777,15 @@ class SARIMAXResult:
             return np.nan
 
     def _rs_kwargs(self, **extra):
-        """Build common kwargs dict for rustima function calls."""
-        kw = dict(
-            trend=self.model.trend,
-            simple_differencing=self.model.simple_differencing,
-        )
-        if self.model.exog is not None:
-            kw["exog"] = self.model.exog
-        kw.update(extra)
-        return kw
+        """Build common kwargs dict for rustima function calls.
+
+        Delegates to SARIMAXModel._model_kwargs so residuals/forecast/
+        diagnostics run under the SAME enforcement flags (and therefore the
+        same Kalman initialization) as the fit and the numerical-Hessian
+        _loglike_fn. Previously the enforcement flags were dropped here,
+        silently switching these paths to approximate-diffuse init.
+        """
+        return self.model._model_kwargs(**extra)
 
     @property
     def _rs_args(self):
