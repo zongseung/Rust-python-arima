@@ -525,6 +525,12 @@ class SARIMAXModel:
         simple_differencing=False,
     ):
         # --- endog validation ---
+        # np.asarray silently DROPS the mask of a masked array and treats
+        # masked entries as raw data — reject rather than compute on garbage.
+        if np.ma.isMaskedArray(endog) or np.ma.isMaskedArray(exog):
+            raise ValueError(
+                "masked arrays are not supported; fill or drop masked values first"
+            )
         self.endog = np.asarray(endog, dtype=np.float64)
         if self.endog.ndim != 1:
             raise ValueError(f"endog must be 1-dimensional, got ndim={self.endog.ndim}")

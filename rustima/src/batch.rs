@@ -5,6 +5,9 @@
 
 use rayon::prelude::*;
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::OnceLock;
+
 use crate::error::{Result, SarimaxError};
 use crate::forecast::{forecast_pipeline, ForecastResult};
 use crate::optimizer;
@@ -15,6 +18,42 @@ fn length_mismatch_results<T>(n: usize, msg: String) -> Vec<Result<T>> {
     (0..n)
         .map(|_| Err(SarimaxError::InvalidInput(msg.clone())))
         .collect()
+}
+
+/// PID of the process that first drove a rayon parallel region in this crate.
+///
+/// rayon's global pool is created lazily on first use and is NOT fork-safe:
+/// a fork()ed child inherits the pool's mutexes and latches but none of its
+/// worker threads, so any later `par_iter` deadlocks forever with no error
+/// (DIAGNOSIS_V9 C1/C2 — reproduced via os.fork and multiprocessing's fork
+/// context). Recording the owning PID lets us fail fast instead of hanging.
+static RAYON_OWNER_PID: OnceLock<u32> = OnceLock::new();
+
+/// Err if the rayon pool was (or would have been) created in another process.
+pub(crate) fn guard_rayon_fork() -> Result<()> {
+    let pid = std::process::id();
+    let owner = *RAYON_OWNER_PID.get_or_init(|| pid);
+    if owner == pid {
+        Ok(())
+    } else {
+        Err(SarimaxError::InvalidInput(format!(
+            "parallel API called in fork()ed child (pid {pid}) but the rayon \
+             thread pool belongs to parent pid {owner}; running would deadlock. \
+             Use the 'spawn' multiprocessing context, or fork before the first \
+             parallel call."
+        )))
+    }
+}
+
+/// Run `f`, converting a worker panic into a per-series error instead of
+/// letting it propagate out of the rayon join and kill the whole batch —
+/// the documented per-series error isolation must hold even for panics.
+fn isolate_panic<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        Err(SarimaxError::InvalidInput(
+            "internal panic in batch worker (isolated to this series)".to_string(),
+        ))
+    })
 }
 
 /// Compute log-likelihood for multiple time series in parallel.
@@ -40,14 +79,20 @@ pub fn batch_loglike(
         }
     }
 
+    if let Err(e) = guard_rayon_fork() {
+        return length_mismatch_results(series.len(), e.to_string());
+    }
+
     series
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
-            let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
-            let exog_ref: Option<&[Vec<f64>]> = exog;
-            let output = crate::pipeline::kalman_eval(endog, params, config, exog_ref)?;
-            Ok(output.loglike)
+            isolate_panic(|| {
+                let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
+                let exog_ref: Option<&[Vec<f64>]> = exog;
+                let output = crate::pipeline::kalman_eval(endog, params, config, exog_ref)?;
+                Ok(output.loglike)
+            })
         })
         .collect()
 }
@@ -78,20 +123,26 @@ pub fn batch_fit(
         }
     }
 
+    if let Err(e) = guard_rayon_fork() {
+        return length_mismatch_results(series.len(), e.to_string());
+    }
+
     series
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
-            let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
-            let exog_ref: Option<&[Vec<f64>]> = exog;
-            optimizer::fit(
-                endog,
-                config,
-                None,
-                Some(method_str),
-                Some(maxiter_val),
-                exog_ref,
-            )
+            isolate_panic(|| {
+                let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
+                let exog_ref: Option<&[Vec<f64>]> = exog;
+                optimizer::fit(
+                    endog,
+                    config,
+                    None,
+                    Some(method_str),
+                    Some(maxiter_val),
+                    exog_ref,
+                )
+            })
         })
         .collect()
 }
@@ -110,17 +161,23 @@ pub fn grid_search_fit(
     let method_str = method.unwrap_or("lbfgsb");
     let maxiter_val = maxiter.unwrap_or(500);
 
+    if let Err(e) = guard_rayon_fork() {
+        return length_mismatch_results(configs.len(), e.to_string());
+    }
+
     configs
         .par_iter()
         .map(|config| {
-            optimizer::fit(
-                endog,
-                config,
-                None,
-                Some(method_str),
-                Some(maxiter_val),
-                exog,
-            )
+            isolate_panic(|| {
+                optimizer::fit(
+                    endog,
+                    config,
+                    None,
+                    Some(method_str),
+                    Some(maxiter_val),
+                    exog,
+                )
+            })
         })
         .collect()
 }
@@ -174,10 +231,15 @@ pub fn batch_forecast(
         }
     }
 
+    if let Err(e) = guard_rayon_fork() {
+        return length_mismatch_results(series.len(), e.to_string());
+    }
+
     series
         .par_iter()
         .enumerate()
         .map(|(i, endog)| {
+            isolate_panic(|| {
             let flat_params = params_list.get(i).ok_or_else(|| {
                 SarimaxError::InvalidInput(format!(
                     "params_list index {} out of bounds (len={})",
@@ -189,6 +251,7 @@ pub fn batch_forecast(
             let exog = exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             let future_exog = future_exog_list.and_then(|el| el.get(i)).map(|v| &v[..]);
             forecast_pipeline(endog, config, &sparams, steps, alpha, exog, future_exog)
+            })
         })
         .collect()
 }

@@ -1184,6 +1184,11 @@ fn sarimax_inference<'py>(
         concentrate_scale, trend, simple_differencing,
     )?;
 
+    // Reject wrong-length params up front like every other entry point —
+    // compute_inference would silently return empty arrays for an empty
+    // params vector (DIAGNOSIS_V9 W2).
+    SarimaxParams::from_flat(params_flat, &config).map_err(to_pyerr)?;
+
     // Own all data before releasing GIL
     let endog = endog.to_vec();
     let params_flat = params_flat.to_vec();

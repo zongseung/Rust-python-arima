@@ -309,7 +309,8 @@ pub(super) fn fit_lbfgsb_multi(
             .into_iter()
             .filter(|start| passes_cancellation_filter(start, config))
             .collect();
-        if perturbations.len() >= 2 && remaining > 0 {
+        // Skip the rayon block in a fork()ed child — the inherited pool would deadlock (C1/C2).
+        if perturbations.len() >= 2 && remaining > 0 && crate::batch::guard_rayon_fork().is_ok() {
             let per_start_budget = remaining / perturbations.len() as u64;
             if per_start_budget > 0 {
                 // Pre-clone data for thread-safe parallel execution.
@@ -602,7 +603,7 @@ pub(super) fn fit_lbfgsb_adaptive_restart(
     }
 
     // 5. Run K L-BFGS-Bs in parallel via Rayon
-    if !perturbations.is_empty() {
+    if !perturbations.is_empty() && crate::batch::guard_rayon_fork().is_ok() {
         let endog_shared = &objective.endog;
         let config_shared = &objective.config;
         let exog_shared = &objective.exog;
@@ -694,7 +695,7 @@ pub(super) fn fit_lbfgsb_hybrid(
     let mut best: Option<(Vec<f64>, f64, bool, String)> =
         Some((multi_p, multi_c, multi_conv, "lbfgsb-hybrid".to_string()));
 
-    if !perturbations.is_empty() {
+    if !perturbations.is_empty() && crate::batch::guard_rayon_fork().is_ok() {
         let endog_shared = &objective.endog;
         let config_shared = &objective.config;
         let exog_shared = &objective.exog;

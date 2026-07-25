@@ -273,6 +273,12 @@ def auto_arima(
     AutoARIMAResult
         Best fit result with search history.
     """
+    # np.asarray silently drops a masked array's mask (masked entries become
+    # raw data) — reject rather than compute on garbage.
+    if np.ma.isMaskedArray(endog) or np.ma.isMaskedArray(exog):
+        raise ValueError(
+            "masked arrays are not supported; fill or drop masked values first"
+        )
     endog = np.asarray(endog, dtype=np.float64)
     if exog is not None:
         exog = np.asarray(exog, dtype=np.float64)

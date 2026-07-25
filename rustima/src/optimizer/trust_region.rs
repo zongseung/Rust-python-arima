@@ -830,10 +830,19 @@ pub(super) fn fit_profile_trust_region(
         for s in perturbed {
             starts.push(s);
         }
-        let results: Vec<_> = starts
-            .into_par_iter()
-            .map(|s| run_profile_trust_region_bfgs(profiled_objective.clone(), s, profile_budget))
-            .collect();
+        // Sequential fallback in a fork()ed child — the inherited rayon pool
+        // would deadlock (DIAGNOSIS_V9 C1/C2).
+        let results: Vec<_> = if crate::batch::guard_rayon_fork().is_ok() {
+            starts
+                .into_par_iter()
+                .map(|s| run_profile_trust_region_bfgs(profiled_objective.clone(), s, profile_budget))
+                .collect()
+        } else {
+            starts
+                .into_iter()
+                .map(|s| run_profile_trust_region_bfgs(profiled_objective.clone(), s, profile_budget))
+                .collect()
+        };
         results
             .into_iter()
             .filter_map(|r| r.ok())

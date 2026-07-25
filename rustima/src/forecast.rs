@@ -405,6 +405,30 @@ pub fn rolling_forecast_pipeline(
         o += step;
     }
 
+    // Every origin snapshot retains a k_states x k_states predicted
+    // covariance for the whole call, so peak memory is
+    // 8 * n_origins * k_states^2 bytes with NO individual knob capping the
+    // product (measured 4.4 GB at n=1000, s=365; DIAGNOSIS_V9 C3). A failed
+    // allocation aborts the process rather than raising, so refuse early.
+    const MAX_SNAPSHOT_BYTES: usize = 2 << 30; // 2 GiB
+    let k = config.order.k_states();
+    let snapshot_bytes = origins
+        .len()
+        .saturating_mul(k)
+        .saturating_mul(k)
+        .saturating_mul(8);
+    if snapshot_bytes > MAX_SNAPSHOT_BYTES {
+        return Err(SarimaxError::InvalidInput(format!(
+            "rolling forecast would retain {} origin snapshots of {}x{} state \
+             covariances (~{:.1} GiB > 2 GiB limit); increase `step`, raise \
+             `start`, or split the series into chunks",
+            origins.len(),
+            k,
+            k,
+            snapshot_bytes as f64 / (1u64 << 30) as f64,
+        )));
+    }
+
     // Single filter pass with snapshots at every origin
     let ss = StateSpace::new(config, params, endog, exog)?;
     let init = KalmanInit::from_config_default(&ss, config);
