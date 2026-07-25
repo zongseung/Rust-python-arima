@@ -51,10 +51,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zongseung/Rust-python-arima"
-Repository = "https://github.com/zongseung/Rust-python-arima"
-Issues = "https://github.com/zongseung/Rust-python-arima/issues"
-Documentation = "https://github.com/zongseung/Rust-python-arima#readme"
+Homepage = "https://github.com/zongseung/rustima"
+Repository = "https://github.com/zongseung/rustima"
+Issues = "https://github.com/zongseung/rustima/issues"
+Documentation = "https://github.com/zongseung/rustima#readme"
 
 [project.optional-dependencies]
 dev = [

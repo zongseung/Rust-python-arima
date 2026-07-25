@@ -209,7 +209,7 @@ jobs:
   # Setup (one-time): on pypi.org → project settings → "Publishing" →
   # "Add a new pending publisher" with:
   #   owner = zongseung
-  #   repo  = Rust-python-arima
+  #   repo  = rustima
   #   workflow = release.yml
   #   environment = pypi
   # Then create a GitHub environment named "pypi" with required reviewers
