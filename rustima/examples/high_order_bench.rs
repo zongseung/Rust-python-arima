@@ -28,7 +28,6 @@ fn run_test(label: &str, order: SarimaxOrder, n: usize) {
         enforce_invertibility: true,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     let start = Instant::now();

@@ -30,7 +30,6 @@ fn bench_kalman_ar1(c: &mut Criterion) {
         enforce_invertibility: false,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
     let params = SarimaxParams {
         trend_coeffs: vec![],
@@ -60,7 +59,6 @@ fn bench_kalman_arima111(c: &mut Criterion) {
         enforce_invertibility: false,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
     let params = SarimaxParams {
         trend_coeffs: vec![],

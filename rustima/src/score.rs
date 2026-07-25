@@ -678,11 +678,17 @@ fn tlkf_pass<S: TlkfSink>(
             sparse_z.p_mul_z_into(&p, &mut pz, k);
 
             if check_convergence(&pz, &pz_prev, &mut ss_consec) {
-                ss_converged = true;
                 let f_steady = sparse_z.z_dot_pz(&pz);
-                f_inv_steady = 1.0 / f_steady;
-                // dpz_buf and df_buf are already at their steady-state values
-                // from the last non-steady iteration
+                // Same adoption guard as kalman_core: only freeze the
+                // steady state if F_inf is positive and finite — otherwise
+                // 1/F_inf would poison every later gradient with NaN while
+                // the loglike pass stays on its finite non-converged path.
+                if f_steady > 0.0 && f_steady.is_finite() {
+                    ss_converged = true;
+                    f_inv_steady = 1.0 / f_steady;
+                    // dpz_buf and df_buf are already at their steady-state
+                    // values from the last non-steady iteration
+                }
             }
             pz_prev.copy_from(&pz);
         } else if t >= burn {

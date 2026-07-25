@@ -26,7 +26,6 @@ fn bench_fit_ar1(c: &mut Criterion) {
         enforce_invertibility: true,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     c.bench_function("fit_ar1_n500", |b| {
@@ -44,7 +43,6 @@ fn bench_fit_arima111(c: &mut Criterion) {
         enforce_invertibility: true,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     c.bench_function("fit_arima111_n500", |b| {
@@ -66,7 +64,6 @@ fn bench_fit_sarima_111_111_12(c: &mut Criterion) {
         enforce_invertibility: false,
         concentrate_scale: true,
         simple_differencing: false,
-        measurement_error: false,
     };
 
     c.bench_function("fit_sarima111_111_12_n500", |b| {
