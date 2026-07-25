@@ -32,7 +32,7 @@ impl SarimaxParams {
         let pp = config.order.pp;
         let qq = config.order.qq;
 
-        let expected = kt + n_exog + p + q + pp + qq + if config.concentrate_scale { 0 } else { 1 };
+        let expected = config.n_params();
 
         if flat.len() != expected {
             return Err(SarimaxError::ParamLengthMismatch {

@@ -87,7 +87,7 @@ fn precompute_derivatives(
     let n_exog = config.n_exog;
     let n = endog_len;
 
-    let n_params = kt + n_exog + p + q + pp + qq + if config.concentrate_scale { 0 } else { 1 };
+    let n_params = config.n_params();
 
     let mut dt: Vec<Vec<(usize, usize, f64)>> = vec![vec![]; n_params];
     let mut drqr: Vec<Option<DMatrix<f64>>> = vec![None; n_params];
@@ -492,12 +492,28 @@ fn tlkf_pass<S: TlkfSink>(
 
         if f_t <= 0.0 {
             if t >= burn {
-                return Err(SarimaxError::DataError(format!(
-                    "F_t <= 0 at t={} in score computation",
-                    t
-                )));
+                // Mirror kalman_core's boundary safeguard (same constant):
+                // charge the fallback variance so the GRADIENT stays finite
+                // wherever the loglike does. Erroring here while the loglike
+                // continues silently dropped the analytical score exactly in
+                // the near-unit-root region the safeguard exists to make
+                // navigable (DIAGNOSIS_V9 S1 divergence). dF/dtheta = 0
+                // because F is the fallback constant here.
+                let f_safe: f64 = crate::optimizer::KF_FT_FALLBACK_VARIANCE;
+                let f_inv_safe = 1.0 / f_safe;
+                for i in 0..np {
+                    let dd_i_t = if !derivs.dd[i].is_empty() && t < derivs.dd[i].len() {
+                        derivs.dd[i][t]
+                    } else {
+                        0.0
+                    };
+                    dv_buf[i] = -dd_i_t - sparse_z.dot(&da[i]);
+                    df_buf[i] = 0.0;
+                }
+                sink.record(v_t, f_inv_safe, &dv_buf, &df_buf);
+                sum_v2_f += v_t * v_t * f_inv_safe;
             }
-            // Burn-in with F<=0: skip update, just predict
+            // F<=0: skip update, just predict
             // Standard KF predict
             a_next.gemv(1.0, t_mat, &a, 0.0);
             if has_state_intercept {

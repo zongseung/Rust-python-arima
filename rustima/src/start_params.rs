@@ -496,13 +496,7 @@ pub fn compute_start_params(
     let qq = order.qq;
     let s = order.s;
 
-    let n_params = config.trend.k_trend()
-        + config.n_exog
-        + p
-        + q
-        + pp
-        + qq
-        + if config.concentrate_scale { 0 } else { 1 };
+    let n_params = config.n_params();
 
     // Apply differencing (statsmodels also differences exog the same way)
     let mut diffed = difference(endog, order.d);

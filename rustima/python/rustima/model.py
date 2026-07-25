@@ -760,12 +760,15 @@ class SARIMAXResult:
             n_exog=self.model.n_exog,
             trend=self.model.trend,
         )
-        # Safety: pad or trim to match actual params length
-        k = len(self.params)
-        if len(names) < k:
-            names.extend(f"param_{i}" for i in range(len(names), k))
-        elif len(names) > k:
-            names = names[:k]
+        # A mismatch means the Rust param layout and the Python naming have
+        # drifted — padding with param_N here would print values under the
+        # WRONG names in summary()/params_table() (DIAGNOSIS_V9 S5).
+        if len(names) != len(self.params):
+            raise RuntimeError(
+                f"param_names length {len(names)} != params length "
+                f"{len(self.params)}; Rust param layout and Python naming "
+                f"have drifted"
+            )
         return names
 
     def _loglike_fn(self, params):

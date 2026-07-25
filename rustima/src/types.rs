@@ -115,6 +115,22 @@ pub struct SarimaxConfig {
 }
 
 impl SarimaxConfig {
+    /// Length of the flat parameter vector
+    /// `[trend | exog | ar | ma | sar | sma | sigma2?]` for this config.
+    ///
+    /// Single source for the count — from_flat, the score's derivative
+    /// walk, and start-param assembly must all agree on it.
+    #[inline]
+    pub fn n_params(&self) -> usize {
+        self.trend.k_trend()
+            + self.n_exog
+            + self.order.p
+            + self.order.q
+            + self.order.pp
+            + self.order.qq
+            + if self.concentrate_scale { 0 } else { 1 }
+    }
+
     /// Effective diffuse-state offset.
     ///
     /// Returns 0 when `simple_differencing=true` (diff states already removed
