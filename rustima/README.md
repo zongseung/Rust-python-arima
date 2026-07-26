@@ -78,9 +78,23 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + exogenous regressors
 
 ## Installation
 
-### Prerequisites
+### Quick install (prebuilt wheels)
 
-Because rustima ships Rust source, **you must build it locally** (there is no pre-built wheel on PyPI yet). You need:
+Prebuilt wheels are published on PyPI for Linux (manylinux2014, x86_64/aarch64), macOS (x86_64/arm64), and Windows (x86_64), covering Python 3.10–3.14 — no local Rust toolchain needed:
+
+```bash
+pip install rustima
+# or
+uv add rustima
+```
+
+If your platform/Python combination isn't covered, or you want to modify the engine, build from source below.
+
+### Building from source
+
+#### Prerequisites
+
+Building rustima from its Rust source requires:
 
 | Tool | Minimum | Why | Install |
 |------|---------|-----|---------|
@@ -91,7 +105,7 @@ Because rustima ships Rust source, **you must build it locally** (there is no pr
 
 > **Windows users:** install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) first (needed by Rust's MSVC toolchain).
 
-### Option A — Development mode (recommended for most users)
+#### Option A — Development mode (recommended for most users)
 
 Best for: testing, Jupyter notebooks, running examples. Fast rebuilds on code changes.
 
@@ -112,7 +126,7 @@ After this you can run:
 uv run python -c "import rustima; print(rustima.version())"
 ```
 
-### Option B — Build a redistributable wheel
+#### Option B — Build a redistributable wheel
 
 Best for: deploying to another machine, CI, production.
 

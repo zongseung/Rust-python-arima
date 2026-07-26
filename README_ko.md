@@ -78,9 +78,23 @@ SARIMA(p, d, q)(P, D, Q, s) + trend + 외생 회귀변수
 
 ## 설치
 
-### 사전 요구사항
+### 빠른 설치 (사전 빌드된 wheel)
 
-rustima는 Rust 소스를 포함하므로 **로컬 빌드가 필요합니다** (아직 PyPI에 사전 빌드된 wheel 없음).
+Linux(manylinux2014, x86_64/aarch64), macOS(x86_64/arm64), Windows(x86_64)용 wheel이 Python 3.10~3.14 기준으로 PyPI에 이미 배포되어 있습니다 — 로컬 Rust 툴체인 불필요:
+
+```bash
+pip install rustima
+# 또는
+uv add rustima
+```
+
+플랫폼/Python 버전이 안 맞거나 엔진을 직접 수정하려면 아래 소스 빌드를 진행하세요.
+
+### 소스에서 빌드
+
+#### 사전 요구사항
+
+rustima를 Rust 소스에서 빌드하려면 다음이 필요합니다:
 
 | 도구 | 최소 버전 | 용도 | 설치 |
 |------|---------|-----|---------|
@@ -91,7 +105,7 @@ rustima는 Rust 소스를 포함하므로 **로컬 빌드가 필요합니다** (
 
 > **Windows 사용자:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)를 먼저 설치하세요 (Rust MSVC 툴체인에 필요).
 
-### 방법 A — 개발 모드 (대부분의 사용자에게 권장)
+#### 방법 A — 개발 모드 (대부분의 사용자에게 권장)
 
 적합한 상황: 테스트, Jupyter 노트북, 예제 실행. 코드 수정 시 빠른 재빌드.
 
@@ -112,7 +126,7 @@ uv run maturin develop --release
 uv run python -c "import rustima; print(rustima.version())"
 ```
 
-### 방법 B — 재배포 가능한 wheel 빌드
+#### 방법 B — 재배포 가능한 wheel 빌드
 
 적합한 상황: 다른 머신 배포, CI, 프로덕션.
 
