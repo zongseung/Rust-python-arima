@@ -96,7 +96,7 @@ rustima는 Rust 소스를 포함하므로 **로컬 빌드가 필요합니다** (
 적합한 상황: 테스트, Jupyter 노트북, 예제 실행. 코드 수정 시 빠른 재빌드.
 
 ```bash
-git clone https://github.com/<your-org>/rustima.git
+git clone https://github.com/zongseung/rustima.git
 cd rustima/      # 저장소 안에 `rustima/` 패키지 디렉터리가 있음
 
 # 1) 가상환경 생성 + Python 의존성 설치 (numpy, polars, pytest 등)
@@ -131,7 +131,7 @@ uv pip install --force-reinstall /tmp/wheels/rustima-*.whl
 import rustima
 import numpy as np
 
-print(rustima.version())                              # "0.1.0"
+print(rustima.version())                              # "0.3.0"
 y = np.random.randn(100).cumsum()
 r = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
 print(f"converged={r['converged']}, AIC={r['aic']:.2f}")
@@ -470,8 +470,8 @@ graph TB
         FCAST["forecast.rs<br/>h-step prediction + residuals"]
         BATCH["batch.rs<br/>Rayon par_iter()"]
         SS["state_space.rs<br/>Harvey representation T, Z, R, Q"]
-        INIT["initialization.rs<br/>Approximate diffuse init"]
-        SP["start_params.rs<br/>Hannan-Rissanen + CSS"]
+        INIT["initialization.rs<br/>Lyapunov + diffuse init"]
+        SP["start_params.rs<br/>Burg/Yule-Walker + CSS"]
         POLY["polynomial.rs<br/>AR/MA polynomial expansion"]
         PAR["params.rs<br/>Monahan transform"]
         SCR["score.rs<br/>Analytical gradient"]
@@ -525,7 +525,7 @@ sequenceDiagram
     L->>O: fit(endog, config, method, maxiter)
 
     O->>S: compute_start_params(endog, config)
-    S->>S: Differencing → Hannan-Rissanen / Burg+CSS
+    S->>S: Differencing → Burg/Yule-Walker AR + residual-regression MA
     S-->>O: initial θ₀
 
     O->>PR: untransform_params(θ₀)
@@ -589,7 +589,8 @@ result = rustima.sarimax_fit(
     seasonal=(0, 0, 0, 0),
     enforce_stationarity=True,   # AR 정상성 제약
     enforce_invertibility=True,  # MA 가역성 제약
-    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "bfgs"
+    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgsb-adaptive"
+                                 # | "lbfgsb-hybrid" | "lbfgs" | "bfgs"
                                  # | "trust-region" | "profile-trust-region"
                                  # | "nelder-mead"
     maxiter=500,
@@ -633,6 +634,20 @@ print(fc["mean"])       # 점예측 (list[float])
 print(fc["ci_lower"])   # 하한
 print(fc["ci_upper"])   # 상한
 print(fc["variance"])   # 예측 분산
+```
+
+#### `rustima.sarimax_rolling_forecast`
+
+단일 칼만 필터 패스로 모든 rolling origin에서 h-step 예측을 생성합니다(파라미터 고정, 재추정 없음). origin마다 새로 적합하는 루프의 `O(N·T)` 대신 `O(T + N·horizon)` 비용.
+
+```python
+rf = rustima.sarimax_rolling_forecast(
+    y, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
+    params=np.array([0.65]),
+    start=100, step=24, horizon=12, alpha=0.05,
+)
+print(rf["origins"])         # (N,) origin 인덱스
+print(rf["predicted_mean"])  # (N, horizon)
 ```
 
 #### `rustima.sarimax_residuals`
@@ -686,6 +701,17 @@ forecasts = rustima.sarimax_batch_forecast(
     alpha=0.05,
 )
 # 반환: mean, variance, ci_lower, ci_upper를 포함한 list[dict]
+```
+
+#### `rustima.sarimax_batch_loglike`
+
+주어진 파라미터에서 N개 시계열의 로그우도를 병렬로 계산합니다(최적화 없음).
+
+```python
+lls = rustima.sarimax_batch_loglike(
+    series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
+    params_list=params_list,
+)
 ```
 
 #### `rustima.sarimax_grid_search`
@@ -786,6 +812,8 @@ result.forecast(steps=10, alpha=0.05)     # → ForecastResult
 result.forecast(steps=10, exog=X_future)  # 미래 exog 포함
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels 호환)
 result.get_prediction(start=0, end=210)   # → PredictionResult (in-sample + out-of-sample)
+result.rolling_forecast(start=100, step=24, horizon=12)  # → RollingForecastResult
+result.extend(new_endog, exog=None)       # → SARIMAXResult, 파라미터 고정 + 새 관측치 추가
 result.summary()                          # → str (기본 파라미터 테이블)
 result.summary(inference="hessian")       # → str (std err / z / p / CI 포함)
 result.summary(inference="statsmodels")   # → str (statsmodels 추론값 차용)
@@ -793,6 +821,24 @@ result.summary(inference="both")          # → str (양쪽 비교)
 result.params_table(inference="hessian")  # → Polars DataFrame
 result.diagnostics()                      # → dict (Ljung-Box, Jarque-Bera, 이분산)
 ```
+
+**재적합 없는 walk-forward 롤링.** `SARIMAXModel.filter(params)`는 주어진 파라미터 벡터에서
+단일 칼만 필터 패스로 `SARIMAXResult`를 생성합니다 — 최적화 없음(statsmodels `.filter()`와 동일 의미).
+`SARIMAXResult.extend(endog, exog=None)`는 원래 히스토리 + 새 관측치를 동일한 고정 파라미터로
+다시 필터링해 새 결과를 반환하며, 이후 `forecast()`는 새 데이터 이후부터 시작합니다:
+
+```python
+model = SARIMAXModel(train, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0))
+result = model.fit()
+for block in blocks:
+    fc = result.get_forecast(steps=len(block)).predicted_mean
+    result = result.extend(block)   # 파라미터 고정, 재추정 없음
+```
+
+`SARIMAXResult.rolling_forecast(start, step, horizon, alpha=0.05)`는 모든 origin
+`start, start+step, ...`에서의 h-step 예측을 단일 칼만 필터 패스로 계산합니다 —
+`extend()` 루프의 `O(N·T)` 대신 총 `O(T + N·horizon)`이며, 수치적으로 동일한 결과를
+생성합니다(Markov 성질). `RollingForecastResult`를 반환합니다.
 
 **파라미터 벡터 레이아웃:**
 
@@ -836,6 +882,17 @@ pred = result.get_prediction(start=0, end=210)
 
 pred.predicted_mean    # np.ndarray — 예측값 (in-sample + out-of-sample)
 pred.to_dataframe()    # Polars DataFrame (index, predicted_mean)
+```
+
+#### `RollingForecastResult`
+
+```python
+rf = result.rolling_forecast(start=100, step=24, horizon=12)
+
+rf.origins             # np.ndarray (N,) — 예측 origin 인덱스
+rf.predicted_mean       # np.ndarray (N, horizon)
+rf.variance             # np.ndarray (N, horizon)
+rf.ci_lower, rf.ci_upper  # np.ndarray (N, horizon)
 ```
 
 #### `AutoARIMAResult`
@@ -884,7 +941,7 @@ For each t = 0, ..., n-1:
   2. Innovation variance:  F_t = Z' * P_{t|t-1} * Z
   3. Kalman gain:          K_t = P_{t|t-1} * Z / F_t
   4. State update:         a_{t|t} = a_{t|t-1} + K_t * v_t
-  5. Covariance update:    P_{t|t} = (I - K*Z') * P * (I - K*Z')'  [Joseph form]
+  5. Covariance update:    P_{t|t} = P_{t|t-1} - F_t^-1 * (P*Z)(P*Z)'  [rank-one downdate, in-place]
   6. Prediction:           a_{t+1|t} = T * a_{t|t} + c_t
   7. Covariance prediction: P_{t+1|t} = T * P_{t|t} * T' + R*Q*R'
 ```
@@ -918,12 +975,14 @@ PACF → AR coefficients: Levinson-Durbin recursion
 음의 로그우도를 최소화합니다.
 
 **전략:**
-1. **초기값**: Hannan-Rissanen(계절) 또는 CSS 기반 추정, 또는 사용자 제공값(`start_params.rs`)
-2. **L-BFGS-B**(기본): 경계 제약 + analytical gradient, `pgtol=1e-5`, `factr=1e7`
-3. **L-BFGS-B multi-start**: 강건성 확보를 위해 초기값 섭동 3회 재시작
-4. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
-5. **Nelder-Mead fallback**: L-BFGS 실패 시 자동 전환, 5% 스케일 simplex
-6. **정보 기준**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`, `HQIC = -2·ll + 2·k·ln(ln(n))`
+1. **초기값**: Burg AR 추정(Yule-Walker 폴백) + AR 잔차 회귀로 MA 추정, CSS로 정제(`start_params.rs`)
+2. **L-BFGS-B**(기본, `method="lbfgsb"`): 경계 제약 + analytical gradient, `pgtol=1e-5`, `factr=1e7`. 먼저 단일 시작점으로 시도하고, 실패한 경우에만(전형적으로 AR/MA 근접상쇄 능선에서 발생하는 `ABNORMAL_TERMINATION_IN_LNSRCH`) multi-start로 승격, multi-start도 실패하면 Nelder-Mead로 폴백
+3. **L-BFGS-B multi-start** (`method="lbfgsb-multi"`): 승격 대기 없이 즉시 LCG 섭동 재시작을 최대 3회 실행, 모델 복잡도에 따라 조정(파라미터 4개 이상이면 3회, 작은 모델은 0회)
+4. **L-BFGS-B adaptive restart** (`method="lbfgsb-adaptive"`): gradient 기반 basin hopping — seed가 아니라 **수렴한 최적점** 주변을 analytical score의 `|∂L/∂θᵢ|` 크기에 비례해 파라미터별로 섭동시켜, loss landscape 신호가 큰 방향을 집중 탐색합니다. seed를 섭동하는 일반 multi-start는 seed와 같은 basin of attraction 안에 머물러 못 찾는 이웃 basin까지 도달 가능
+5. **L-BFGS-B hybrid** (`method="lbfgsb-hybrid"`): multi-start를 먼저 실행한 뒤, 그 최적 결과를 anchor로 삼아 adaptive hop을 한 번 더 얹음
+6. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
+7. **Nelder-Mead fallback**: L-BFGS 실패 시 자동 전환, 5% 스케일 simplex
+8. **정보 기준**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`, `HQIC = -2·ll + 2·k·ln(ln(n))`
 
 ### 6. 예측 (`forecast.rs`)
 
@@ -953,6 +1012,14 @@ Rayon `par_iter()`를 사용해 독립 job 단위의 work-stealing 병렬 처리
 ---
 
 ## 벤치마크
+
+> **주의 — 0.3.0 정확성 수정 이전 수치입니다.** 아래 표는 rustima 0.1.0에서 측정한
+> 것입니다. 이후 0.3.0에서 비차분(`d=0, D=0`) 모델 전체의 로그우도를 왜곡시키던 P₀
+> 초기화 버그(아래 AR/MA/SARIMA(·,0,·) 행들이 정확히 해당)와 Hessian 표준오차 버그가
+> 수정되었습니다(`CHANGELOG.md` 참조). 아래 정확도 수치는 현재 동작을 반영하지
+> 않으며(수정 후에는 고정 파라미터 로그우도가 statsmodels와 `1e-10`까지 일치),
+> 속도 수치도 방향성 참고용일 뿐 인용 전 `python_tests/gen_tex_report.py`로
+> 재생성해야 합니다.
 
 모든 벤치마크는 macOS 15.1 (Apple Silicon arm64), Python 3.14, rustima 0.1.0 vs statsmodels 0.14.6 기준입니다.
 
@@ -1061,20 +1128,27 @@ rustima/
 ├── pyproject.toml                   # Python 패키지 설정(maturin)
 ├── build.rs                         # cc 빌드 스크립트 (lbfgsb_c/ 컴파일)
 │
-├── src/                             # Rust 엔진 (19 모듈, ~11,960 LOC)
-│   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 11개)
+├── src/                             # Rust 엔진 (25 모듈, ~14,300 LOC)
+│   ├── lib.rs                       # PyO3 모듈 진입점 (Python 함수 12개)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror 기반)
 │   ├── params.rs                    # 파라미터 struct + Monahan/Jones 변환
 │   ├── polynomial.rs                # AR/MA 다항식 확장 (polymul, reduced_ar/ma)
 │   ├── state_space.rs               # Harvey 상태공간 T, Z, R, Q, c_t 구성
-│   ├── initialization.rs            # 근사 diffuse / DARE 초기화
+│   ├── initialization.rs            # Lyapunov(정상 상태) + 근사 diffuse 초기화
 │   ├── kalman.rs                    # 칼만 필터 (loglike + full filter)
 │   ├── score.rs                     # 해석적 gradient (sparse tangent-linear + steady-state)
 │   ├── css.rs                       # 조건부 최소 제곱 로그우도
 │   ├── inference.rs                 # 수치 Hessian / OPG 추론
-│   ├── start_params.rs              # Hannan-Rissanen + CSS 초기 파라미터 추정
-│   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
+│   ├── start_params.rs              # Burg/Yule-Walker AR + 잔차 회귀 MA + CSS 정제
+│   ├── optimizer/                   # L-BFGS-B + L-BFGS + Nelder-Mead MLE (분리된 모듈)
+│   │   ├── mod.rs                   # 오케스트레이션, multi-start 디스패치
+│   │   ├── objective.rs             # SarimaxObjective (비용 + analytical gradient)
+│   │   ├── runners.rs               # L-BFGS-B / L-BFGS / Nelder-Mead 드라이버
+│   │   ├── multistart.rs            # LCG 섭동 재시작, near-cancellation 필터
+│   │   ├── trust_region.rs          # Profiled Kalman-GLS Trust-Region (exog β)
+│   │   ├── transforms.rs            # Monahan/Jones 정상성 변환 헬퍼
+│   │   └── tests.rs                 # 옵티마이저 단위 테스트
 │   ├── forecast.rs                  # h-step 예측 + 잔차 + z_score
 │   ├── batch.rs                     # Rayon 기반 배치/grid search 병렬 처리
 │   ├── pipeline.rs                  # 공유 헬퍼 (kalman_eval, kalman_filter_full)
@@ -1084,12 +1158,12 @@ rustima/
 │
 ├── python/
 │   └── rustima/                     # Python 패키지 (네이티브 확장 + 고수준 API)
-│       ├── __init__.py              # 패키지 export (저수준 + 고수준 API 통합)
-│       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
+│       ├── __init__.py              # 패키지 export + Apple Silicon P-core Rayon 핀닝
+│       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult, RollingForecastResult
 │       ├── auto.py                  # auto_arima, AutoARIMAResult
 │       └── rustima.*.so             # 컴파일된 Rust 확장 모듈 (maturin 빌드 산출물)
 │
-├── python_tests/                    # Python 통합 테스트 (371 tests, 16개 모듈)
+├── python_tests/                    # Python 통합 테스트 (429 tests, 23개 모듈)
 │   ├── conftest.py                  # pytest fixture
 │   ├── generate_fixtures.py         # statsmodels 레퍼런스 데이터 생성기
 │   └── test_*.py                    # test_fit, test_forecast, test_batch, test_exog 등
@@ -1148,7 +1222,7 @@ rustima/
 # Rust 단위 테스트 (155 tests)
 cargo test --all-targets
 
-# Python 통합 테스트 (371 tests, wheel 빌드 필요)
+# Python 통합 테스트 (429 tests, wheel 빌드 필요)
 uv run maturin develop --release
 uv run python -m pytest python_tests/ -v
 
@@ -1178,15 +1252,22 @@ uv run python python_tests/generate_fixtures.py
 | Python exog | 14 | 외생 회귀변수, future_exog, 배치 exog |
 | Python multi-order accuracy | 27 | 다차수 교차 검증 vs statsmodels |
 | Python high-order accuracy | 20 | ARIMA(4~5차), SARIMA(4,1,4)(2,1,2,12), s=24 고차 모델 |
-| Python inference | 70 | Rust Hessian/OPG 추론, statsmodels 패리티 |
+| Python inference | 69 | Rust Hessian/OPG 추론, statsmodels 패리티 |
 | Python trend | 16 | trend='n','c','t','ct' 적합/예측/잔차/요약 |
 | Python Polars | 14 | to_dataframe(), params_table(), PredictionResult, HQIC |
 | Python auto_arima | 19 | stepwise, grid, history, criterion, summary |
 | Python safety guards | 44 | 엣지 케이스 안전성, 범위 검사 |
-| Python simple differencing | 22 | simple_differencing=True 경로 |
+| Python simple differencing | 24 | simple_differencing=True 경로 |
 | Python matrix tier A | 12 | 상태공간 행렬 구성 검증 |
 | Python prediction quality | 7 | in-sample/out-of-sample 예측 정확도 |
-| **합계** | **526** | Rust 155 + Python 371 |
+| Python filter/extend | 17 | `SARIMAXModel.filter()`, `SARIMAXResult.extend()` walk-forward 롤링 |
+| Python rolling_forecast | 11 | 단일 패스 rolling-origin 예측 vs extend() 루프 일치성 |
+| Python init correctness | 8 | DIAGNOSIS_V9 P0/trend 시작값 회귀 커버리지 |
+| Python matrix cells | 8 | v9 구조 감사에서 나온 고가치 옵션-매트릭스 셀 |
+| Python robustness | 5 | fork 안전성, rolling-forecast 메모리 상한, 배치 패닉 격리 |
+| Python variance parity | 6 | 예측 분산/표준화 잔차의 statsmodels 대비 패리티 |
+| Python profile-trust-region | 2 | batched-Kalman-filter PTR 최적화 회귀 테스트 |
+| **합계** | **584** | Rust 155 + Python 429 |
 
 ## 문제 해결 & FAQ
 

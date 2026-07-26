@@ -543,7 +543,7 @@ fn kalman_core(
                 // State update: a = a + (v_t / F_t) * pz
                 a.axpy(v_t * f_inv, &pz, 1.0);
 
-                // Covariance update: P = P - (1/F_t) * pz * pz'  (Joseph form)
+                // Covariance update: P = P - (1/F_t) * pz * pz'  (rank-one downdate)
                 p.ger(-f_inv, &pz, &pz, 1.0);
 
                 if store_full {
@@ -941,7 +941,7 @@ pub fn kalman_filter_batched(
                     std::mem::swap(&mut a_states[s], &mut a_next);
                 }
 
-                // Shared covariance update (Joseph form) and prediction.
+                // Shared covariance update (rank-one downdate) and prediction.
                 p.ger(-f_inv, &pz, &pz, 1.0);
                 strategy.predict_cov(t_mat, &t_mat_t, &sparse_t, &mut p, &rqr, &mut temp_kk);
 

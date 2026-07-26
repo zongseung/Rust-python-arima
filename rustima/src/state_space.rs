@@ -107,12 +107,13 @@ impl StateSpace {
         })
     }
 
-    /// Update parameter-dependent matrices in-place.
+    /// Update parameter-dependent matrices.
     ///
     /// During optimization, only the ARMA parameters change between iterations.
-    /// This method updates T (companion column), R (MA coefficients), Q (sigma2),
-    /// and intercepts in-place, avoiding the full matrix reconstruction cost of
-    /// `StateSpace::new()`.
+    /// T (companion column), R (MA coefficients), and Q (sigma2) are mutated
+    /// in-place; the obs/state intercept vectors are rebuilt (O(n) / O(n*k)
+    /// allocations) since they depend on trend/exog coefficients. Still avoids
+    /// the full matrix reconstruction cost of `StateSpace::new()`.
     ///
     /// Config-dependent structure (diff blocks, seasonal shifts, connections,
     /// superdiagonal ones) remains unchanged.

@@ -96,7 +96,7 @@ Because rustima ships Rust source, **you must build it locally** (there is no pr
 Best for: testing, Jupyter notebooks, running examples. Fast rebuilds on code changes.
 
 ```bash
-git clone https://github.com/<your-org>/rustima.git
+git clone https://github.com/zongseung/rustima.git
 cd rustima/        # the repo has an inner `rustima/` package directory
 
 # 1) Create virtualenv + install Python deps (numpy, polars, pytest, etc.)
@@ -131,7 +131,7 @@ Copy the `.whl` from `/tmp/wheels/` to the target machine and `pip install` it t
 import rustima
 import numpy as np
 
-print(rustima.version())                              # "0.1.0"
+print(rustima.version())                              # "0.3.0"
 y = np.random.randn(100).cumsum()
 r = rustima.sarimax_fit(y, order=(1, 1, 1), seasonal=(0, 0, 0, 0))
 print(f"converged={r['converged']}, AIC={r['aic']:.2f}")
@@ -476,8 +476,8 @@ graph TB
         FCAST["forecast.rs<br/>h-step prediction + residuals"]
         BATCH["batch.rs<br/>Rayon par_iter()"]
         SS["state_space.rs<br/>Harvey representation T, Z, R, Q"]
-        INIT["initialization.rs<br/>Approximate diffuse init"]
-        SP["start_params.rs<br/>Hannan-Rissanen + CSS"]
+        INIT["initialization.rs<br/>Lyapunov + diffuse init"]
+        SP["start_params.rs<br/>Burg/Yule-Walker + CSS"]
         POLY["polynomial.rs<br/>AR/MA polynomial expansion"]
         PAR["params.rs<br/>Monahan transform"]
         SCR["score.rs<br/>Analytical gradient"]
@@ -531,7 +531,7 @@ sequenceDiagram
     L->>O: fit(endog, config, method, maxiter)
 
     O->>S: compute_start_params(endog, config)
-    S->>S: Differencing → Hannan-Rissanen / Burg+CSS
+    S->>S: Differencing → Burg/Yule-Walker AR + residual-regression MA
     S-->>O: initial θ₀
 
     O->>PR: untransform_params(θ₀)
@@ -671,7 +671,8 @@ result = rustima.sarimax_fit(
     seasonal=(0, 0, 0, 0),
     enforce_stationarity=True,   # AR stationarity constraint
     enforce_invertibility=True,  # MA invertibility constraint
-    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgs" | "bfgs"
+    method="lbfgsb",             # "lbfgsb" | "lbfgsb-multi" | "lbfgsb-adaptive"
+                                 # | "lbfgsb-hybrid" | "lbfgs" | "bfgs"
                                  # | "trust-region" | "profile-trust-region"
                                  # | "nelder-mead"
     maxiter=500,
@@ -715,6 +716,20 @@ print(fc["mean"])       # point forecast (list[float])
 print(fc["ci_lower"])   # lower bound
 print(fc["ci_upper"])   # upper bound
 print(fc["variance"])   # forecast variance
+```
+
+#### `rustima.sarimax_rolling_forecast`
+
+Single Kalman-filter pass producing h-step forecasts from every rolling origin (fixed parameters, no re-estimation). Cost `O(T + N·horizon)` instead of `O(N·T)` for a refit-per-origin loop.
+
+```python
+rf = rustima.sarimax_rolling_forecast(
+    y, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
+    params=np.array([0.65]),
+    start=100, step=24, horizon=12, alpha=0.05,
+)
+print(rf["origins"])         # (N,) origin indices
+print(rf["predicted_mean"])  # (N, horizon)
 ```
 
 #### `rustima.sarimax_residuals`
@@ -768,6 +783,17 @@ forecasts = rustima.sarimax_batch_forecast(
     alpha=0.05,
 )
 # Returns: list[dict] with mean, variance, ci_lower, ci_upper
+```
+
+#### `rustima.sarimax_batch_loglike`
+
+Evaluates log-likelihood for N series in parallel at given parameters (no optimization).
+
+```python
+lls = rustima.sarimax_batch_loglike(
+    series_list, order=(1, 0, 0), seasonal=(0, 0, 0, 0),
+    params_list=params_list,
+)
 ```
 
 #### `rustima.sarimax_grid_search`
@@ -868,6 +894,8 @@ result.forecast(steps=10, alpha=0.05)     # → ForecastResult
 result.forecast(steps=10, exog=X_future)  # with future exog
 result.get_forecast(steps=10, alpha=0.05) # alias (statsmodels compat)
 result.get_prediction(start=0, end=210)   # → PredictionResult (in-sample + OOS)
+result.rolling_forecast(start=100, step=24, horizon=12)  # → RollingForecastResult
+result.extend(new_endog, exog=None)       # → SARIMAXResult, fixed params + new obs
 result.summary()                          # → str (default: parameter table)
 result.summary(inference="hessian")       # → str (std err / z / p / CI)
 result.summary(inference="statsmodels")   # → str (statsmodels inference values)
@@ -878,6 +906,18 @@ result.diagnostics()                      # → dict (Ljung-Box, Jarque-Bera, he
 # Machine-friendly parameter summary dict
 ps = result.parameter_summary(alpha=0.05, inference="hessian")
 ```
+
+**Walk-forward without refitting.** `SARIMAXModel.filter(params)` builds a `SARIMAXResult` at a given parameter vector via a single Kalman-filter pass — no optimization (statsmodels `.filter()` semantics). `SARIMAXResult.extend(endog, exog=None)` refilters the original history plus new observations at the SAME fixed parameters, returning a new result whose subsequent `forecast()` starts after the new data:
+
+```python
+model = SARIMAXModel(train, order=(1, 1, 1), seasonal_order=(0, 0, 0, 0))
+result = model.fit()
+for block in blocks:
+    fc = result.get_forecast(steps=len(block)).predicted_mean
+    result = result.extend(block)   # fixed params, no re-estimation
+```
+
+`SARIMAXResult.rolling_forecast(start, step, horizon, alpha=0.05)` computes h-step forecasts from every origin `start, start+step, ...` in a single Kalman-filter pass — `O(T + N·horizon)` total versus `O(N·T)` for an `extend()` loop, with numerically identical output (Markov property). Returns a `RollingForecastResult`.
 
 **Parameter vector layout:**
 
@@ -921,6 +961,17 @@ pred = result.get_prediction(start=0, end=210)
 
 pred.predicted_mean    # np.ndarray — predictions (in-sample + OOS)
 pred.to_dataframe()    # Polars DataFrame (index, predicted_mean)
+```
+
+#### `RollingForecastResult`
+
+```python
+rf = result.rolling_forecast(start=100, step=24, horizon=12)
+
+rf.origins             # np.ndarray (N,) — forecast origin indices
+rf.predicted_mean       # np.ndarray (N, horizon)
+rf.variance             # np.ndarray (N, horizon)
+rf.ci_lower, rf.ci_upper  # np.ndarray (N, horizon)
 ```
 
 #### `AutoARIMAResult`
@@ -969,7 +1020,7 @@ For each t = 0, ..., n-1:
   2. Innovation variance:  F_t = Z' * P_{t|t-1} * Z
   3. Kalman gain:          K_t = P_{t|t-1} * Z / F_t
   4. State update:         a_{t|t} = a_{t|t-1} + K_t * v_t
-  5. Covariance update:    P_{t|t} = (I - K*Z') * P * (I - K*Z')'  [Joseph form]
+  5. Covariance update:    P_{t|t} = P_{t|t-1} - F_t^-1 * (P*Z)(P*Z)'  [rank-one downdate, in-place]
   6. Prediction:           a_{t+1|t} = T * a_{t|t} + c_t
   7. Covariance prediction: P_{t+1|t} = T * P_{t|t} * T' + R*Q*R'
 ```
@@ -1003,12 +1054,14 @@ PACF → AR coefficients: Levinson-Durbin recursion
 Minimizes negative log-likelihood.
 
 **Strategy:**
-1. **Starting values**: Hannan-Rissanen (seasonal) or CSS-based estimation (`start_params.rs`)
-2. **L-BFGS-B** (default): Bounded + analytical gradient, `pgtol=1e-5`, `factr=1e7`
-3. **L-BFGS-B multi-start**: 3 perturbed restarts for robustness
-4. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
-5. **Nelder-Mead fallback**: Auto-switch on L-BFGS failure, 5% scale simplex
-6. **Information criteria**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`, `HQIC = -2·ll + 2·k·ln(ln(n))`
+1. **Starting values**: Burg AR estimate (Yule-Walker fallback) + MA via regression on the AR residuals, refined by CSS (`start_params.rs`)
+2. **L-BFGS-B** (default, `method="lbfgsb"`): Bounded + analytical gradient, `pgtol=1e-5`, `factr=1e7`. Single-start first; only escalates to multi-start if that run fails (typically `ABNORMAL_TERMINATION_IN_LNSRCH` from an AR/MA near-cancellation ridge), then to Nelder-Mead if multi-start also fails
+3. **L-BFGS-B multi-start** (`method="lbfgsb-multi"`): up to 3 LCG-perturbed restarts run immediately (no escalation wait), scaled by model complexity (0 for the smallest models, 3 once ≥4 parameters are estimated)
+4. **L-BFGS-B adaptive restart** (`method="lbfgsb-adaptive"`): gradient-informed basin hopping — perturbs around the *converged* optimum rather than the seed, scaled per-dimension by `|∂L/∂θᵢ|` from the analytical score, so exploration concentrates on the directions that carry the most loss-landscape signal. Reaches neighboring basins that seed-perturbed multi-start (which stays in the seed's basin of attraction) cannot
+5. **L-BFGS-B hybrid** (`method="lbfgsb-hybrid"`): runs multi-start first, then anchors one further adaptive hop on top of its best result
+6. **L-BFGS**: MoreThuente line search, `grad_tol=1e-8, cost_tol=1e-12`
+7. **Nelder-Mead fallback**: Auto-switch on L-BFGS failure, 5% scale simplex
+8. **Information criteria**: `AIC = -2·ll + 2·k`, `BIC = -2·ll + k·ln(n)`, `HQIC = -2·ll + 2·k·ln(ln(n))`
 
 ### 6. Forecast (`forecast.rs`)
 
@@ -1038,6 +1091,14 @@ Uses Rayon `par_iter()` for work-stealing parallelism at the independent-job lev
 ---
 
 ## Benchmarks
+
+> **Stale — predate the 0.3.0 correctness fixes.** The tables below were captured on rustima 0.1.0.
+> Since then, 0.3.0 fixed a P₀ initialization bug that biased the log-likelihood of every
+> non-differenced (`d=0, D=0`) model — exactly the AR/MA/SARIMA(·,0,·) rows below — and a
+> Hessian standard-error bug (see `CHANGELOG.md`). The accuracy deltas here no longer reflect
+> current behavior (fixed-parameter log-likelihoods now match statsmodels to `1e-10`); timings
+> are directionally indicative but should be regenerated via `python_tests/gen_tex_report.py`
+> before being cited.
 
 All benchmarks run on macOS 15.1 (Apple Silicon arm64), Python 3.14, rustima 0.1.0 vs statsmodels 0.14.6.
 
@@ -1144,20 +1205,27 @@ rustima/
 ├── pyproject.toml                   # Python package config (maturin)
 ├── build.rs                         # cc build script (compiles lbfgsb_c/)
 │
-├── src/                             # Rust engine (19 modules, ~11,960 LOC)
-│   ├── lib.rs                       # PyO3 module entry point (11 Python functions)
+├── src/                             # Rust engine (25 modules, ~14,300 LOC)
+│   ├── lib.rs                       # PyO3 module entry point (12 Python functions)
 │   ├── types.rs                     # SarimaxOrder, SarimaxConfig, Trend, FitResult
 │   ├── error.rs                     # SarimaxError (thiserror-based)
 │   ├── params.rs                    # Parameter struct + Monahan/Jones transform
 │   ├── polynomial.rs                # AR/MA polynomial expansion (polymul, reduced_ar/ma)
 │   ├── state_space.rs               # Harvey state-space T, Z, R, Q, c_t construction
-│   ├── initialization.rs            # Approximate diffuse / DARE initialization
+│   ├── initialization.rs            # Lyapunov (stationary) + approximate diffuse initialization
 │   ├── kalman.rs                    # Kalman filter (loglike + full filter)
 │   ├── score.rs                     # Analytical gradient (sparse tangent-linear + steady-state)
 │   ├── css.rs                       # Conditional sum-of-squares log-likelihood
 │   ├── inference.rs                 # Numerical Hessian / OPG inference
-│   ├── start_params.rs              # Hannan-Rissanen + CSS initial parameter estimation
-│   ├── optimizer.rs                 # L-BFGS-B + L-BFGS + Nelder-Mead MLE
+│   ├── start_params.rs              # Burg/Yule-Walker AR + residual-regression MA + CSS refinement
+│   ├── optimizer/                   # L-BFGS-B + L-BFGS + Nelder-Mead MLE (split module)
+│   │   ├── mod.rs                   # Orchestration, multi-start dispatch
+│   │   ├── objective.rs             # SarimaxObjective (cost + analytical gradient)
+│   │   ├── runners.rs               # L-BFGS-B / L-BFGS / Nelder-Mead drivers
+│   │   ├── multistart.rs            # LCG-perturbed restarts, near-cancellation filter
+│   │   ├── trust_region.rs          # Profiled Kalman-GLS Trust-Region (exog β)
+│   │   ├── transforms.rs            # Monahan/Jones stationarity transform helpers
+│   │   └── tests.rs                 # Optimizer unit tests
 │   ├── forecast.rs                  # h-step prediction + residuals + z_score
 │   ├── batch.rs                     # Rayon-based batch/grid search parallel processing
 │   ├── pipeline.rs                  # Shared helpers (kalman_eval, kalman_filter_full)
@@ -1167,12 +1235,12 @@ rustima/
 │
 ├── python/
 │   └── rustima/                     # Python package (native ext + high-level API)
-│       ├── __init__.py              # Package exports (low-level + high-level API)
-│       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult
+│       ├── __init__.py              # Package exports + Apple Silicon P-core Rayon pinning
+│       ├── model.py                 # SARIMAXModel, SARIMAXResult, ForecastResult, PredictionResult, RollingForecastResult
 │       ├── auto.py                  # auto_arima, AutoARIMAResult
 │       └── rustima.*.so             # Compiled Rust extension (built by maturin)
 │
-├── python_tests/                    # Python integration tests (371 tests, 16 modules)
+├── python_tests/                    # Python integration tests (429 tests, 23 modules)
 │   ├── conftest.py                  # pytest fixtures
 │   ├── generate_fixtures.py         # statsmodels reference data generator
 │   └── test_*.py                    # test_fit, test_forecast, test_batch, test_exog, etc.
@@ -1231,7 +1299,7 @@ rustima/
 # Rust unit tests (155 tests)
 cargo test --all-targets
 
-# Python integration tests (371 tests, wheel build required first)
+# Python integration tests (429 tests, wheel build required first)
 uv run maturin develop --release
 uv run python -m pytest python_tests/ -v
 
@@ -1261,15 +1329,22 @@ uv run python python_tests/generate_fixtures.py
 | Python exog | 14 | exogenous regressors, future_exog, batch exog |
 | Python multi-order accuracy | 27 | multi-order cross-validation vs statsmodels |
 | Python high-order accuracy | 20 | ARIMA(4–5), SARIMA(4,1,4)(2,1,2,12), s=24 |
-| Python inference | 70 | Rust Hessian/OPG inference, statsmodels parity |
+| Python inference | 69 | Rust Hessian/OPG inference, statsmodels parity |
 | Python trend | 16 | trend='n','c','t','ct' fit/forecast/residuals/summary |
 | Python Polars | 14 | to_dataframe(), params_table(), PredictionResult, HQIC |
 | Python auto_arima | 19 | stepwise, grid, history, criterion, summary |
 | Python safety guards | 44 | edge case safety, bounds checking |
-| Python simple differencing | 22 | simple_differencing=True path |
+| Python simple differencing | 24 | simple_differencing=True path |
 | Python matrix tier A | 12 | state-space matrix construction validation |
 | Python prediction quality | 7 | in-sample/out-of-sample prediction accuracy |
-| **Total** | **526** | 155 Rust + 371 Python |
+| Python filter/extend | 17 | `SARIMAXModel.filter()`, `SARIMAXResult.extend()` walk-forward rolling |
+| Python rolling_forecast | 11 | single-pass rolling-origin forecasts vs extend()-loop parity |
+| Python init correctness | 8 | DIAGNOSIS_V9 P0/trend-start regression coverage |
+| Python matrix cells | 8 | high-value option-matrix cells from the v9 structure audit |
+| Python robustness | 5 | fork-safety, rolling-forecast memory cap, batch panic isolation |
+| Python variance parity | 6 | forecast variance / standardized-residual parity vs statsmodels |
+| Python profile-trust-region | 2 | batched-Kalman-filter PTR optimization regression |
+| **Total** | **584** | 155 Rust + 429 Python |
 
 ## Troubleshooting & FAQ
 
