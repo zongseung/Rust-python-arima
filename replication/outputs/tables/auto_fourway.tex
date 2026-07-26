@@ -1,0 +1,10 @@
+\begin{tabular}{llrrrr}
+  \toprule
+  Engine & Selected model & Time (s) & Peak RSS (GB) & Native AIC & Re-fit AIC \\
+  \midrule
+  \pkg{rustima} & (3, 0, 3)(1, 1, 1, 24) & 96.4 & 0.70 & 421,590.5 & 421,725.3 \\
+  \pkg{pmdarima} & \multicolumn{2}{c}{out of memory (swap)} & 2.39 & -- & -- \\
+  \pkg{StatsForecast} & \multicolumn{2}{c}{out of memory (swap)} & 10.27 & -- & -- \\
+  \proglang{R} \pkg{forecast} & (3, 0, 0)(1, 1, 0, 24) & 883.0 & 0.48 & 429,165.9 & 431,686.8 \\
+  \bottomrule
+\end{tabular}

@@ -1,0 +1,41 @@
+{
+  "platform": "macOS-15.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "processor": "arm",
+  "python": "3.14.3",
+  "numpy": "2.4.2",
+  "pandas": "2.3.3",
+  "rustima": "unknown",
+  "statsmodels": "0.14.6",
+  "pmdarima": "2.1.1",
+  "statsforecast": "2.1.1",
+  "joblib": "1.5.3",
+  "smoke": false,
+  "stages": {
+    "data": {
+      "returncode": 0,
+      "seconds": 0.4
+    },
+    "parallel": {
+      "returncode": 0,
+      "seconds": 219.2
+    },
+    "auto": {
+      "returncode": 0,
+      "seconds": 1539.0
+    },
+    "application": {
+      "returncode": 0,
+      "seconds": 951.2
+    },
+    "longseries": {
+      "returncode": 0,
+      "seconds": 1374.9
+    },
+    "tables": {
+      "returncode": 0,
+      "seconds": 0.5
+    }
+  },
+  "total_seconds": 4085.2
+}

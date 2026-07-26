@@ -1,0 +1,16 @@
+\begin{tabular}{lrrrr}
+  \toprule
+  Condition & Workers & Time (s) & Speedup & Peak RSS (GB) \\
+  \midrule
+  \pkg{rustima} & 1 & 0.03 & 35.5$\times$ & 0.10 \\
+  \pkg{rustima} & 2 & 0.01 & 70.8$\times$ & 0.10 \\
+  \pkg{rustima} & 4 & 0.01 & 134.4$\times$ & 0.10 \\
+  \pkg{rustima} & 8 & 0.01 & 174.7$\times$ & 0.10 \\
+  \pkg{statsmodels}, sequential & 1 & 1.05 & 1.0$\times$ & 0.19 \\
+  \pkg{statsmodels} + \pkg{joblib} & 2 & 0.53 & 2.0$\times$ & 0.53 \\
+  \pkg{statsmodels} + \pkg{joblib} & 4 & 0.27 & 3.8$\times$ & 0.90 \\
+  \pkg{statsmodels} + \pkg{joblib} & 8 & 0.20 & 5.2$\times$ & 1.64 \\
+  \pkg{StatsForecast} & 1 & 1.61 & 0.7$\times$ & 0.22 \\
+  \pkg{StatsForecast} & 8 & 1.71 & 0.6$\times$ & 1.89 \\
+  \bottomrule
+\end{tabular}

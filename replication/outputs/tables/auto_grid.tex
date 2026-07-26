@@ -1,0 +1,8 @@
+\begin{tabular}{llrrr}
+  \toprule
+  Engine & Selected model & Time (s) & Peak RSS (GB) & AIC \\
+  \midrule
+  \pkg{rustima}, grid, 8 threads & (3, 0, 3)(1, 1, 1, 24) & 71.0 & 1.09 & 141,917.1 \\
+  \pkg{pmdarima}, grid, \code{n\_jobs=8} & \multicolumn{2}{c}{out of memory (swap)} & 9.36 & -- \\
+  \bottomrule
+\end{tabular}

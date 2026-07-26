@@ -1,0 +1,14 @@
+\begin{tabular}{llrrrcr}
+  \toprule
+  Specification & Engine & Fit (s) & AIC & MAPE$_{48h}$ (\%) & Conv. & RSS (GB) \\
+  \midrule
+  SARIMA$(1,0,1)(1,0,1)_{24}$ & \pkg{rustima} & 3.6 & 711,294 & 10.31 & Yes & 0.19 \\
+  SARIMA$(1,0,1)(1,0,1)_{24}$ & \pkg{statsmodels} & 121.4 & 720,474 & 10.41 & Yes & 3.09 \\
+  SARIMA$(2,1,1)(1,0,0)_{24}$ & \pkg{rustima} & 2.5 & 717,464 & 9.95 & Yes & 0.15 \\
+  SARIMA$(2,1,1)(1,0,0)_{24}$ & \pkg{statsmodels} & 82.2 & 719,654 & 9.89 & Yes & 3.23 \\
+  SARIMAX$(1,1,1)(1,0,1)_{24}$ + [\code{ta},\code{hm}] & \pkg{rustima} & 5.4 & 708,794 & 10.95 & Yes & 0.21 \\
+  SARIMAX$(1,1,1)(1,0,1)_{24}$ + [\code{ta},\code{hm}] & \pkg{statsmodels} & 386.4 & 730,124 & 11.87 & No & 3.31 \\
+  SARIMAX$(1,1,1)(1,1,1)_{24}$ + [\code{ta},\code{hm}] & \pkg{rustima} & 6.7 & 703,465 & 9.75 & Yes & 0.26 \\
+  SARIMAX$(1,1,1)(1,1,1)_{24}$ + [\code{ta},\code{hm}] & \pkg{statsmodels} & 337.9 & 703,462 & 9.75 & Yes & 9.89 \\
+  \bottomrule
+\end{tabular}

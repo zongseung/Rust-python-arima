@@ -1,0 +1,125 @@
+
+===== stage: data =====
+[data] OK n=51,144  range=2019-01-01 00:00:00 .. 2024-10-31 23:00:00  nan(power)=0
+===== stage data: rc=0 (0.4s) =====
+
+===== stage: parallel =====
+[run] ar1  rustima            jobs=1
+  -> ok inner_min=0.0295s rss=0.1GB
+[run] ar1  rustima            jobs=2
+  -> ok inner_min=0.0148s rss=0.099GB
+[run] ar1  rustima            jobs=4
+  -> ok inner_min=0.0078s rss=0.1GB
+[run] ar1  rustima            jobs=8
+  -> ok inner_min=0.006s rss=0.1GB
+[run] ar1  statsmodels_seq    jobs=1
+  -> ok inner_min=1.0483s rss=0.186GB
+[run] ar1  statsmodels_joblib jobs=2
+  -> ok inner_min=0.5332s rss=0.527GB
+[run] ar1  statsmodels_joblib jobs=4
+  -> ok inner_min=0.2731s rss=0.9GB
+[run] ar1  statsmodels_joblib jobs=8
+  -> ok inner_min=0.2016s rss=1.638GB
+[run] ar1  statsforecast      jobs=1
+  -> ok inner_min=1.6079s rss=0.223GB
+[run] ar1  statsforecast      jobs=8
+  -> ok inner_min=1.7068s rss=1.894GB
+[run] s24  rustima            jobs=1
+  -> ok inner_min=2.7133s rss=0.108GB
+[run] s24  rustima            jobs=2
+  -> ok inner_min=1.3542s rss=0.112GB
+[run] s24  rustima            jobs=4
+  -> ok inner_min=0.787s rss=0.11GB
+[run] s24  rustima            jobs=8
+  -> ok inner_min=0.4704s rss=0.116GB
+[run] s24  statsmodels_seq    jobs=1
+  -> ok inner_min=19.8627s rss=0.818GB
+[run] s24  statsmodels_joblib jobs=2
+  -> ok inner_min=13.1451s rss=1.372GB
+[run] s24  statsmodels_joblib jobs=4
+  -> ok inner_min=6.9099s rss=2.154GB
+[run] s24  statsmodels_joblib jobs=8
+  -> ok inner_min=3.0325s rss=2.692GB
+[run] s24  statsforecast      jobs=1
+  -> ok inner_min=36.8512s rss=0.225GB
+[run] s24  statsforecast      jobs=8
+  -> ok inner_min=8.0988s rss=1.989GB
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/raw/parallel_scaling.csv
+===== stage parallel: rc=0 (219.2s) =====
+
+===== stage: auto =====
+[full] engine=rustima
+  -> ok wall=96.43s rss=0.703GB
+[full] engine=pmdarima
+  -> oom_swap wall=321.12s rss=2.389GB
+[full] engine=statsforecast
+  -> oom_swap wall=51.98s rss=10.274GB
+[full] engine=r_forecast
+  -> ok wall=883.04s rss=0.485GB
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/raw/auto_fourway.csv
+[grid] engine=rustima_grid8
+  -> ok wall=70.97s rss=1.091GB
+[grid] engine=pmdarima_grid8
+  -> oom_swap wall=69.85s rss=9.36GB
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/raw/auto_grid.csv
+===== stage auto: rc=0 (1,539.0s) =====
+
+===== stage: application =====
+[run] SARIMA(1,0,1)(1,0,1)_24                rustima
+  -> ok fit=3.561s aic=711294.4 mape=10.312%
+[run] SARIMA(1,0,1)(1,0,1)_24                statsmodels
+  -> ok fit=121.381s aic=720473.9 mape=10.408%
+[run] SARIMA(2,1,1)(1,0,0)_24                rustima
+  -> ok fit=2.514s aic=717464.4 mape=9.954%
+[run] SARIMA(2,1,1)(1,0,0)_24                statsmodels
+  -> ok fit=82.159s aic=719654.4 mape=9.89%
+[run] SARIMAX(1,1,1)(1,0,1)_24 + [ta,hm]     rustima
+  -> ok fit=5.365s aic=708794.5 mape=10.946%
+[run] SARIMAX(1,1,1)(1,0,1)_24 + [ta,hm]     statsmodels
+  -> ok fit=386.395s aic=730124.3 mape=11.866%
+[run] SARIMAX(1,1,1)(1,1,1)_24 + [ta,hm]     rustima
+  -> ok fit=6.66s aic=703464.9 mape=9.751%
+[run] SARIMAX(1,1,1)(1,1,1)_24 + [ta,hm]     statsmodels
+  -> ok fit=337.868s aic=703462.5 mape=9.754%
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/raw/application_extended.csv
+===== stage application: rc=0 (951.2s) =====
+
+===== stage: longseries =====
+[run] s=24  n=10000  rustima
+  -> ok fit=0.298s rss=0.116GB
+[run] s=24  n=10000  statsmodels
+  -> ok fit=3.283s rss=0.851GB
+[run] s=24  n=50000  rustima
+  -> ok fit=1.291s rss=0.156GB
+[run] s=24  n=50000  statsmodels
+  -> ok fit=13.147s rss=3.468GB
+[run] s=24  n=100000 rustima
+  -> ok fit=2.575s rss=0.225GB
+[run] s=24  n=100000 statsmodels
+  -> ok fit=25.652s rss=6.774GB
+[run] s=168 n=10000  rustima
+  -> ok fit=36.47s rss=0.236GB
+[run] s=168 n=10000  statsmodels
+  -> oom_swap fit=Nones rss=10.094GB
+[run] s=168 n=50000  rustima
+  -> ok fit=152.763s rss=0.623GB
+[run] s=168 n=50000  statsmodels
+  -> oom_swap fit=Nones rss=10.048GB
+[run] s=168 n=100000 rustima
+  -> ok fit=288.318s rss=1.026GB
+[run] s=168 n=100000 statsmodels
+  -> oom_swap fit=Nones rss=10.397GB
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/raw/longseries_scaling.csv
+===== stage longseries: rc=0 (1,374.9s) =====
+
+===== stage: tables =====
+/Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/gen_tables.py:3: SyntaxWarning: "\i" is an invalid escape sequence. Such sequences will not work in the future. Did you mean "\\i"? A raw string is also an option.
+  Each fragment is a bare tabular environment meant to be \input{} or pasted
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/parallel_scaling_ar1.tex
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/parallel_scaling_s24.tex
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/longseries_scaling.tex
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/auto_fourway.tex
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/auto_grid.tex
+[tex] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/tables/application_extended.tex
+===== stage tables: rc=0 (0.5s) =====
+[out] /Users/ijongseung/Documents/GitHub/arima-type/Rust-python-arima/replication/outputs/manifest.json
